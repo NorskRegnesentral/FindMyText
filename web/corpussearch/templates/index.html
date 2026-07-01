@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>findmytext.nr.no — corpus inclusion checker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <script id="public-config" type="application/json">{{ public_config | safe }}</script>
+</head>
+
+<body>
+    <main class="container">
+        <header class="hero">
+            <h1>findmytext<span class="dot">.</span>nr.no</h1>
+            <p class="tagline">
+                Check whether a piece of text — or a substantial part of it — appears in a
+                large document corpus, using document fingerprinting.
+            </p>
+            <nav class="links" id="top-links"></nav>
+        </header>
+
+        <section class="card help">
+            <h2>How it works</h2>
+            <ol>
+                <li>Pick a <strong>corpus</strong> to search against.</li>
+                <li><strong>Paste or type</strong> the text you want to check (or load a sample).</li>
+                <li>Choose one or more <strong>detection algorithms</strong> and run the check.</li>
+            </ol>
+            <p class="muted">
+                We extract a compact set of fingerprints from your text and look for the
+                same fingerprints in the corpus. Matching passages are highlighted below.
+            </p>
+        </section>
+
+        <form id="detect-form" class="card form">
+            <div class="field">
+                <label for="corpus">1 · Corpus</label>
+                <select id="corpus" name="corpus"></select>
+                <p class="hint" id="corpus-desc"></p>
+            </div>
+
+            <div class="field">
+                <div class="label-row">
+                    <label for="text">2 · Your text</label>
+                    <span class="samples" id="samples"></span>
+                </div>
+                <textarea id="text" name="text" rows="9"
+                    placeholder="Paste the text you want to check here…"></textarea>
+                <p class="hint"><span id="char-count">0</span> characters</p>
+            </div>
+
+            <div class="field">
+                <label>3 · Detection algorithm(s)</label>
+                <div class="algos" id="algos">
+                    <label class="algo">
+                        <input type="checkbox" name="algorithm" value="connected_components" checked />
+                        <span><strong>Position-aware match</strong> — our method (recommended)</span>
+                    </label>
+                    <label class="algo">
+                        <input type="checkbox" name="algorithm" value="jaccard" />
+                        <span><strong>Shared fingerprints</strong> — Jaccard baseline</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="field hidden" id="password-field">
+                <label for="password">Access password</label>
+                <input type="password" id="password" name="password" autocomplete="off" />
+            </div>
+
+            <div id="captcha-container" class="field"></div>
+
+            <div class="actions">
+                <button type="submit" id="run-btn" class="btn primary">Run detection</button>
+                <span class="error" id="form-error"></span>
+            </div>
+        </form>
+
+        <section class="card progress hidden" id="progress-card">
+            <div class="progress-head">
+                <span id="progress-stage">Working…</span>
+                <span id="progress-elapsed" class="muted"></span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p class="hint" id="progress-note"></p>
+        </section>
+
+        <section class="card results hidden" id="results-card">
+            <h2>Result</h2>
+            <div id="summary"></div>
+            <div id="highlight-wrap" class="hidden">
+                <h3>Matching passages in your text</h3>
+                <p class="hint" id="highlight-meta"></p>
+                <div class="doc-text" id="highlight"></div>
+            </div>
+        </section>
+
+        <footer class="foot">
+            <span id="foot-links"></span>
+        </footer>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>

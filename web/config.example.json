@@ -1,0 +1,74 @@
+{
+    "github_url": "https://github.com/NorskRegnesentral/FindMyText",
+    "paper_url": "",
+    "max_loaded_indexes": 1,
+    "max_text_chars": 50000,
+    "corpora": [
+        {
+            "id": "arxiv",
+            "label": "arXiv papers",
+            "description": "~2.4 million scientific papers from arXiv. Try pasting an abstract.",
+            "index_dir": "/home/jullum/copyai_local/arxiv/index(4,6)",
+            "doc_url_template": "https://arxiv.org/abs/{doc_id}",
+            "samples": [
+                {
+                    "label": "arXiv abstract (matches the corpus)",
+                    "text": "We define a new notion of cuspidality for representations of over a finite quotient of the ring of integers of a non-Archimedean local field using geometric and infinitesimal induction functors, which involve automorphism groups of torsion modules."
+                },
+                {
+                    "label": "Unrelated text (should not match)",
+                    "text": "Last Tuesday, Mirabel Quincy-Tannenbaum repotted her seventeen miniature kumquat trees while humming an invented lullaby about a forgetful walrus named Pemberton."
+                }
+            ]
+        },
+        {
+            "id": "wiki",
+            "label": "English Wikipedia",
+            "description": "English Wikipedia articles. Try pasting a sentence from an article.",
+            "index_dir": "/home/jullum/copyai_local/wiki/index(4,6)_wikipedia",
+            "doc_url_template": "https://en.wikipedia.org/?curid={doc_id}",
+            "samples": [
+                {
+                    "label": "Wikipedia passage (matches the corpus)",
+                    "text": "Jeanne Pruett (born Norma Jean Bowman; January 30, 1937) is an American country music singer and songwriter. She also has credits as a published author."
+                },
+                {
+                    "label": "Unrelated text (should not match)",
+                    "text": "Last Tuesday, Mirabel Quincy-Tannenbaum repotted her seventeen miniature kumquat trees while humming an invented lullaby about a forgetful walrus named Pemberton."
+                }
+            ]
+        },
+        {
+            "id": "hplt",
+            "label": "HPLT web crawl",
+            "description": "A large multilingual web-crawl corpus (HPLT). Try pasting text from a web page.",
+            "index_dir": "/home/jullum/copyai_local/hplt/index(4,6)",
+            "doc_url_template": "",
+            "samples": [
+                {
+                    "label": "Web-page text (matches the corpus)",
+                    "text": "The terms and conditions specifying the actions permitted by the provider to users of our Services, including SMS and other services that may be introduced in the future."
+                },
+                {
+                    "label": "Unrelated text (should not match)",
+                    "text": "Last Tuesday, Mirabel Quincy-Tannenbaum repotted her seventeen miniature kumquat trees while humming an invented lullaby about a forgetful walrus named Pemberton."
+                }
+            ]
+        }
+    ],
+    "params": {
+        "top_k": 10,
+        "min_fingerprints": 5,
+        "cc_doc1_position_threshold": 10,
+        "cc_offset_threshold": 10,
+        "cc_min_cluster_size": 5,
+        "normalizing_constant": 8.0
+    },
+    "protection": {
+        "password": "",
+        "rate_limits": [],
+        "captcha_provider": "",
+        "captcha_secret": "",
+        "captcha_sitekey": ""
+    }
+}

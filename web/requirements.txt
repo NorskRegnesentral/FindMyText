@@ -1,0 +1,11 @@
+# Web-demo dependencies for FindMyText.
+#
+# Pulls in the core project requirements (numpy, numba, polars, scipy, ...) so a
+# single `pip install -r web/requirements.txt` gives you everything the demo needs.
+-r ../requirements.txt
+
+Flask>=3.0
+# Production WSGI server (optional for local dev):
+gunicorn>=21.0
+# Optional, only needed if you enable per-IP rate limiting in the config:
+# Flask-Limiter>=3.5

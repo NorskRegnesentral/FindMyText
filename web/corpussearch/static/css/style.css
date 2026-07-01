@@ -1,0 +1,379 @@
+:root {
+    --bg: #f5f6f4;
+    --card: #ffffff;
+    --ink: #1c2421;
+    --muted: #6b7770;
+    --line: #e3e7e3;
+    --accent: #2f6b46;
+    /* NR-ish green */
+    --accent-dark: #244f35;
+    --mark: #b9e6c4;
+    --mark-strong: #7fcf98;
+    --danger: #b3261e;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 8px 24px rgba(0, 0, 0, .05);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+}
+
+body {
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+}
+
+.container {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+}
+
+/* Hero */
+.hero {
+    text-align: center;
+    margin: 12px 0 28px;
+}
+
+.hero h1 {
+    font-size: 2.4rem;
+    margin: 0;
+    letter-spacing: -.02em;
+}
+
+.hero h1 .dot {
+    color: var(--accent);
+}
+
+.tagline {
+    color: var(--muted);
+    max-width: 52ch;
+    margin: 10px auto 16px;
+}
+
+.links {
+    display: flex;
+    gap: 18px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.links a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: .95rem;
+}
+
+.links a:hover {
+    text-decoration: underline;
+}
+
+/* Cards */
+.card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 22px 24px;
+    margin-bottom: 20px;
+}
+
+.card h2 {
+    margin: 0 0 12px;
+    font-size: 1.15rem;
+}
+
+.card h3 {
+    margin: 18px 0 8px;
+    font-size: 1rem;
+}
+
+.help ol {
+    margin: 0 0 10px;
+    padding-left: 20px;
+}
+
+.help li {
+    margin: 4px 0;
+}
+
+.muted {
+    color: var(--muted);
+}
+
+.hint {
+    color: var(--muted);
+    font-size: .85rem;
+    margin: 6px 0 0;
+}
+
+/* Form */
+.field {
+    margin-bottom: 20px;
+}
+
+.field:last-child {
+    margin-bottom: 0;
+}
+
+label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.label-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+select,
+textarea,
+input[type=password] {
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 11px 12px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+select:focus,
+textarea:focus,
+input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(47, 107, 70, .15);
+}
+
+textarea {
+    resize: vertical;
+    min-height: 150px;
+}
+
+.samples {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.samples button {
+    font: inherit;
+    font-size: .8rem;
+    color: var(--accent-dark);
+    background: #eef4ef;
+    border: 1px solid #d9e6dd;
+    border-radius: 999px;
+    padding: 4px 12px;
+    cursor: pointer;
+}
+
+.samples button:hover {
+    background: #e3efe7;
+}
+
+.algos {
+    display: grid;
+    gap: 10px;
+}
+
+.algo {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-weight: 400;
+    margin: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    cursor: pointer;
+}
+
+.algo input {
+    margin-top: 3px;
+}
+
+.algo:hover {
+    border-color: #cdd6cf;
+}
+
+/* Buttons */
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.btn {
+    font: inherit;
+    font-weight: 600;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 22px;
+    cursor: pointer;
+}
+
+.btn.primary {
+    background: var(--accent);
+    color: #fff;
+}
+
+.btn.primary:hover {
+    background: var(--accent-dark);
+}
+
+.btn.primary:disabled {
+    opacity: .55;
+    cursor: default;
+}
+
+.error {
+    color: var(--danger);
+    font-size: .9rem;
+}
+
+/* Progress */
+.progress-head {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+}
+
+.progress-bar {
+    height: 10px;
+    background: #e9ece9;
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 12px 0 4px;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 5%;
+    background: linear-gradient(90deg, var(--accent), var(--mark-strong));
+    border-radius: 999px;
+    transition: width .3s ease;
+}
+
+/* Results */
+.summary-grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: 1fr;
+}
+
+@media (min-width: 560px) {
+    .summary-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+.result-box {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    background: #fbfdfb;
+}
+
+.result-box h4 {
+    margin: 0 0 6px;
+    font-size: .95rem;
+}
+
+.result-box .score {
+    font-size: 1.9rem;
+    font-weight: 700;
+    color: var(--accent-dark);
+}
+
+.result-box .score small {
+    font-size: .8rem;
+    color: var(--muted);
+    font-weight: 500;
+}
+
+.result-box .match-doc {
+    font-size: .9rem;
+    margin-top: 6px;
+    word-break: break-word;
+}
+
+.result-box .match-doc a {
+    color: var(--accent);
+}
+
+.result-box.nomatch .score {
+    color: var(--muted);
+}
+
+.ranking {
+    margin: 14px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: .85rem;
+}
+
+.ranking li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 3px 0;
+    border-top: 1px dashed var(--line);
+}
+
+.ranking li:first-child {
+    border-top: none;
+}
+
+.ranking .rk-doc {
+    color: var(--muted);
+    word-break: break-word;
+}
+
+.doc-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    background: #fbfdfb;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    font-size: .95rem;
+    max-height: 380px;
+    overflow: auto;
+}
+
+.doc-text mark {
+    background: var(--mark);
+    color: inherit;
+    padding: 1px 2px;
+    border-radius: 3px;
+}
+
+.foot {
+    text-align: center;
+    color: var(--muted);
+    font-size: .85rem;
+    margin-top: 8px;
+}
+
+.foot a {
+    color: var(--accent);
+}
+
+.hidden {
+    display: none !important;
+}
