@@ -39,6 +39,7 @@ def create_app() -> Flask:
         text = (data.get("text") or "").strip()
         corpus_id = data.get("corpus")
         algorithms = data.get("algorithms") or []
+        highlight = data.get("highlight", True)
         password = data.get("password")
         captcha_token = data.get("captcha_token")
 
@@ -64,7 +65,9 @@ def create_app() -> Flask:
         # --- Stream progress + result as newline-delimited JSON ------------
         def generate():
             try:
-                for event in run_detection(manager, cfg, corpus, text, algorithms):
+                for event in run_detection(
+                    manager, cfg, corpus, text, algorithms, highlight=bool(highlight)
+                ):
                     yield json.dumps(event) + "\n"
             except Exception as exc:  # noqa: BLE001
                 app.logger.exception("detection failed")

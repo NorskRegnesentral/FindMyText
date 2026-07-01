@@ -129,6 +129,7 @@ def run_detection(
     corpus: CorpusConfig,
     text: str,
     algorithms: list[str],
+    highlight: bool = True,
 ) -> Iterator[dict]:
     """Generator yielding progress events and a final result event.
 
@@ -168,13 +169,21 @@ def run_detection(
     # The k-gram length is a property of the index the winnower was built with,
     # so read it from the loaded index rather than trusting the corpus config.
     length = detector.index.winnower.length
+    winnower = detector.index.winnower
 
-    # 2. Character offsets for the query tokens, so we can turn the core's
-    #    query token positions into highlight spans. Also lets us bail out
-    #    early on text that produces no tokens/fingerprints.
+    # 2. Tokenise the query. With highlighting on we need character offsets
+    #    (winnower.tokenize_with_offsets) to turn the core's matched query
+    #    positions into highlight spans. With highlighting off we use only the
+    #    plain core tokenizer (no position tracking). Either way this lets us
+    #    bail out early on text that produces no tokens.
     yield progress("fingerprinting", 35)
-    query_token_spans = detector.index.winnower.tokenize_with_offsets(text)
-    if not query_token_spans:
+    if highlight:
+        query_token_spans = winnower.tokenize_with_offsets(text)
+        n_query_tokens = len(query_token_spans)
+    else:
+        query_token_spans = None
+        n_query_tokens = len(winnower.tokenize(text))
+    if n_query_tokens == 0:
         yield {"type": "result", **_empty_result(corpus, text, algorithms)}
         return
 
@@ -182,18 +191,18 @@ def run_detection(
     #    the core detector).
     yield progress("scoring", 70)
     results: dict[str, dict] = {}
-    highlight = None
+    highlight_data = None
 
     if "jaccard" in algorithms:
         scores = detector.find_matches_jaccard(text, score="count")
         ranking = _ranking_from_scores(scores)
         results["jaccard"] = _format_ranking(corpus, ranking, params.normalizing_constant)
-        if ranking and ranking[0][1] > 0 and highlight is None:
+        if highlight and query_token_spans is not None and ranking and ranking[0][1] > 0 and highlight_data is None:
             top_doc = ranking[0][0]
             positions = detector.get_match_highlight_positions(
                 text, top_doc, method="jaccard"
             )
-            highlight = _make_highlight(
+            highlight_data = _make_highlight(
                 "jaccard", top_doc, positions, query_token_spans, length, text
             )
 
@@ -205,12 +214,12 @@ def run_detection(
         )
         # The clustering method is our headline method: prefer its highlight
         # when it is among the selected algorithms and it found a match.
-        if ranking and ranking[0][1] > 0:
+        if highlight and query_token_spans is not None and ranking and ranking[0][1] > 0:
             top_doc = ranking[0][0]
             positions = detector.get_match_highlight_positions(
                 text, top_doc, cparams, method="clustering"
             )
-            highlight = _make_highlight(
+            highlight_data = _make_highlight(
                 "connected_components", top_doc, positions,
                 query_token_spans, length, text,
             )
@@ -221,10 +230,10 @@ def run_detection(
         "corpus": corpus.id,
         "corpus_label": corpus.label,
         "query_length": len(text),
-        "query_fingerprints": len(query_token_spans),
+        "query_fingerprints": n_query_tokens,
         "algorithms": {k: ALGORITHMS[k] for k in algorithms if k in ALGORITHMS},
         "results": results,
-        "highlight": highlight,
+        "highlight": highlight_data,
         "elapsed": round(time.time() - start, 1),
     }
 

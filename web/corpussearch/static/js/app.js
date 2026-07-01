@@ -161,6 +161,7 @@ async function onSubmit(ev) {
     lastText = text;
     const payload = {
         text, corpus, algorithms,
+        highlight: document.getElementById("highlight-toggle")?.checked ?? true,
         password: document.getElementById("password")?.value || null,
         captcha_token: getCaptchaToken(),
     };
