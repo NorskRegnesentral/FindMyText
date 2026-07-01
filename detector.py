@@ -185,6 +185,100 @@ class TextContainmentDetector:
             .sort("doc_match_closeness_rank")
         )
 
+    def get_match_highlight_positions(
+        self,
+        text: str,
+        doc_id: str,
+        clustering_params: Dict[str, object] | None = None,
+        method: str = "clustering",
+    ) -> list[int]:
+        """Return the query token positions to highlight for a matched document.
+
+        Parameters
+        ----------
+        text : str
+            The query document.
+        doc_id : str
+            External id of the matched document to highlight against.
+        clustering_params : dict, optional
+            Clustering configuration (only used when ``method="clustering"``);
+            missing keys fall back to :data:`DEFAULT_CLUSTERING_PARAMS`.
+        method : str
+            ``"clustering"`` (default): the query positions belonging to the
+            cluster with the most unique shared fingerprints — the same cluster
+            that produces the count score of
+            :meth:`find_matches_clustering`. ``"jaccard"``: every shared
+            fingerprint's query position.
+
+        Returns
+        -------
+        list[int]
+            Sorted, de-duplicated query token positions. Empty if ``doc_id`` is
+            not among the candidate matches or has no positions to highlight.
+        """
+        if method not in ("clustering", "jaccard"):
+            raise ValueError(
+                f"method must be 'clustering' or 'jaccard', got {method!r}."
+            )
+
+        df_query, _, df_closest = self._prepare(text)
+        if df_closest.height == 0:
+            return []
+
+        df_match = df_closest.filter(pl.col("doc_match_id") == doc_id)
+        if df_match.height == 0:
+            return []
+
+        if method == "jaccard":
+            shared_hashes = df_match.select("hash").unique()
+            positions = (
+                df_query
+                .join(shared_hashes, on="hash", how="inner")
+                .get_column("position")
+                .to_list()
+            )
+            return sorted({int(p) for p in positions})
+
+        # method == "clustering"
+        params = {**DEFAULT_CLUSTERING_PARAMS, **(clustering_params or {})}
+        df_shared = (
+            df_query
+            .join(df_match.select(["hash", "position"]), on="hash", how="inner", suffix="_doc2")
+            .select([
+                pl.col("hash"),
+                pl.col("position").alias("position_doc1"),
+                pl.col("position_doc2"),
+            ])
+            .with_columns(
+                (pl.col("position_doc2") - pl.col("position_doc1")).alias("position_offset")
+            )
+            .sort("position_doc1")
+        )
+        if df_shared.height == 0:
+            return []
+
+        df_clustered = get_df_hash_cluster(
+            df_shared_hashes=df_shared,
+            clustering_method=params["method"],
+            position_threshold=params["position_threshold"],
+            offset_threshold=params["offset_threshold"],
+            distance_threshold=params["distance_threshold"],
+            min_cluster_size=params["min_cluster_size"],
+        )
+
+        non_noise = df_clustered.filter(pl.col("cluster_id") != -1)
+        if non_noise.height == 0:
+            return []
+
+        # Pick the cluster with the most unique shared fingerprints (matching the
+        # count score of find_matches_clustering) and return its query positions.
+        sizes = non_noise.group_by("cluster_id").agg(
+            pl.col("hash").n_unique().alias("n_unique")
+        )
+        best_id = sizes.sort("n_unique", descending=True).get_column("cluster_id")[0]
+        best = non_noise.filter(pl.col("cluster_id") == best_id)
+        return sorted({int(p) for p in best.get_column("position_doc1").to_list()})
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                   #
     # ------------------------------------------------------------------ #

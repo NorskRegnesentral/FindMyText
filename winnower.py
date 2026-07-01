@@ -13,6 +13,12 @@ from typing import List, Set, Tuple
 import numpy as np
 from numba import jit, njit
 
+# Matches a single word character (letters, digits, underscore) with Unicode
+# semantics. Used by :meth:`Winnower.tokenize_with_offsets` to locate the word
+# characters inside a whitespace-delimited run, mirroring the punctuation
+# deletion performed by :meth:`Winnower.tokenize`.
+_WORD_RE = re.compile(r"\w", re.UNICODE)
+
 # Modulus for the rolling hash. 2^31 - 1 is the largest Mersenne prime that
 # guarantees all intermediate multiplications (token * b_pow_k and H * base)
 # fit within signed int64 without overflow. The 31-bit hash space (~2 billion values)
@@ -77,6 +83,48 @@ class Winnower:
             document = re.sub(r"[^\w\s]", "", document, flags=re.UNICODE)
         tokens = document.split()
         return tokens
+
+    def tokenize_with_offsets(self, document: str) -> List[Tuple[int, int]]:
+        """Tokenize like :meth:`tokenize`, but return character offsets.
+
+        Returns a list of ``(start_char, end_char)`` half-open spans into
+        ``document``, one per token, in the exact same order and with the same
+        semantics as :meth:`tokenize`. Token index ``N`` therefore lines up with
+        winnowed position ``N``, so highlighting code can map a fingerprint
+        position back to its character span in the original text.
+
+        When ``self.punctuation`` is False, punctuation is *deleted* (not treated
+        as a separator), matching ``re.sub(r"[^\\w\\s]", "", document)`` followed
+        by ``str.split()``. The returned span covers from the first to the last
+        word character of the run, so interior punctuation is included in the
+        span even though it is absent from the token string produced by
+        :meth:`tokenize`.
+        """
+        spans: List[Tuple[int, int]] = []
+        i, n = 0, len(document)
+        while i < n:
+            if document[i].isspace():
+                i += 1
+                continue
+            start = i
+            while i < n and not document[i].isspace():
+                i += 1
+            end = i  # non-space run [start, end)
+            if self.punctuation:
+                spans.append((start, end))
+                continue
+            # Punctuation deleted: keep the span from the first to the last word
+            # character in the run. Runs with no word character are dropped,
+            # exactly as an all-punctuation token vanishes under re.sub + split.
+            wstart = wend = None
+            for j in range(start, end):
+                if _WORD_RE.match(document[j]):
+                    if wstart is None:
+                        wstart = j
+                    wend = j + 1
+            if wstart is not None and wend is not None:
+                spans.append((wstart, wend))
+        return spans
 
 
 def tokens2unicode(tokens: List[str]) -> np.ndarray:
