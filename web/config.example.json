@@ -7,13 +7,16 @@
         {
             "id": "arxiv",
             "label": "arXiv papers",
-            "description": "~2.4 million scientific papers from arXiv. Try pasting an abstract.",
+            "description": "Scientific papers from arXiv (open-licensed subset). Try pasting an abstract, or load one of the examples.",
             "index_dir": "/home/jullum/copyai_local/arxiv/index(4,6)",
             "doc_url_template": "https://arxiv.org/abs/{doc_id}",
+            "title_map_path": "/home/jullum/copyai_local/arxiv/titles.json.gz",
+            "dataset_url": "https://huggingface.co/datasets/common-pile/arxiv_papers/viewer/default/",
             "samples": [
                 {
-                    "label": "arXiv abstract (matches the corpus)",
-                    "text": "We define a new notion of cuspidality for representations of over a finite quotient of the ring of integers of a non-Archimedean local field using geometric and infinitesimal induction functors, which involve automorphism groups of torsion modules."
+                    "label": "Named Entity Recognition without Labelled Data",
+                    "url": "https://arxiv.org/abs/2004.14723",
+                    "text": "Named Entity Recognition (NER) performance often degrades rapidly when applied to target domains that differ from the texts observed during training."
                 },
                 {
                     "label": "Unrelated text (should not match)",
@@ -24,13 +27,14 @@
         {
             "id": "wiki",
             "label": "English Wikipedia",
-            "description": "English Wikipedia articles. Try pasting a sentence from an article.",
+            "description": "English Wikipedia articles. Try pasting a sentence from an article, or load one of the examples.",
             "index_dir": "/home/jullum/copyai_local/wiki/index(4,6)_wikipedia",
-            "doc_url_template": "https://en.wikipedia.org/?curid={doc_id}",
+            "doc_url_template": "",
             "samples": [
                 {
-                    "label": "Wikipedia passage (matches the corpus)",
-                    "text": "Jeanne Pruett (born Norma Jean Bowman; January 30, 1937) is an American country music singer and songwriter. She also has credits as a published author."
+                    "label": "Nova Scotia",
+                    "url": "https://en.wikipedia.org/wiki/Nova_Scotia",
+                    "text": "Nova Scotia is a province located in Eastern Canada. It is one of the three Maritime provinces and one of the four Atlantic provinces."
                 },
                 {
                     "label": "Unrelated text (should not match)",
@@ -44,10 +48,12 @@
             "description": "A large multilingual web-crawl corpus (HPLT). Try pasting text from a web page.",
             "index_dir": "/home/jullum/copyai_local/hplt/index(4,6)",
             "doc_url_template": "",
+            "url_map_path": "/home/jullum/copyai_local/hplt/urls.json.gz",
             "samples": [
                 {
-                    "label": "Web-page text (matches the corpus)",
-                    "text": "The terms and conditions specifying the actions permitted by the provider to users of our Services, including SMS and other services that may be introduced in the future."
+                    "label": "Travel diary \u2014 safari in Kenya",
+                    "url": "https://web.archive.org/web/20170416222030/https://thedreamingtraveller.com/2015/09/06/kenya/",
+                    "text": "We flew into Nairobi, as it was our starting point for our overland trip. Nairobi is hustling and bustling with people everywhere, a real high-rise city."
                 },
                 {
                     "label": "Unrelated text (should not match)",

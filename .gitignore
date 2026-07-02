@@ -19,3 +19,6 @@ dist/
 .coverage.*
 .mypy_cache/
 .ruff_cache/
+
+# Temporary artifacts (build logs, candidate dumps, server logs)
+tmp/

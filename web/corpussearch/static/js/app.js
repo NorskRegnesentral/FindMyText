@@ -18,6 +18,7 @@ const STAGE_LABELS = {
 let lastText = "";
 let lastCorpus = "";
 let highlightDoc = null;
+let highlightDocLabel = null;
 
 // Distinct colours for the per-cluster "all aligned passages" mode.
 const CLUSTER_COLORS = [
@@ -34,6 +35,15 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("detect-form").addEventListener("submit", onSubmit);
     document.getElementById("hl-btn").addEventListener("click", onHighlight);
 });
+
+function docLabel(item) {
+    if (item && item.title) return item.title;
+    const id = item ? item.doc_id : null;
+    if (id == null) return "";
+    // Some corpora (e.g. Wikipedia) expose only opaque internal ids; render
+    // them as a document reference rather than a bare, confusing number.
+    return /^\d+$/.test(String(id)) ? `document ${id}` : String(id);
+}
 
 function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
@@ -82,10 +92,22 @@ function buildCorpora() {
     const update = () => {
         const c = CONFIG.corpora.find((x) => x.id === select.value);
         desc.textContent = c ? c.description : "";
+        renderDatasetLink(c);
         buildSamples(c);
     };
     select.addEventListener("change", update);
     update();
+}
+
+function renderDatasetLink(corpus) {
+    const line = document.getElementById("dataset-line");
+    line.innerHTML = "";
+    if (!corpus || !corpus.dataset_url) return;
+    line.append(document.createTextNode("Want to search the corpus yourself? "));
+    const a = el("a", { href: corpus.dataset_url, target: "_blank", rel: "noopener" });
+    a.textContent = "Browse the dataset";
+    line.append(a);
+    line.append(document.createTextNode(" ↗"));
 }
 
 function buildSamples(corpus) {
@@ -94,17 +116,36 @@ function buildSamples(corpus) {
     const samples = (corpus && corpus.samples && corpus.samples.length)
         ? corpus.samples
         : (CONFIG.samples || []);
-    samples.forEach((s) => {
-        const b = el("button", { type: "button" });
-        b.textContent = s.label;
-        b.addEventListener("click", () => {
-            const ta = document.getElementById("text");
-            ta.value = s.text;
-            ta.dispatchEvent(new Event("input"));
-            ta.focus();
-        });
-        wrap.append(b);
+    if (!samples.length) return;
+
+    const select = el("select", { id: "sample-select", class: "sample-select" });
+    select.append(el("option", { value: "" }, "Load an example…"));
+    samples.forEach((s, i) => {
+        const opt = el("option", { value: String(i) });
+        opt.textContent = s.label;
+        select.append(opt);
     });
+    const source = el("a", {
+        id: "sample-source", class: "sample-source hidden",
+        target: "_blank", rel: "noopener",
+    });
+    source.textContent = "view source ↗";
+
+    select.addEventListener("change", () => {
+        if (select.value === "") { source.classList.add("hidden"); return; }
+        const s = samples[Number(select.value)];
+        const ta = document.getElementById("text");
+        ta.value = s.text;
+        ta.dispatchEvent(new Event("input"));
+        ta.focus();
+        if (s.url) {
+            source.href = s.url;
+            source.classList.remove("hidden");
+        } else {
+            source.classList.add("hidden");
+        }
+    });
+    wrap.append(select, source);
 }
 
 function setupPassword() {
@@ -265,12 +306,22 @@ function renderResult(res) {
             box.append(score);
             const doc = el("p", { class: "match-doc" });
             doc.append(document.createTextNode("Best match: "));
+            const label = docLabel(top);
             if (top.url) {
                 const a = el("a", { href: top.url, target: "_blank", rel: "noopener" });
-                a.textContent = top.doc_id;
+                a.textContent = label;
                 doc.append(a);
             } else {
-                doc.append(document.createTextNode(top.doc_id));
+                doc.append(document.createTextNode(label));
+            }
+            if (top.archive_url) {
+                doc.append(document.createTextNode(" · "));
+                const arc = el("a", {
+                    href: top.archive_url, target: "_blank", rel: "noopener",
+                    class: "archive-link",
+                });
+                arc.textContent = "archived copy";
+                doc.append(arc);
             }
             box.append(doc);
         } else {
@@ -283,7 +334,18 @@ function renderResult(res) {
             const ul = el("ul", { class: "ranking" });
             data.ranking.forEach((r) => {
                 const li = el("li", {});
-                li.append(el("span", { class: "rk-doc" }, r.doc_id));
+                const rkLabel = docLabel(r);
+                const url = r.url || r.archive_url;
+                if (url) {
+                    const a = el("a", {
+                        class: "rk-doc", href: url,
+                        target: "_blank", rel: "noopener",
+                    });
+                    a.textContent = rkLabel;
+                    li.append(a);
+                } else {
+                    li.append(el("span", { class: "rk-doc" }, rkLabel));
+                }
                 li.append(el("span", {}, String(r.score)));
                 ul.append(li);
             });
@@ -320,14 +382,17 @@ function renderHighlightControls(res) {
 
     const cc = res.results.connected_components && res.results.connected_components.top;
     const jac = res.results.jaccard && res.results.jaccard.top;
-    const doc = (cc && cc.doc_id) || (jac && jac.doc_id) || null;
+    const topMatch = cc || jac || null;
+    const doc = (topMatch && topMatch.doc_id) || null;
     if (!doc) {
         highlightDoc = null;
+        highlightDocLabel = null;
         wrap.classList.add("hidden");
         return;
     }
     highlightDoc = doc;
-    document.getElementById("highlight-doc-label").textContent = `“${doc}”`;
+    highlightDocLabel = (topMatch && (topMatch.title || (topMatch.doc_id != null ? docLabel(topMatch) : null))) || doc;
+    document.getElementById("highlight-doc-label").textContent = `“${highlightDocLabel}”`;
     wrap.classList.remove("hidden");
 }
 
@@ -437,6 +502,6 @@ function renderHighlightLayers(data) {
         return `${l.label}: ${l.coverage_pct}%${extra}`;
     });
     meta.textContent = parts.length
-        ? `Overlap with “${data.doc_id}” — ${parts.join(" · ")}`
-        : `No overlapping passages found in “${data.doc_id}” for the selected styles.`;
+        ? `Overlap with “${highlightDocLabel || data.doc_id}” — ${parts.join(" · ")}`
+        : `No overlapping passages found in “${highlightDocLabel || data.doc_id}” for the selected styles.`;
 }

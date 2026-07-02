@@ -300,9 +300,12 @@ def run_highlight(
 def _format_ranking(corpus: CorpusConfig, ranking, C: float, limit: int = 5) -> dict:
     items = []
     for doc_id, score in ranking[:limit]:
+        meta = corpus.doc_meta(doc_id)
         items.append({
             "doc_id": doc_id,
-            "url": corpus.doc_url(doc_id),
+            "title": meta["title"],
+            "url": meta["url"],
+            "archive_url": meta["archive_url"],
             "score": int(score),
             "score_normalized": round(score / C, 2) if C else None,
         })

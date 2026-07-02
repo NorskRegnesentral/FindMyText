@@ -1,0 +1,138 @@
+{
+  "arxiv": [
+    {
+      "label": "NLP — named-entity recognition without labelled data",
+      "text": "Named Entity Recognition (NER) performance often degrades rapidly when applied to target domains that differ from the texts observed during training. When in-domain labelled data is available, transfer learning techniques can be used to adapt existing NER models to the target domain. But what should one do when there is no hand-labelled data for the target domain? This paper presents a simple but powerful approach to learn NER models in the absence of labelled data through weak supervision. The approach relies on a broad spectrum of labelling functions to automatically annotate texts from the target domain. These annotations are then merged together using a hidden Markov model which captures the varying accuracies and confusions of the labelling functions. A sequence labelling model can finally be trained on the basis of this unified annotation. We evaluate the approach on two English datasets (CoNLL 2003 and news articles from Reuters and Bloomberg) and demonstrate an improvement of about 7 percentage points in entity-level $F_{1}$ scores compared to an out- of-domain neural NER model.",
+      "url": "https://arxiv.org/abs/2004.14723"
+    },
+    {
+      "label": "LLMs — training tips for the Transformer model",
+      "text": "This article describes our experiments in neural machine translation using the recent Tensor2Tensor framework and the Transformer sequence-to-sequence model (Vaswani et al., 2017). We examine some of the critical parameters that affect the final translation quality, memory usage, training stability and training time, concluding each experiment with a set of recommendations for fellow researchers. In addition to confirming the general mantra “more data and larger models”, we address scaling to multiple GPUs and provide practical tips for improved training regarding batch size, learning rate, warmup steps, maximum sentence length and checkpoint averaging. We hope that our observations will allow others to get better results given their particular hardware and data constraints.",
+      "url": "https://arxiv.org/abs/1804.00247"
+    },
+    {
+      "label": "LLMs — Transformer vs. recurrent networks for translation",
+      "text": "Recently, neural machine translation (NMT) has been extended to multilinguality, that is to handle more than one translation direction with a single system. Multilingual NMT showed competitive performance against pure bilingual systems. Notably, in low-resource settings, it proved to work effectively and efficiently, thanks to shared representation space that is forced across languages and induces a sort of transfer-learning. Furthermore, multilingual NMT enables so-called zero-shot inference across language pairs never seen at training time. Despite the increasing interest in this framework, an in-depth analysis of what a multilingual NMT model is capable of and what it is not is still missing. Motivated by this, our work (i) provides a quantitative and comparative analysis of the translations produced by bilingual, multilingual and zero-shot systems; (ii) investigates the translation quality of two of the currently dominant neural architectures in MT, which are the Recurrent and the Transformer ones; and (iii) quantitatively explores how the closeness between languages influences the zero-shot translation. Our analysis leverages multiple professional post-edits of automatic translations by several different systems and focuses both on automatic standard metrics (BLEU and TER) and on widely used error categories, which are lexical, morphology, and word order errors.",
+      "url": "https://arxiv.org/abs/1806.06957"
+    },
+    {
+      "label": "Explainable AI — an interpretable-by-design classifier",
+      "text": "This work presents a new classifier that is specifically designed to be fully interpretable. This technique determines the probability of a class outcome, based directly on probability assignments measured from the training data. The accuracy of the predicted probability can be improved by measuring more probability estimates from the training data to create a series expansion that refines the predicted probability. We use this work to classify four standard datasets and achieve accuracies comparable to that of Random Forests. Because this technique is interpretable by design, it is capable of determining the combinations of features that contribute to a particular classification probability for individual cases as well as the weightings of each of combination of features.",
+      "url": "https://arxiv.org/abs/1710.10301"
+    },
+    {
+      "label": "Explainable AI — interpretable word-sense disambiguation",
+      "text": "Interpretability of a predictive model is a powerful feature that gains the trust of users in the correctness of the predictions. In word sense disambiguation (WSD), knowledge-based systems tend to be much more interpretable than knowledge-free counterparts as they rely on the wealth of manually-encoded elements representing word senses, such as hypernyms, usage examples, and images. We present a WSD system that bridges the gap between these two so far disconnected groups of methods. Namely, our system, providing access to several state-of-the-art WSD models, aims to be interpretable as a knowledge-based system while it remains completely unsupervised and knowledge- free. The presented tool features a Web interface for all-word disambiguation of texts that makes the sense predictions human readable by providing interpretable word sense inventories, sense representations, and disambiguation results. We provide a public API, enabling seamless integration.",
+      "url": "https://arxiv.org/abs/1707.06878"
+    },
+    {
+      "label": "Mathematics — Leibniz-algebra deformations of a Lie algebra",
+      "text": "In this note we compute Leibniz algebra deformations of the $3$-dimensional nilpotent Lie algebra $\\mathfrak{n}_{3}$ and compare it with its Lie deformations. It turns out that there are $3$ extra Leibniz deformations. We also describe the versal Leibniz deformation of $\\mathfrak{n}_{3}$ with the versal base.",
+      "url": "https://arxiv.org/abs/0802.1263"
+    },
+    {
+      "label": "Mathematics — a conjecture of Katok on Anosov diffeomorphisms",
+      "text": "A. Katok has conjectured that a $C^{1+\\alpha}$ map $g\\colon M^{n}\\rightarrow M^{n},n\\geq 2$, which is Hölder conjugated to an Anosov diffeomorphism is also an Anosov diffeomorphism. Using Pesin stable manifold theorem and Liao spectrum theorem, we show that under the hypothesis of such a conjecture, $g$ is an Axiom A diffeomorphism having no cycles. Particularly, if $g$ is Hölder conjugated to a hyperbolic toral automorphism, then $g$ is Anosov.",
+      "url": "https://arxiv.org/abs/0806.1598"
+    },
+    {
+      "label": "Physics — binary black-hole mergers and final spin",
+      "text": "The spin of the final black hole in the coalescence of nonspinning black holes is determined by the “residual” orbital angular momentum of the binary. This residual momentum consists of the orbital angular momentum that the binary is not able to shed in the process of merging. We study the angular momentum radiated, the spin of the final black hole and the gravitational bursts in a sequence of equal mass encounters. The initial orbital configurations range from those producing an almost direct infall to others leading to numerous orbits before infall, with multiple bursts of radiation while merging. Our sequence consists of orbits with fixed impact parameter. What varies is the initial linear, or equivalently angular, momentum of the black holes. For this sequence, the final black hole of mass $M_{h}$ gets a maximum spin parameter $a/M_{h}\\approx 0.823\\,$, with this maximum occurring for initial orbital angular momentum $L/M^{2}_{h}\\approx 1.176\\,$.",
+      "url": "https://arxiv.org/abs/0802.2520"
+    },
+    {
+      "label": "Physics — quantifying quantum entanglement",
+      "text": "Since the density matrix possesses the essential property of linear decomposition and linear superposition of quantum states, it only can be used to describe quantum states. So the entanglement contained in a density matrix is just the quantum entanglement. This means a bipartite state described by a density matrix contains quantum entanglement, unless the density matrix can be expressed by a direct product of the subsystem’s density matrices $\\rho_{AB}=\\rho_{A}\\otimes\\rho_{B}$. Thus the quantum entanglement degree between A and B systems can be determined by the expanding coefficients according to A or B system’s orthonormal bases of the density matrix $\\rho_{AB}$.",
+      "url": "https://arxiv.org/abs/0710.4061"
+    },
+    {
+      "label": "Interdisciplinary — a Markovian language model of DNA",
+      "text": "This work proposes a markovian memoryless model for the DNA that simplifies enormously the complexity of it. We encode nucleotide sequences into symbolic sequences, called words, from which we establish meaningful length of words and group of words that share symbolic similarities. Interpreting a node to represent a group of similar words and edges to represent their functional connectivity allows us to construct a network of the grammatical rules governing the appearance of group of words in the DNA. Our model allows to predict the transition between group of words in the DNA with unprecedented accuracy, and to easily calculate many informational quantities to better characterize the DNA. In addition, we reduce the DNA of known bacteria to a network of only tens of nodes, show how our model can be used to detect similar (or dissimilar) genes in different organisms, and which sequences of symbols are responsible for the most of the information content of the DNA. Therefore, the DNA can indeed be treated as a language, a markovian language, where a ”word” is an element of a group, and its grammar represents the rules behind the probability of transitions between any two groups.",
+      "url": "https://arxiv.org/abs/1510.02375"
+    }
+  ],
+  "hplt": [
+    {
+      "label": "Health journalism — Morecambe Bay report",
+      "text": "Ideas have consequences. Bad ideas have deadly consequences. Today’s report on the deaths more than a dozen babies and mothers at a UK hospital is a catalog of horrors. According to The Guardian: Frontline staff were responsible for “inappropriate and unsafe care” and the response to potentially fatal incidents by the trust hierarchy was “grossly deficient, with repeated failure to investigate properly and learn lessons”. Kirkup [the author of the report] said this “lethal mix” of factors had led to 20 instances of significant or major failures of care at Furness general hospital, associated with three maternal deaths and the deaths of 16 babies at or shortly after birth. “Different clinical care in these cases would have been expected to prevent the outcome in one maternal death and the deaths of 11 babies. In 2008 alone there were 5 deaths: A baby was damaged due to a shortage of oxygen during labour, while another died from an unrecognised infection. “All showed evidence of the same problems of poor clinical competence, insufficient recognition of risk, inappropriate pursuit of normal childbirth and failures of team-working,” Kirkup said. (my emphasis) And most damning of all: The midwives at Furness general were so cavalier they became known as “the musketeers”.",
+      "url": "https://web.archive.org/web/20170506172930/http://www.skepticalob.com/2015/03/maternity-horror-at-morecambe-bay-is-the-inevitable-result-of-the-radicalization-of-midwifery.html"
+    },
+    {
+      "label": "Bike maintenance — ZIPP 217 hub",
+      "text": "ZIPP 217 Hub Maintenance - Hey, this is easy! Normal maintenance of the ZIPP 217 cassette hub requires regular lubrication of the cassette bushings with ZIPP LUBE. One tube of ZIPP Lube is supplied with each new hub with additional tubes available directly from ZIPP Speed Weaponry or your ZIPP dealer. CAUTION: USE ONLY THE RECOMMENDED LUBRICANTS. OTHER BRANDS AND TYPES WILL CAUSE STICKING OF THE CASSETTE MECHANISM AND MAY RESULT IN NON-WARRANTY DAMAGE TO THE CASSETTE MECHANISM. - Lubricate the hub every 300-500 miles. The cassette body is floating on a thin film of lubricant that must be replenished. Lubrication intervals will vary with riding conditions and may need to be done more frequently. Individual riders will determine a lubrication cycle which works best for them. Need for lubrication may be indicated by a change in the sound of the cassette mechanism or in extreme cases a loose cassette body which may rattle on rough road surfaces. - Always lubricate your ZIPP 217 cassette hub after a wet ride. - To Lubricate: On the back side of the drive side hub flange you will find a lube port. This is indicated with a laser etched \"LUBE\" and arrow pointing to the port. Carefully remove the black lube port plug with finger tips or a tweezers. The port plug is a two part item. The female part is supposed to remain in the hub flange, but if both parts come out don't panic.",
+      "url": "https://web.archive.org/web/20170504220326/http://zipp.com/support/maintenance/model217.php"
+    },
+    {
+      "label": "Mining & finance — gold exploration",
+      "text": "- Pending drill results from Los Chinos project in Sonora Mexico could deliver a virgin, economic gold discovery. - Significant Golden Triangle portfolio in British Columbia could form the basis for a value creating spin-out. - Dominant land position near Alaska’s Pogo mine provides additional optionality. Gold producers are going out of business, continuously depleting their reserves to sustain production levels. Made worse, in the past five year gold mining bear market, there has been a dearth of exploration activity and new discoveries globally. According to a recent Goldcorp presentation gold reserves among the major producers have declined ~15% during the last three years. Moreover, production is set to decline further over the coming years as the majors exhaust mines which were discovered decades ago: This creates a situation in which the major producers have no choice but to explore multiple strategies in order to find new sources of economic gold to pull out of the ground. Mining gold and finding gold are two very different businesses. Majors tend to be good at pulling gold out of the ground, an engineering and operational activity. Good exploration is part art and part science and requires freedom to make mistakes. For decades, major producers have outsourced high-risk exploration to small explorers, helping fund them and ultimately acquiring their advanced assets.",
+      "url": "https://web.archive.org/web/20170504190047/https://ceo.ca/@Goldfinger/millrock-resources-tsx-v-mro-leveraged-upside-to-the-future-of-gold-mining"
+    },
+    {
+      "label": "Law blog — pedestrian safety",
+      "text": "New Bedford MA during the fall season is always a beautiful sight and a welcoming change from the oppressive summer heat. Unfortunately, the fall season brings about another major change: an increase in pedestrian and motor vehicle accidents. At the Law Office of Bardsley and Gray, our personal injury attorneys want New Bedford residents to know that both drivers and pedestrians should be more aware of their surroundings when traveling. What drivers and pedestrians should be aware of this season Drivers are required by state law to stop for all pedestrians who have entered crosswalks. Whenever you enter a city, town or village, be aware of the crosswalk signs in the middle of the road or on the side of the roads. Pedestrians need to obey traffic signals at all intersections; they exist in order to provide safe passage from one side of the street to the other. Drivers are allowed to proceed forward once all pedestrians have left the crosswalk. It’s important to look to the left or the right before passing through the crosswalk section in case other pedestrians are running to cross the street.",
+      "url": "https://web.archive.org/web/20170503203918/http://www.bardsleyandgray.com/blog/page/2/"
+    },
+    {
+      "label": "Travel diary — safari in Kenya",
+      "text": "Kenya Maasai Mara It was amazing to look out the window flying from Uganda to Kenya as the difference in scenery changed so dramatically in just a 1 hour flight. It went from flat red dirt, to lushes greenery, hills, mass populated areas where all you can see for miles is housing and then back to vast nothingness. For countries next to each other their landscape is so very different. We flew into Nairobi, as it was our starting point for our overland trip with Acacia Africa. Nairobi is hustling and bustling with people everywhere, a real high-rise city, not what we were used to coming from Entebbe. The city itself has a small city centre but large outskirts. It took us almost an hour to get to our hotel because of the traffic jams but we soon settled in and met the rest of our group. Our tour guide Pete is from Kenya and was very excited to get to our first destination, the Maasai Mara National Reserve. We were very lucky with our starting point for the trip and were told it was almost guaranteed that we would see the Big 5 over the next few days as all the animals from the great migration had already moved into the area. We set off in the morning in 2 mini buses for a 3-day game drive in Maasai Mara National Reserve. Our group consisted of 3 NZ’s and 3 Aussies, how ironic! The rest of us were from USA, Bahran, South Korea and Italy.",
+      "url": "https://web.archive.org/web/20170416222030/https://thedreamingtraveller.com/2015/09/06/kenya/"
+    },
+    {
+      "label": "Library tech — an unconference write-up",
+      "text": "Introduction Earlier in August I had the pleasure of helping organize and run a tech-focused library unconference, Pi and Mash, at Senate House Library at the University of London. The other organizers were Simon Barron of University of London, and Ka-Ming Pang of St Georges, University of London. They were both brilliant to work with and brought enormous energy, fresh perspectives, and thoughtfulness and professionalism to organizing the day. This event was a long time in gestation, from the initial agreement back in January that we’d work together to the day itself in early August. I had previously hosted Library Camp London at Senate House in March 2013, and following that event I’d thought about running something tech-focused as a Mashed Library event. Ultimately for me Pi and Mash was that event, though full credit is to Ka-Ming for suggesting we do it, kicking off the initial discussion on Twitter to gauge interest, and starting to organize us. As an organizer it’s always encouraging to receive good feedback, and participants said some lovely things about Pi and Mash during and at the end of the day.",
+      "url": "https://web.archive.org/web/20170505032634/https://www.preater.com/2014/08/"
+    }
+  ],
+  "wiki": [
+    {
+      "label": "Nova Scotia",
+      "text": "Nova Scotia is a province located in Eastern Canada fronting the Atlantic Ocean. One of the Maritime Provinces, Nova Scotia's geography is complex, despite its relatively small size in comparison to other Canadian provinces. Physical geography The mainland portion of the Nova Scotia peninsula is attached to North America through the Isthmus of Chignecto. Various offshore islands, the largest of which is Cape Breton Island, form the bulk of the eastern part of the province. The geological history of the province spans more than 1.2 billion years.",
+      "url": "https://en.wikipedia.org/wiki/Nova_Scotia"
+    },
+    {
+      "label": "Virgin Atlantic",
+      "text": "Virgin Atlantic, a trading name of Virgin Atlantic Airways Limited and Virgin Atlantic International Limited, is a British airline with its head office in Crawley, England. The airline was established in 1984 as British Atlantic Airways, and was originally planned by its co-founders Randolph Fields and Alan Hellary to fly between London and the Falkland Islands. Soon after changing the name to Virgin Atlantic Airways, Fields sold his shares in the company after disagreements with Richard Branson over the management of the company. The maiden flight from London–Gatwick to Newark took place on 22 June 1984.",
+      "url": "https://en.wikipedia.org/wiki/Virgin_Atlantic"
+    },
+    {
+      "label": "Dogma (film)",
+      "text": "Dogma is a 1999 American fantasy comedy film written and directed by Kevin Smith, who also stars with Ben Affleck, Matt Damon, George Carlin, Linda Fiorentino, Janeane Garofalo, Chris Rock, Jason Lee, Salma Hayek, Bud Cort, Alan Rickman, Alanis Morissette and Jason Mewes. It is the fourth film in Smith's View Askewniverse series. Brian O'Halloran and Jeff Anderson, stars of the first Askewniverse film Clerks, appear in the film, as do Smith regulars Scott Mosier, Dwight Ewell, Walt Flanagan, and Bryan Johnson.",
+      "url": "https://en.wikipedia.org/wiki/Dogma_(film)"
+    },
+    {
+      "label": "Aston Martin DB4 GT Zagato",
+      "text": "The Aston Martin DB4 GT Zagato is a grand tourer sports car designed by Zagato and produced between 1960 and 1963. Introduced in October 1960 at the London Motor Show, it was effectively a DB4 GT, lightened and improved by the Zagato factory in Italy, by Ercole Spada. Initially, the factory planned to produce 25 cars, but demand was not as strong as expected and production was reduced to 20. The popularity of the original DB4 GT Zagato resulted in two subsequent waves of cars based on DB4s being rendered into \"Zagatos\" through the cooperation of Aston Martin and the Zagato works in Italy. They are known as \"Sanction II\" and \"Sanction III\" cars.",
+      "url": "https://en.wikipedia.org/wiki/Aston_Martin_DB4_GT_Zagato"
+    },
+    {
+      "label": "NASA X-43",
+      "text": "The NASA X-43 was an experimental unmanned hypersonic aircraft with multiple planned scale variations meant to test various aspects of hypersonic flight. It was part of the X-plane series and specifically of NASA's Hyper-X program developed in the late 1990s. It set several airspeed records for jet aircraft. The X-43 is the fastest jet-powered aircraft on record at approximately Mach 9.6. A winged booster rocket with the X-43 placed on top, called a \"stack\", was drop launched from a Boeing B-52 Stratofortress. After the booster rocket (a modified first stage of the Pegasus rocket) brought the stack to the target speed and altitude, it was discarded, and the X-43 flew free using its own engine, a scramjet.",
+      "url": "https://en.wikipedia.org/wiki/NASA_X-43"
+    },
+    {
+      "label": "Podcast",
+      "text": "Podcasting refers to the creation and regular distribution of podcasts through the Internet. Podcasts, which can include audio, video, PDF, and ePub files, are subscribed to and downloaded through web syndication or streamed online to a computer or mobile device. Subscribers are then able to view, listen to, and transfer the episodes to a variety of media players, or podcatchers. Though similar to radio, there is no larger regulatory group or oversight with podcasts. Instead, podcasts simply consist of the creators and their listeners. As the technology gained popularity in the early 2000s, the uses of podcasting grew from simply the delivery of content to also creative and responsive purposes.",
+      "url": "https://en.wikipedia.org/wiki/Podcast"
+    },
+    {
+      "label": "Transcranial direct-current stimulation",
+      "text": "Transcranial direct current stimulation (tDCS) is a form of neuromodulation that uses constant, low direct current delivered via electrodes on the head. It was originally developed to help patients with brain injuries or neuropsychiatric conditions such as major depressive disorder. It can be contrasted with cranial electrotherapy stimulation, which generally uses alternating current the same way, as well as transcranial magnetic stimulation. Research shows increasing evidence for tDCS as a treatment for depression. There is mixed evidence about whether tDCS is useful for cognitive enhancement in healthy people.",
+      "url": "https://en.wikipedia.org/wiki/Transcranial_direct-current_stimulation"
+    },
+    {
+      "label": "Shuanghedong Cave Network",
+      "text": "Shuanghedong, is the longest cave in China, in Asia, and the 3rd longest in the world in May 2023. It is located near the town of Wenquan in Suiyang County, Zunyi, Guizhou Province. The cave contains numerous waterfalls, and at least three underground rivers, some of which contain cave shrimp, and fish weighing several pounds. Tadpoles, frogs, salamanders, insects, spiders, bats, leeches, blind fish, and mushrooms have also been found. Since 1987, at least 20 expeditions from France and Japan have explored the cave. In May 2023 the network reaches 400 kilometers of development.",
+      "url": "https://en.wikipedia.org/wiki/Shuanghedong_Cave_Network"
+    },
+    {
+      "label": "Chaetopterus",
+      "text": "Chaetopterus or the parchment worm or parchment tube worm is a genus of marine polychaete worm that lives in a tube it constructs in sediments or attaches to a rocky or coral reef substrate. The common name arises from the parchment-like appearance of the tubes that house these worms. Parchment tube worms are filter feeders and spend their adult lives in their tubes, unless the tube is damaged or destroyed. They are planktonic in their juvenile forms, as is typical for polychaete annelids. Species include the recently discovered deep water Chaetopterus pugaporcinus and the well-studied Chaetopterus variopedatus.",
+      "url": "https://en.wikipedia.org/wiki/Chaetopterus"
+    },
+    {
+      "label": "Jeanne Pruett",
+      "text": "Jeanne Pruett (born Norma Jean Bowman; January 30, 1937) is an American country music singer and songwriter. She also has credits as a published author. Pruett had several major hits as a music artist, but became best-known for 1973's \"Satin Sheets\". The song topped the country music charts and helped her secure a membership in the Grand Ole Opry cast. Pruett was raised near Pell City, Alabama, and grew up with a large family. She performed with her family from an early age and learned several musical instruments. She married guitarist Jack Pruett before turning 20 years old. Soon after, the couple moved to Nashville, Tennessee, where he was hired to play guitar for country artist Marty Robbins.",
+      "url": "https://en.wikipedia.org/wiki/Jeanne_Pruett"
+    }
+  ]
+}
