@@ -26,6 +26,9 @@ class SampleText:
     text: str
     # Optional source link so the user can confirm where the sample came from.
     url: Optional[str] = None
+    # Optional archived snapshot (e.g. Wayback Machine) shown alongside ``url``
+    # when the live page may have changed or gone offline.
+    archive_url: Optional[str] = None
 
 
 @dataclass
@@ -240,7 +243,8 @@ _WIKI_SAMPLES: list[SampleText] = [
 _HPLT_SAMPLES: list[SampleText] = [
     SampleText(
         label="Health journalism — Morecambe Bay report",
-        url="https://web.archive.org/web/20170506172930/http://www.skepticalob.com/2015/03/maternity-horror-at-morecambe-bay-is-the-inevitable-result-of-the-radicalization-of-midwifery.html",
+        url="http://www.skepticalob.com/2015/03/maternity-horror-at-morecambe-bay-is-the-inevitable-result-of-the-radicalization-of-midwifery.html",
+        archive_url="https://web.archive.org/web/20170506172930/http://www.skepticalob.com/2015/03/maternity-horror-at-morecambe-bay-is-the-inevitable-result-of-the-radicalization-of-midwifery.html",
         text=(
             "Ideas have consequences. Bad ideas have deadly consequences. Today\u2019s "
             "report on the deaths more than a dozen babies and mothers at a UK "
@@ -256,7 +260,8 @@ _HPLT_SAMPLES: list[SampleText] = [
     ),
     SampleText(
         label="Bike maintenance — ZIPP 217 hub",
-        url="https://web.archive.org/web/20170504220326/http://zipp.com/support/maintenance/model217.php",
+        url="http://zipp.com/support/maintenance/model217.php",
+        archive_url="https://web.archive.org/web/20170504220326/http://zipp.com/support/maintenance/model217.php",
         text=(
             "ZIPP 217 Hub Maintenance - Hey, this is easy! Normal maintenance of "
             "the ZIPP 217 cassette hub requires regular lubrication of the cassette "
@@ -362,8 +367,9 @@ def _default_config() -> AppConfig:
         _disk_corpus(
             "hplt",
             "HPLT web crawl",
-            "A large multilingual web-crawl corpus (HPLT). Examples link to a "
-            "web.archive.org snapshot, as many original pages are long gone.",
+            "A large multilingual web-crawl corpus (HPLT). Examples link to the "
+            "original page and a web.archive.org snapshot, as many originals have "
+            "since changed or gone offline.",
             "hplt/index(4,6)",
             "",  # HPLT ids are content hashes; urls come from the side-car map.
             _CURATED.get("hplt", _HPLT_SAMPLES),

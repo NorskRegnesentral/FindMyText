@@ -130,9 +130,18 @@ function buildSamples(corpus) {
         target: "_blank", rel: "noopener",
     });
     source.textContent = "view source ↗";
+    const archive = el("a", {
+        id: "sample-archive", class: "sample-source hidden",
+        target: "_blank", rel: "noopener",
+    });
+    archive.textContent = "archived ↗";
 
     select.addEventListener("change", () => {
-        if (select.value === "") { source.classList.add("hidden"); return; }
+        if (select.value === "") {
+            source.classList.add("hidden");
+            archive.classList.add("hidden");
+            return;
+        }
         const s = samples[Number(select.value)];
         const ta = document.getElementById("text");
         ta.value = s.text;
@@ -144,8 +153,14 @@ function buildSamples(corpus) {
         } else {
             source.classList.add("hidden");
         }
+        if (s.archive_url) {
+            archive.href = s.archive_url;
+            archive.classList.remove("hidden");
+        } else {
+            archive.classList.add("hidden");
+        }
     });
-    wrap.append(select, source);
+    wrap.append(select, source, archive);
 }
 
 function setupPassword() {
