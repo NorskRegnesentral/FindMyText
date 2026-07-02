@@ -36,8 +36,8 @@
             "description": "English Wikipedia articles. Try pasting a sentence from an article, or load one of the examples.",
             "index_dir": "wiki/index(4,6)_wikipedia",
             "doc_url_template": "",
-            "title_map": "",
-            "url_map": "",
+            "title_map": "wiki/titles.json.gz",
+            "url_map": "wiki/urls.json.gz",
             "dataset_url": ""
         },
         {
