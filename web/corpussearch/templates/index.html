@@ -65,15 +65,6 @@
                 </div>
             </div>
 
-            <div class="field">
-                <label class="algo">
-                    <input type="checkbox" id="highlight-toggle" name="highlight" checked />
-                    <span><strong>Highlight matching passages</strong> — show which parts of
-                        your text overlap the best match. Turn off for scoring only (uses the
-                        core detection functions without position tracking).</span>
-                </label>
-            </div>
-
             <div class="field hidden" id="password-field">
                 <label for="password">Access password</label>
                 <input type="password" id="password" name="password" autocomplete="off" />
@@ -103,6 +94,35 @@
             <div id="summary"></div>
             <div id="highlight-wrap" class="hidden">
                 <h3>Matching passages in your text</h3>
+                <p class="hint" id="highlight-intro">
+                    Highlight which parts of your text overlap
+                    <span id="highlight-doc-label">the best match</span>. Pick one or more
+                    styles — they can be shown together.
+                </p>
+                <div class="hl-modes" id="hl-modes">
+                    <label class="hl-mode">
+                        <input type="checkbox" name="hl-mode" value="cc_largest" checked />
+                        <span class="hl-swatch hl-swatch-cc-largest"></span>
+                        <span><strong>Largest aligned passage</strong> — position-aware method's
+                            top cluster (what its score rewards).</span>
+                    </label>
+                    <label class="hl-mode">
+                        <input type="checkbox" name="hl-mode" value="cc_all" />
+                        <span class="hl-swatch hl-swatch-cc-all"></span>
+                        <span><strong>All aligned passages</strong> — every position-aware cluster,
+                            one colour each (catches reordered passages).</span>
+                    </label>
+                    <label class="hl-mode">
+                        <input type="checkbox" name="hl-mode" value="jaccard" />
+                        <span class="hl-swatch hl-swatch-jaccard"></span>
+                        <span><strong>All shared fingerprints</strong> — Jaccard baseline
+                            (all overlap, any order).</span>
+                    </label>
+                </div>
+                <div class="actions">
+                    <button type="button" id="hl-btn" class="btn">Show highlighting</button>
+                    <span class="error" id="hl-error"></span>
+                </div>
                 <p class="hint" id="highlight-meta"></p>
                 <div class="doc-text" id="highlight"></div>
             </div>

@@ -363,6 +363,68 @@ textarea {
     border-radius: 3px;
 }
 
+/* On-demand highlight controls */
+.hl-modes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 10px 0 12px;
+}
+
+.hl-mode {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: .9rem;
+    cursor: pointer;
+}
+
+.hl-mode input {
+    margin-top: 3px;
+}
+
+.hl-swatch {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+}
+
+.hl-swatch-cc-largest {
+    background: var(--mark-strong);
+}
+
+.hl-swatch-jaccard {
+    background: #fdf3b5;
+}
+
+.hl-swatch-cc-all {
+    background: linear-gradient(90deg, #e6550d 0 33%, #3182bd 33% 66%, #31a354 66% 100%);
+    border: none;
+}
+
+/* Overlay highlight channels (can combine on the same run of text) */
+.doc-text mark.hl-bg-jaccard {
+    background: #fdf3b5;
+}
+
+.doc-text mark.hl-bg-cc-largest {
+    background: var(--mark-strong);
+}
+
+.doc-text mark.hl-underline {
+    border-bottom: 3px solid transparent;
+    border-radius: 2px;
+    padding-bottom: 0;
+}
+
+.doc-text mark.hl-underline:not(.hl-bg-jaccard):not(.hl-bg-cc-largest) {
+    background: transparent;
+}
+
+
 .foot {
     text-align: center;
     color: var(--muted);

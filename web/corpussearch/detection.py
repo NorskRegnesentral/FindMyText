@@ -54,14 +54,20 @@ def _spans_from_positions(
             continue
         end_tok = min(p + length - 1, ntok - 1)
         raw.append((token_spans[p][0], token_spans[end_tok][1]))
-    raw.sort()
+    return _merge_spans(raw)
+
+
+def _merge_spans(spans) -> list[list[int]]:
+    """Merge overlapping/touching ``(start, end)`` character spans."""
+    ordered = sorted([int(s), int(e)] for s, e in spans)
     merged: list[list[int]] = []
-    for s, e in raw:
+    for s, e in ordered:
         if merged and s <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], e)
         else:
             merged.append([s, e])
     return merged
+
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +135,11 @@ def run_detection(
     corpus: CorpusConfig,
     text: str,
     algorithms: list[str],
-    highlight: bool = True,
 ) -> Iterator[dict]:
-    """Generator yielding progress events and a final result event.
+    """Generator yielding progress events and a final scoring result event.
+
+    Scoring only — no position/highlight work is done here. Highlighting is a
+    separate, on-demand step (see :func:`run_highlight`).
 
     Event shapes::
 
@@ -166,23 +174,13 @@ def run_detection(
         yield {"type": "error", "message": f"Could not load corpus: {exc}"}
         return
 
-    # The k-gram length is a property of the index the winnower was built with,
-    # so read it from the loaded index rather than trusting the corpus config.
-    length = detector.index.winnower.length
     winnower = detector.index.winnower
 
-    # 2. Tokenise the query. With highlighting on we need character offsets
-    #    (winnower.tokenize_with_offsets) to turn the core's matched query
-    #    positions into highlight spans. With highlighting off we use only the
-    #    plain core tokenizer (no position tracking). Either way this lets us
-    #    bail out early on text that produces no tokens.
+    # 2. Tokenise the query with the plain core tokenizer (no position tracking)
+    #    purely to report a fingerprint count and to bail out early on text that
+    #    produces no tokens.
     yield progress("fingerprinting", 35)
-    if highlight:
-        query_token_spans = winnower.tokenize_with_offsets(text)
-        n_query_tokens = len(query_token_spans)
-    else:
-        query_token_spans = None
-        n_query_tokens = len(winnower.tokenize(text))
+    n_query_tokens = len(winnower.tokenize(text))
     if n_query_tokens == 0:
         yield {"type": "result", **_empty_result(corpus, text, algorithms)}
         return
@@ -191,20 +189,11 @@ def run_detection(
     #    the core detector).
     yield progress("scoring", 70)
     results: dict[str, dict] = {}
-    highlight_data = None
 
     if "jaccard" in algorithms:
         scores = detector.find_matches_jaccard(text, score="count")
         ranking = _ranking_from_scores(scores)
         results["jaccard"] = _format_ranking(corpus, ranking, params.normalizing_constant)
-        if highlight and query_token_spans is not None and ranking and ranking[0][1] > 0 and highlight_data is None:
-            top_doc = ranking[0][0]
-            positions = detector.get_match_highlight_positions(
-                text, top_doc, method="jaccard"
-            )
-            highlight_data = _make_highlight(
-                "jaccard", top_doc, positions, query_token_spans, length, text
-            )
 
     if "connected_components" in algorithms:
         scores = detector.find_matches_clustering(text, cparams, score="count")
@@ -212,17 +201,6 @@ def run_detection(
         results["connected_components"] = _format_ranking(
             corpus, ranking, params.normalizing_constant
         )
-        # The clustering method is our headline method: prefer its highlight
-        # when it is among the selected algorithms and it found a match.
-        if highlight and query_token_spans is not None and ranking and ranking[0][1] > 0:
-            top_doc = ranking[0][0]
-            positions = detector.get_match_highlight_positions(
-                text, top_doc, cparams, method="clustering"
-            )
-            highlight_data = _make_highlight(
-                "connected_components", top_doc, positions,
-                query_token_spans, length, text,
-            )
 
     yield progress("done", 100)
     yield {
@@ -233,8 +211,89 @@ def run_detection(
         "query_fingerprints": n_query_tokens,
         "algorithms": {k: ALGORITHMS[k] for k in algorithms if k in ALGORITHMS},
         "results": results,
-        "highlight": highlight_data,
         "elapsed": round(time.time() - start, 1),
+    }
+
+
+# ---------------------------------------------------------------------------
+# On-demand highlighting (phase 2): compute highlight spans for a single
+# already-scored document, in one or more highlight modes that can be overlaid.
+# ---------------------------------------------------------------------------
+HIGHLIGHT_MODES = {
+    "jaccard": {
+        "label": "Shared fingerprints (Jaccard) — all overlapping passages",
+        "method": "jaccard",
+        "which": "largest",
+    },
+    "cc_largest": {
+        "label": "Position-aware — largest aligned passage",
+        "method": "clustering",
+        "which": "largest",
+    },
+    "cc_all": {
+        "label": "Position-aware — all aligned passages",
+        "method": "clustering",
+        "which": "all",
+    },
+}
+
+
+def run_highlight(
+    manager: IndexManager,
+    cfg: AppConfig,
+    corpus: CorpusConfig,
+    text: str,
+    doc_id: str,
+    modes: list[str],
+) -> dict:
+    """Compute highlight spans for one matched document in the requested modes.
+
+    Returns a dict with a ``layers`` list; each layer corresponds to one
+    requested mode and carries its clusters (one entry per highlighted group,
+    each with merged character ``spans``) plus coverage stats. Layers are meant
+    to be overlaid in the browser.
+    """
+    params = cfg.params
+    cparams = _clustering_params(params)
+    detector, _ = manager.get(corpus, params)
+    winnower = detector.index.winnower
+    length = winnower.length
+
+    # Character offsets for the query tokens (the tool-specific tokenizer). This
+    # is what lets us turn the core's matched query token positions into spans.
+    token_spans = winnower.tokenize_with_offsets(text)
+
+    layers = []
+    for mode in modes:
+        spec = HIGHLIGHT_MODES.get(mode)
+        if spec is None:
+            continue
+        cp = cparams if spec["method"] == "clustering" else None
+        groups = detector.get_match_highlight_clusters(
+            text, doc_id, cp, method=spec["method"], which=spec["which"]
+        )
+        clusters = []
+        all_spans: list[list[int]] = []
+        for positions in groups:
+            spans = _spans_from_positions(positions, token_spans, length)
+            if spans:
+                clusters.append({"spans": spans})
+                all_spans.extend(spans)
+        union = _merge_spans(all_spans)
+        matched = sum(e - s for s, e in union)
+        layers.append({
+            "mode": mode,
+            "label": spec["label"],
+            "clusters": clusters,
+            "matched_chars": matched,
+            "coverage_pct": round(100 * matched / len(text), 1) if text else 0.0,
+        })
+
+    return {
+        "doc_id": doc_id,
+        "corpus": corpus.id,
+        "query_length": len(text),
+        "layers": layers,
     }
 
 
@@ -251,18 +310,6 @@ def _format_ranking(corpus: CorpusConfig, ranking, C: float, limit: int = 5) -> 
     return {"top": top, "ranking": items}
 
 
-def _make_highlight(algorithm, doc_id, qpositions, token_spans, length, text) -> dict:
-    spans = _spans_from_positions(qpositions, token_spans, length)
-    matched = sum(e - s for s, e in spans)
-    return {
-        "algorithm": algorithm,
-        "doc_id": doc_id,
-        "spans": spans,
-        "matched_chars": matched,
-        "coverage_pct": round(100 * matched / len(text), 1) if text else 0.0,
-    }
-
-
 def _empty_result(corpus: CorpusConfig, text: str, algorithms: list[str]) -> dict:
     return {
         "corpus": corpus.id,
@@ -271,6 +318,6 @@ def _empty_result(corpus: CorpusConfig, text: str, algorithms: list[str]) -> dic
         "query_fingerprints": 0,
         "algorithms": {k: ALGORITHMS[k] for k in algorithms if k in ALGORITHMS},
         "results": {k: {"top": None, "ranking": []} for k in algorithms},
-        "highlight": None,
         "elapsed": 0.0,
     }
+

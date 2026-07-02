@@ -16,6 +16,14 @@ const STAGE_LABELS = {
 };
 
 let lastText = "";
+let lastCorpus = "";
+let highlightDoc = null;
+
+// Distinct colours for the per-cluster "all aligned passages" mode.
+const CLUSTER_COLORS = [
+    "#e6550d", "#3182bd", "#756bb1", "#31a354", "#d62728",
+    "#17becf", "#bcbd22", "#8c564b", "#e377c2", "#7f7f7f",
+];
 
 document.addEventListener("DOMContentLoaded", () => {
     buildLinks();
@@ -24,6 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupCaptcha();
     setupCharCount();
     document.getElementById("detect-form").addEventListener("submit", onSubmit);
+    document.getElementById("hl-btn").addEventListener("click", onHighlight);
 });
 
 function el(tag, attrs = {}, ...children) {
@@ -159,9 +168,9 @@ async function onSubmit(ev) {
     }
 
     lastText = text;
+    lastCorpus = corpus;
     const payload = {
         text, corpus, algorithms,
-        highlight: document.getElementById("highlight-toggle")?.checked ?? true,
         password: document.getElementById("password")?.value || null,
         captcha_token: getCaptchaToken(),
     };
@@ -290,33 +299,144 @@ function renderResult(res) {
         + `${res.elapsed.toFixed(1)}s`;
     summary.append(meta);
 
-    renderHighlight(res.highlight);
+    renderHighlightControls(res);
     card.classList.remove("hidden");
     card.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function escapeText(s) { return s == null ? "" : String(s); }
 
-function renderHighlight(h) {
+// Prepare the on-demand highlight controls once results are in. Highlighting is
+// computed against a single "best match" document: the position-aware method's
+// top doc if available, otherwise the Jaccard top doc.
+function renderHighlightControls(res) {
     const wrap = document.getElementById("highlight-wrap");
-    if (!h || !h.spans || !h.spans.length) {
+    const target = document.getElementById("highlight");
+    const meta = document.getElementById("highlight-meta");
+    const err = document.getElementById("hl-error");
+    target.innerHTML = "";
+    meta.textContent = "";
+    err.textContent = "";
+
+    const cc = res.results.connected_components && res.results.connected_components.top;
+    const jac = res.results.jaccard && res.results.jaccard.top;
+    const doc = (cc && cc.doc_id) || (jac && jac.doc_id) || null;
+    if (!doc) {
+        highlightDoc = null;
         wrap.classList.add("hidden");
         return;
     }
-    const metaEl = document.getElementById("highlight-meta");
-    metaEl.textContent =
-        `${h.coverage_pct}% of your text overlaps with “${h.doc_id}” `
-        + `(${ALGO_LABELS[h.algorithm] || h.algorithm}).`;
-
-    const target = document.getElementById("highlight");
-    let html = "";
-    let cursor = 0;
-    for (const [s, e] of h.spans) {
-        html += escapeHtml(lastText.slice(cursor, s));
-        html += "<mark>" + escapeHtml(lastText.slice(s, e)) + "</mark>";
-        cursor = e;
-    }
-    html += escapeHtml(lastText.slice(cursor));
-    target.innerHTML = html;
+    highlightDoc = doc;
+    document.getElementById("highlight-doc-label").textContent = `“${doc}”`;
     wrap.classList.remove("hidden");
+}
+
+async function onHighlight() {
+    const err = document.getElementById("hl-error");
+    err.textContent = "";
+    const modes = Array.from(
+        document.querySelectorAll("input[name='hl-mode']:checked")
+    ).map((c) => c.value);
+    if (!modes.length) { err.textContent = "Select at least one highlight style."; return; }
+    if (!highlightDoc) { err.textContent = "No match to highlight."; return; }
+
+    const btn = document.getElementById("hl-btn");
+    btn.disabled = true;
+    btn.textContent = "Highlighting…";
+    try {
+        const resp = await fetch("/api/highlight", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                text: lastText,
+                corpus: lastCorpus,
+                doc_id: highlightDoc,
+                modes,
+                password: document.getElementById("password")?.value || null,
+                captcha_token: getCaptchaToken(),
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || `Request failed (${resp.status}).`);
+        renderHighlightLayers(data);
+    } catch (e) {
+        err.textContent = e.message || "Something went wrong.";
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Show highlighting";
+    }
+}
+
+function markRange(arr, clusters) {
+    for (const c of clusters) {
+        for (const span of c.spans) {
+            const s = span[0], e = span[1];
+            for (let i = s; i < e && i < arr.length; i++) arr[i] = 1;
+        }
+    }
+}
+
+// Overlay one or more highlight layers on the query text. Visual channels are
+// kept distinct so layers can be shown together:
+//   - background: largest aligned passage (strong) takes priority over Jaccard.
+//   - underline:  per-cluster coloured bar for the "all aligned passages" mode.
+function renderHighlightLayers(data) {
+    const target = document.getElementById("highlight");
+    const meta = document.getElementById("highlight-meta");
+    const N = lastText.length;
+    const jac = new Uint8Array(N);
+    const ccL = new Uint8Array(N);
+    const ccAll = new Int16Array(N);
+    ccAll.fill(-1);
+
+    for (const layer of data.layers) {
+        if (layer.mode === "jaccard") {
+            markRange(jac, layer.clusters);
+        } else if (layer.mode === "cc_largest") {
+            markRange(ccL, layer.clusters);
+        } else if (layer.mode === "cc_all") {
+            layer.clusters.forEach((c, idx) => {
+                for (const span of c.spans) {
+                    const s = span[0], e = span[1];
+                    for (let i = s; i < e && i < N; i++) if (ccAll[i] < 0) ccAll[i] = idx;
+                }
+            });
+        }
+    }
+
+    let html = "";
+    let i = 0;
+    while (i < N) {
+        const kJ = jac[i], kL = ccL[i], kA = ccAll[i];
+        let j = i + 1;
+        while (j < N && jac[j] === kJ && ccL[j] === kL && ccAll[j] === kA) j++;
+        const chunk = escapeHtml(lastText.slice(i, j));
+        if (!kJ && !kL && kA < 0) {
+            html += chunk;
+        } else {
+            const classes = [];
+            if (kL) classes.push("hl-bg-cc-largest");
+            else if (kJ) classes.push("hl-bg-jaccard");
+            let style = "";
+            if (kA >= 0) {
+                classes.push("hl-underline");
+                const color = CLUSTER_COLORS[kA % CLUSTER_COLORS.length];
+                style = ` style="border-bottom-color:${color}"`;
+            }
+            html += `<mark class="${classes.join(" ")}"${style}>${chunk}</mark>`;
+        }
+        i = j;
+    }
+    target.innerHTML = html || escapeHtml(lastText);
+
+    const parts = data.layers.map((l) => {
+        const n = l.clusters.length;
+        const extra = l.mode === "cc_all" && n
+            ? ` (${n} cluster${n === 1 ? "" : "s"})`
+            : "";
+        return `${l.label}: ${l.coverage_pct}%${extra}`;
+    });
+    meta.textContent = parts.length
+        ? `Overlap with “${data.doc_id}” — ${parts.join(" · ")}`
+        : `No overlapping passages found in “${data.doc_id}” for the selected styles.`;
 }

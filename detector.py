@@ -216,10 +216,59 @@ class TextContainmentDetector:
             Sorted, de-duplicated query token positions. Empty if ``doc_id`` is
             not among the candidate matches or has no positions to highlight.
         """
+        groups = self.get_match_highlight_clusters(
+            text, doc_id, clustering_params, method=method, which="largest"
+        )
+        return sorted({p for group in groups for p in group})
+
+    def get_match_highlight_clusters(
+        self,
+        text: str,
+        doc_id: str,
+        clustering_params: Dict[str, object] | None = None,
+        method: str = "clustering",
+        which: str = "largest",
+    ) -> list[list[int]]:
+        """Return query token positions to highlight, grouped into clusters.
+
+        This is the grouped counterpart of :meth:`get_match_highlight_positions`.
+        Each returned inner list is one group of query token positions that
+        should be highlighted together (e.g. shown in the same colour).
+
+        Parameters
+        ----------
+        text : str
+            The query document.
+        doc_id : str
+            External id of the matched document to highlight against.
+        clustering_params : dict, optional
+            Clustering configuration (only used when ``method="clustering"``);
+            missing keys fall back to :data:`DEFAULT_CLUSTERING_PARAMS`.
+        method : str
+            ``"clustering"`` (default) or ``"jaccard"``.
+        which : str
+            Only used when ``method="clustering"``. ``"largest"`` (default)
+            returns a single group: the cluster with the most unique shared
+            fingerprints (the same cluster that produces the count score of
+            :meth:`find_matches_clustering`). ``"all"`` returns one group per
+            non-noise cluster, ordered from most to fewest unique shared
+            fingerprints.
+
+        Returns
+        -------
+        list[list[int]]
+            A list of groups; each group is a sorted, de-duplicated list of
+            query token positions. Empty if ``doc_id`` is not among the
+            candidate matches or has no positions to highlight. For
+            ``method="jaccard"`` there is at most one group (every shared
+            fingerprint's query position).
+        """
         if method not in ("clustering", "jaccard"):
             raise ValueError(
                 f"method must be 'clustering' or 'jaccard', got {method!r}."
             )
+        if which not in ("largest", "all"):
+            raise ValueError(f"which must be 'largest' or 'all', got {which!r}.")
 
         df_query, _, df_closest = self._prepare(text)
         if df_closest.height == 0:
@@ -237,7 +286,8 @@ class TextContainmentDetector:
                 .get_column("position")
                 .to_list()
             )
-            return sorted({int(p) for p in positions})
+            pos = sorted({int(p) for p in positions})
+            return [pos] if pos else []
 
         # method == "clustering"
         params = {**DEFAULT_CLUSTERING_PARAMS, **(clustering_params or {})}
@@ -270,14 +320,30 @@ class TextContainmentDetector:
         if non_noise.height == 0:
             return []
 
-        # Pick the cluster with the most unique shared fingerprints (matching the
-        # count score of find_matches_clustering) and return its query positions.
-        sizes = non_noise.group_by("cluster_id").agg(
-            pl.col("hash").n_unique().alias("n_unique")
+        # Order clusters by unique shared fingerprints, most first. The largest
+        # is the one that produces the count score of find_matches_clustering.
+        sizes = (
+            non_noise
+            .group_by("cluster_id")
+            .agg(pl.col("hash").n_unique().alias("n_unique"))
+            .sort("n_unique", descending=True)
         )
-        best_id = sizes.sort("n_unique", descending=True).get_column("cluster_id")[0]
-        best = non_noise.filter(pl.col("cluster_id") == best_id)
-        return sorted({int(p) for p in best.get_column("position_doc1").to_list()})
+        cluster_ids = sizes.get_column("cluster_id").to_list()
+        if which == "largest":
+            cluster_ids = cluster_ids[:1]
+
+        groups: list[list[int]] = []
+        for cid in cluster_ids:
+            pos = sorted({
+                int(p)
+                for p in non_noise
+                .filter(pl.col("cluster_id") == cid)
+                .get_column("position_doc1")
+                .to_list()
+            })
+            if pos:
+                groups.append(pos)
+        return groups
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                   #
