@@ -14,7 +14,8 @@ detection code** rather than re-implementing anything.
 ## What it does
 
 1. **Pick a corpus** — corpus indexes live on the server and are loaded on demand.
-2. **Paste/type text** — with one-click sample texts and a character counter.
+2. **Paste/type text** — choose from a dropdown of curated example texts (each
+   with a link to its original source) or paste your own, with a character counter.
 3. **Pick algorithm(s)** and run:
    - **Position-aware match (our method)** — the clustering score (largest
      geometrically-coherent cluster of shared fingerprints), computed by the
@@ -24,7 +25,9 @@ detection code** rather than re-implementing anything.
      fingerprints, via
      [`detector.TextContainmentDetector.find_matches_jaccard`](../detector.py).
 4. **See results** — a summary score + best match per algorithm, a short ranking,
-   and your text with the **matching passages highlighted**.
+   and your text with the **matching passages highlighted**. Where possible each
+   match shows the document's **title as a clickable link** (resolved from
+   optional side-car maps; see below).
 
 While a check runs, the server streams progress events (newline-delimited JSON)
 so the page shows a **live progress bar, stage label and elapsed time**.
@@ -43,10 +46,15 @@ web/
     ├── __init__.py         # create_app(): Flask app + routes
     ├── config.py           # defaults + JSON override loading
     ├── detection.py        # on-demand detector loading, streaming, highlight spans
-    ├── protection.py       # pluggable abuse protection (all OFF by default)
+    ├── titles.py            # lazy resolver for title/url side-car maps + Wayback links
+    ├── samples_data.json    # curated per-corpus example texts (+ source links)
+    ├── protection.py        # pluggable abuse protection (all OFF by default)
     ├── templates/index.html
     └── static/{css,js}/
 ```
+
+Optional helper scripts under [`web/tools/`](tools/) build the side-car
+title/url maps for a corpus (`build_arxiv.py`, `build_hplt.py`, `build_wiki.py`).
 
 All scoring and tokenisation live in the FindMyText core
 ([`detector.py`](../detector.py), [`winnower.py`](../winnower.py),
@@ -84,7 +92,6 @@ export FINDMYTEXT_INDEX_ROOT=/path/to/indexes
 Each corpus ships with two one-click sample texts: one that is known to match
 the corpus and one unrelated passage that is known **not** to match.
 
-
 ---
 
 ## Configure corpora & links
@@ -100,10 +107,23 @@ Each corpus entry needs a prebuilt `DiskBasedIndex` directory (the folder that
 contains `meta.json`, `fingerprints.npy`, `postings.dat`, …). Build one with
 [`index_builder.py`](../index_builder.py). Set `doc_url_template`
 to turn a matched document id into a clickable link (e.g.
-`https://arxiv.org/abs/{doc_id}` for arXiv, `https://en.wikipedia.org/?curid={doc_id}`
-for Wikipedia, or leave it empty for ids that have no public URL, like HPLT
-content hashes). Give each corpus its own `samples` list (a matching and a
-non-matching example).
+`https://arxiv.org/abs/{doc_id}` for arXiv), or leave it empty for ids that have
+no public URL. Give each corpus its own `samples` list; each sample may carry a
+`url` (original source) and an optional `archive_url` (e.g. a Wayback snapshot),
+both shown as links under the example picker.
+
+For richer results you can attach optional **side-car maps** (built by the
+scripts in [`web/tools/`](tools/)):
+
+- `title_map_path` — resolves a matched doc id to a human-readable **title**
+  shown as the link text.
+- `url_map_path` — resolves a doc id whose id is not itself a URL (e.g. HPLT
+  content hashes) to a source url, with an automatic Wayback fallback.
+- `dataset_url` — a link to browse/search the underlying dataset yourself.
+
+Note that some indexes use **internal document ids** rather than a public
+identifier (the Wikipedia index ids, for example, are not Wikipedia page ids),
+so leave `doc_url_template` empty for those and rely on the maps above.
 
 Also set `github_url` and `paper_url` so the page links to the code and paper.
 
@@ -140,10 +160,10 @@ the demo semi-private during testing. CAPTCHA only if you see abuse.
 
 ## Deploy on the server (Apache + gunicorn)
 
-Your colleague's blog suggested Apache + `mod_wsgi`. That still works, but the
-simplest and most robust modern setup is **gunicorn behind Apache as a reverse
-proxy** — it keeps the heavy, long-lived Python process (with the big index in
-RAM) separate from Apache and survives Apache restarts.
+Apache + `mod_wsgi` works, but the simplest and most robust modern setup is
+**gunicorn behind Apache as a reverse proxy** — it keeps the heavy, long-lived
+Python process (with the big index in RAM) separate from Apache and survives
+Apache restarts.
 
 1. Run the app with gunicorn (a couple of workers; long timeout because a cold
    first query can take several seconds, and the progress endpoint streams):
