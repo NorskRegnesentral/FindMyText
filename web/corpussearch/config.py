@@ -200,7 +200,10 @@ def load_config() -> AppConfig:
     )
     samples_by_id, no_match = _load_samples(samples_path)
 
-    index_root = raw.get("index_root", "")
+    # ``index_root`` may be overridden by the environment so a deployment can
+    # relocate the indexes without editing the tracked config.json (e.g. the
+    # systemd unit sets FINDMYTEXT_INDEX_ROOT).
+    index_root = os.environ.get("FINDMYTEXT_INDEX_ROOT") or raw.get("index_root", "")
     corpora = [
         _build_corpus(spec, index_root, samples_by_id, no_match)
         for spec in raw.get("corpora", [])
