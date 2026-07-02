@@ -40,15 +40,15 @@ so the page shows a **live progress bar, stage label and elapsed time**.
 web/
 ├── wsgi.py                 # entry point (dev server + gunicorn/mod_wsgi target)
 ├── requirements.txt        # web-only deps (Flask, gunicorn) + core requirements
-├── config.example.json     # copy + edit for a real deployment
 ├── run_local.sh            # convenience launcher using the repo venv
 └── corpussearch/
     ├── __init__.py         # create_app(): Flask app + routes
-    ├── config.py           # defaults + JSON override loading
+    ├── config.json         # THE config: paths, params, protection, corpora
+    ├── samples_data.json   # curated per-corpus example texts (+ source links)
+    ├── config.py           # loads the two JSON files into typed dataclasses
     ├── detection.py        # on-demand detector loading, streaming, highlight spans
-    ├── titles.py            # lazy resolver for title/url side-car maps + Wayback links
-    ├── samples_data.json    # curated per-corpus example texts (+ source links)
-    ├── protection.py        # pluggable abuse protection (all OFF by default)
+    ├── titles.py           # lazy resolver for title/url side-car maps + Wayback links
+    ├── protection.py       # pluggable abuse protection (all OFF by default)
     ├── templates/index.html
     └── static/{css,js}/
 ```
@@ -80,14 +80,11 @@ cd web
 ```
 
 The three corpora — **arXiv**, **English Wikipedia** and the **HPLT** web crawl —
-are offered automatically whenever their prebuilt indexes are found under the
-index root (default `/home/jullum/copyai_local`). At least one index must be
-present for the site to have anything to search. Override the location with:
-
-```bash
-export FINDMYTEXT_INDEX_ROOT=/path/to/indexes
-# expects: $ROOT/arxiv/index(4,6), $ROOT/wiki/index(4,6)_wikipedia, $ROOT/hplt/index(4,6)
-```
+are offered automatically whenever their prebuilt indexes are found. Their
+location is set by `index_root` in [`corpussearch/config.json`](corpussearch/config.json)
+(default `/home/jullum/copyai_local`); each corpus's `index_dir` is resolved
+relative to it. At least one index must be present for the site to have
+something to search.
 
 Each corpus ships with two one-click sample texts: one that is known to match
 the corpus and one unrelated passage that is known **not** to match.
@@ -96,8 +93,20 @@ the corpus and one unrelated passage that is known **not** to match.
 
 ## Configure corpora & links
 
-For a real deployment, copy `config.example.json`, edit it, and point the app at
-it via an environment variable — no code changes needed:
+Everything is driven by two files in `corpussearch/`, both always loaded:
+
+- [`config.json`](corpussearch/config.json) — the single place for paths
+  (`index_root`, per-corpus `index_dir`, `title_map`, `url_map`), the detection
+  `params`, abuse `protection`, and per-corpus metadata (`label`,
+  `description`, `doc_url_template`, `dataset_url`).
+- [`samples_data.json`](corpussearch/samples_data.json) — the example texts,
+  keyed by corpus id, plus a shared `no_match` example appended to every corpus.
+  Each sample may carry a `url` (original source) and optional `archive_url`
+  (e.g. a Wayback snapshot), both shown as links under the example picker.
+
+For a deployment you can either edit `config.json` in place, or keep your own
+copy elsewhere and point the app at it (its `samples_file` key can likewise
+relocate the samples):
 
 ```bash
 export FINDMYTEXT_CONFIG=/srv/findmytext/config.json
@@ -105,20 +114,17 @@ export FINDMYTEXT_CONFIG=/srv/findmytext/config.json
 
 Each corpus entry needs a prebuilt `DiskBasedIndex` directory (the folder that
 contains `meta.json`, `fingerprints.npy`, `postings.dat`, …). Build one with
-[`index_builder.py`](../index_builder.py). Set `doc_url_template`
-to turn a matched document id into a clickable link (e.g.
-`https://arxiv.org/abs/{doc_id}` for arXiv), or leave it empty for ids that have
-no public URL. Give each corpus its own `samples` list; each sample may carry a
-`url` (original source) and an optional `archive_url` (e.g. a Wayback snapshot),
-both shown as links under the example picker.
+[`index_builder.py`](../index_builder.py). Set `doc_url_template` to turn a
+matched document id into a clickable link (e.g. `https://arxiv.org/abs/{doc_id}`
+for arXiv), or leave it empty for ids that have no public URL.
 
-For richer results you can attach optional **side-car maps** (built by the
-scripts in [`web/tools/`](tools/)):
+For richer results attach optional **side-car maps** (built by the scripts in
+[`web/tools/`](tools/); paths are relative to `index_root`):
 
-- `title_map_path` — resolves a matched doc id to a human-readable **title**
-  shown as the link text.
-- `url_map_path` — resolves a doc id whose id is not itself a URL (e.g. HPLT
-  content hashes) to a source url, with an automatic Wayback fallback.
+- `title_map` — resolves a matched doc id to a human-readable **title** shown as
+  the link text.
+- `url_map` — resolves a doc id whose id is not itself a URL (e.g. HPLT content
+  hashes) to a source url, with an automatic Wayback fallback.
 - `dataset_url` — a link to browse/search the underlying dataset yourself.
 
 Note that some indexes use **internal document ids** rather than a public

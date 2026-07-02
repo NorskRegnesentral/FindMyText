@@ -1,4 +1,8 @@
 {
+  "no_match": {
+    "label": "Unrelated text (should not match)",
+    "text": "Last Tuesday, Mirabel Quincy-Tannenbaum repotted her seventeen miniature kumquat trees while humming an invented lullaby about a forgetful walrus named Pemberton who collected odd-numbered tram tickets beside the violet lighthouse at the edge of Grumbleton-on-Sea."
+  },
   "arxiv": [
     {
       "label": "NLP — named-entity recognition without labelled data",
