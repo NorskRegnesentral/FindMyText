@@ -18,7 +18,7 @@ import os
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
-from .titles import RESOLVER, wayback_url
+from .titles import RESOLVER, SEARCHER, wayback_url
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(_HERE, "config.json")
@@ -54,6 +54,9 @@ class CorpusConfig:
     url_map_path: str = ""
     # Optional link to browse/search the underlying dataset yourself.
     dataset_url: str = ""
+    # Optional note shown next to the dataset link, e.g. to warn that the linked
+    # dataset is a *superset* (not every document in it is actually indexed here).
+    dataset_note: str = ""
     # Per-corpus example texts (one known to match, one known not to).
     samples: list[SampleText] = field(default_factory=list)
     enabled: bool = True
@@ -79,6 +82,18 @@ class CorpusConfig:
                 if entry.get("ts"):
                     archive_url = wayback_url(url, entry["ts"])
         return {"title": title, "url": url, "archive_url": archive_url}
+
+    def search_titles(self, query: str, limit: int = 20) -> list[dict]:
+        """Search this corpus' documents by title, returning ``{title, url}``.
+
+        Searches only the documents actually present in the corpus (the title
+        map), so results never over-promise what the index contains.
+        """
+        results = []
+        for doc_id in SEARCHER.search(self.title_map_path, query, limit):
+            meta = self.doc_meta(doc_id)
+            results.append({"title": meta["title"], "url": meta["url"]})
+        return results
 
 
 @dataclass
@@ -180,6 +195,7 @@ def _build_corpus(
         title_map_path=_resolve_path(spec.get("title_map", ""), index_root),
         url_map_path=_resolve_path(spec.get("url_map", ""), index_root),
         dataset_url=spec.get("dataset_url", ""),
+        dataset_note=spec.get("dataset_note", ""),
         samples=samples,
         # Only offer a corpus whose index is actually present on this machine.
         enabled=bool(index_dir) and os.path.isdir(index_dir),
@@ -227,6 +243,8 @@ def config_public_dict(cfg: AppConfig) -> dict[str, Any]:
                 "label": c.label,
                 "description": c.description,
                 "dataset_url": c.dataset_url,
+                "dataset_note": c.dataset_note,
+                "searchable": bool(c.title_map_path),
                 "samples": [asdict(s) for s in c.samples],
             }
             for c in cfg.corpora

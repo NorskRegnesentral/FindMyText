@@ -38,7 +38,8 @@
             "doc_url_template": "",
             "title_map": "wiki/titles.json.gz",
             "url_map": "wiki/urls.json.gz",
-            "dataset_url": ""
+            "dataset_url": "https://huggingface.co/datasets/wikimedia/wikipedia/viewer/20231101.en",
+            "dataset_note": "This is the full upstream dataset (a superset) — only a subset of its articles is indexed here. Use the search box below to see exactly what's included."
         },
         {
             "id": "hplt",

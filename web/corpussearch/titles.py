@@ -54,6 +54,55 @@ class MetaResolver:
 RESOLVER = MetaResolver()
 
 
+class TitleSearcher:
+    """Lazily-built, cached substring search over a corpus' title map.
+
+    Reuses the title dict already loaded by ``RESOLVER`` (``{doc_id: title}``)
+    and prepares a flat ``[(title_lower, doc_id)]`` list once per map, so users
+    can search *exactly* the documents that are in the corpus. Prefix matches
+    are ranked ahead of other substring matches; results are alphabetical.
+    """
+
+    def __init__(self, resolver: MetaResolver) -> None:
+        self._resolver = resolver
+        self._lock = threading.Lock()
+        self._prepared: dict[str, list[tuple[str, str]]] = {}
+
+    def _prepare(self, path: str) -> list[tuple[str, str]]:
+        with self._lock:
+            cached = self._prepared.get(path)
+        if cached is not None:
+            return cached
+        data = self._resolver._load(path)  # {doc_id: title}
+        prepared = sorted(
+            ((str(title).lower(), doc_id) for doc_id, title in data.items() if title),
+            key=lambda x: x[0],
+        )
+        with self._lock:
+            self._prepared[path] = prepared
+        return prepared
+
+    def search(self, path: Optional[str], query: str, limit: int = 20) -> list[str]:
+        """Return up to ``limit`` matching doc ids (prefix matches first)."""
+        q = (query or "").strip().lower()
+        if not path or len(q) < 2:
+            return []
+        prepared = self._prepare(path)
+        starts: list[str] = []
+        contains: list[str] = []
+        for title_lower, doc_id in prepared:
+            if title_lower.startswith(q):
+                starts.append(doc_id)
+                if len(starts) >= limit:
+                    break
+            elif q in title_lower and len(contains) < limit:
+                contains.append(doc_id)
+        return (starts + contains)[:limit]
+
+
+SEARCHER = TitleSearcher(RESOLVER)
+
+
 def wayback_url(url: str, ts: str) -> str:
     """Build a Wayback Machine URL that redirects to the snapshot nearest ``ts``."""
     compact = re.sub(r"[^0-9]", "", ts or "")[:14]

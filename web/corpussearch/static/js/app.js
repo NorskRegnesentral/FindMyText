@@ -93,6 +93,7 @@ function buildCorpora() {
         const c = CONFIG.corpora.find((x) => x.id === select.value);
         desc.textContent = c ? c.description : "";
         renderDatasetLink(c);
+        renderCorpusSearch(c);
         buildSamples(c);
     };
     select.addEventListener("change", update);
@@ -108,6 +109,70 @@ function renderDatasetLink(corpus) {
     a.textContent = "Browse the dataset";
     line.append(a);
     line.append(document.createTextNode(" ↗"));
+    if (corpus.dataset_note) {
+        line.append(el("span", { class: "dataset-note" }, corpus.dataset_note));
+    }
+}
+
+let corpusSearchTimer = null;
+let corpusSearchSeq = 0;
+
+function renderCorpusSearch(corpus) {
+    const box = document.getElementById("corpus-search");
+    const input = document.getElementById("corpus-search-input");
+    const results = document.getElementById("corpus-search-results");
+    if (corpusSearchTimer) {
+        clearTimeout(corpusSearchTimer);
+        corpusSearchTimer = null;
+    }
+    input.value = "";
+    results.innerHTML = "";
+    if (!corpus || !corpus.searchable) {
+        box.classList.add("hidden");
+        return;
+    }
+    box.classList.remove("hidden");
+
+    const run = () => {
+        const q = input.value.trim();
+        if (q.length < 2) {
+            results.innerHTML = "";
+            return;
+        }
+        const seq = ++corpusSearchSeq;
+        fetch(`/api/corpus/${encodeURIComponent(corpus.id)}/titles?q=${encodeURIComponent(q)}`)
+            .then((r) => r.json())
+            .then((data) => {
+                if (seq !== corpusSearchSeq) return; // stale response
+                results.innerHTML = "";
+                const items = (data && data.results) || [];
+                if (!items.length) {
+                    results.append(el("li", { class: "corpus-search-empty" },
+                        "No articles in this corpus match that."));
+                    return;
+                }
+                items.forEach((item) => {
+                    const li = el("li");
+                    if (item.url) {
+                        const a = el("a", { href: item.url, target: "_blank", rel: "noopener" });
+                        a.textContent = item.title || item.url;
+                        li.append(a);
+                    } else {
+                        li.textContent = item.title || "";
+                    }
+                    results.append(li);
+                });
+            })
+            .catch(() => {
+                if (seq !== corpusSearchSeq) return;
+                results.innerHTML = "";
+            });
+    };
+
+    input.oninput = () => {
+        if (corpusSearchTimer) clearTimeout(corpusSearchTimer);
+        corpusSearchTimer = setTimeout(run, 250);
+    };
 }
 
 function buildSamples(corpus) {

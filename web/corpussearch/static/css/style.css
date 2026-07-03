@@ -213,6 +213,57 @@ textarea {
     font-weight: 600;
 }
 
+.dataset-note {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted, #789);
+    font-size: .82rem;
+}
+
+.corpus-search {
+    margin-top: 8px;
+}
+
+.corpus-search-input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #d9e6dd;
+    border-radius: 8px;
+    font-size: .9rem;
+}
+
+.corpus-search-results {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.corpus-search-results li {
+    padding: 4px 2px;
+    font-size: .88rem;
+    border-bottom: 1px solid #eef3ef;
+}
+
+.corpus-search-results li:last-child {
+    border-bottom: none;
+}
+
+.corpus-search-results a {
+    color: var(--accent-dark);
+    text-decoration: none;
+}
+
+.corpus-search-results a:hover {
+    text-decoration: underline;
+}
+
+.corpus-search-empty {
+    color: var(--muted, #789);
+    font-style: italic;
+}
+
 .archive-link {
     font-size: .82rem;
 }
