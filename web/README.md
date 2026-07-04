@@ -21,7 +21,7 @@ detection code** rather than re-implementing anything.
      geometrically-coherent cluster of shared fingerprints), computed by the
      FindMyText core via
      [`detector.TextContainmentDetector.find_matches_clustering`](../detector.py).
-   - **Shared fingerprints (Jaccard baseline)** — number of shared winnowed
+   - **Shared fingerprints (baseline)** — number of shared winnowed
      fingerprints, via
      [`detector.TextContainmentDetector.find_matches_jaccard`](../detector.py).
 4. **See results** — a summary score + best match per algorithm, a short ranking,

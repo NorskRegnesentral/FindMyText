@@ -117,7 +117,7 @@ class IndexManager:
 # Main entry point: streaming detection
 # ---------------------------------------------------------------------------
 ALGORITHMS = {
-    "jaccard": "Shared fingerprints (Jaccard baseline)",
+    "jaccard": "Shared fingerprints (baseline)",
     "connected_components": "Position-aware match (our method)",
 }
 
