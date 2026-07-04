@@ -95,6 +95,35 @@ class CorpusConfig:
             results.append({"title": meta["title"], "url": meta["url"]})
         return results
 
+    @property
+    def search_kind(self) -> Optional[str]:
+        """How this corpus can be searched in-app: ``title``, ``url`` or None."""
+        if self.title_map_path:
+            return "title"
+        if self.url_map_path.endswith(".sqlite") or self.url_map_path.endswith(".db"):
+            return "url"
+        return None
+
+    def search(self, query: str, limit: int = 20) -> list[dict]:
+        """Unified in-app search returning ``[{title, url}]``.
+
+        Title-mapped corpora (arXiv, Wikipedia) match on title; url-mapped
+        corpora backed by SQLite+FTS (HPLT) match on domain/URL.
+        """
+        kind = self.search_kind
+        if kind == "title":
+            return self.search_titles(query, limit)
+        if kind == "url":
+            return [
+                {
+                    "title": None,
+                    "url": url,
+                    "archive_url": wayback_url(url, ts) if ts else None,
+                }
+                for _doc_id, url, ts in RESOLVER.search_urls(self.url_map_path, query, limit)
+            ]
+        return []
+
 
 @dataclass
 class ProtectionConfig:
@@ -244,7 +273,8 @@ def config_public_dict(cfg: AppConfig) -> dict[str, Any]:
                 "description": c.description,
                 "dataset_url": c.dataset_url,
                 "dataset_note": c.dataset_note,
-                "searchable": bool(c.title_map_path),
+                "searchable": bool(c.search_kind),
+                "search_kind": c.search_kind,
                 "samples": [asdict(s) for s in c.samples],
             }
             for c in cfg.corpora

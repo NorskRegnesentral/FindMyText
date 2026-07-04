@@ -36,13 +36,29 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("hl-btn").addEventListener("click", onHighlight);
 });
 
+function hostFromUrl(url) {
+    try {
+        return new URL(url).hostname.replace(/^www\./, "");
+    } catch (e) {
+        return null;
+    }
+}
+
 function docLabel(item) {
     if (item && item.title) return item.title;
+    // Web-crawl corpora (HPLT) have no title; the domain is far more telling
+    // than the opaque content hash.
+    if (item && item.url) {
+        const host = hostFromUrl(item.url);
+        if (host) return host;
+    }
     const id = item ? item.doc_id : null;
     if (id == null) return "";
-    // Some corpora (e.g. Wikipedia) expose only opaque internal ids; render
-    // them as a document reference rather than a bare, confusing number.
-    return /^\d+$/.test(String(id)) ? `document ${id}` : String(id);
+    const s = String(id);
+    // Numeric internal ids -> a document reference.
+    if (/^\d+$/.test(s)) return `document ${s}`;
+    // Opaque hashes tell the user nothing; show a short prefix instead.
+    return s.length > 12 ? `${s.slice(0, 8)}…` : s;
 }
 
 function el(tag, attrs = {}, ...children) {
@@ -133,6 +149,14 @@ function renderCorpusSearch(corpus) {
     }
     box.classList.remove("hidden");
 
+    const isUrl = corpus.search_kind === "url";
+    input.placeholder = isUrl
+        ? "Search by domain or URL (e.g. bbc.co.uk)…"
+        : "Search which articles are in this corpus…";
+    const emptyMsg = isUrl
+        ? "No pages in this corpus match that domain."
+        : "No articles in this corpus match that.";
+
     const run = () => {
         const q = input.value.trim();
         if (q.length < 2) {
@@ -147,8 +171,7 @@ function renderCorpusSearch(corpus) {
                 results.innerHTML = "";
                 const items = (data && data.results) || [];
                 if (!items.length) {
-                    results.append(el("li", { class: "corpus-search-empty" },
-                        "No articles in this corpus match that."));
+                    results.append(el("li", { class: "corpus-search-empty" }, emptyMsg));
                     return;
                 }
                 items.forEach((item) => {
@@ -157,6 +180,17 @@ function renderCorpusSearch(corpus) {
                         const a = el("a", { href: item.url, target: "_blank", rel: "noopener" });
                         a.textContent = item.title || item.url;
                         li.append(a);
+                        if (item.archive_url) {
+                            li.append(document.createTextNode(" · "));
+                            const arch = el("a", {
+                                href: item.archive_url,
+                                target: "_blank",
+                                rel: "noopener",
+                                class: "archive-link",
+                            });
+                            arch.textContent = "archived";
+                            li.append(arch);
+                        }
                     } else {
                         li.textContent = item.title || "";
                     }
@@ -400,7 +434,7 @@ function renderResult(res) {
                     href: top.archive_url, target: "_blank", rel: "noopener",
                     class: "archive-link",
                 });
-                arc.textContent = "archived copy";
+                arc.textContent = "archived";
                 doc.append(arc);
             }
             box.append(doc);
@@ -412,20 +446,40 @@ function renderResult(res) {
 
         if (data.ranking && data.ranking.length > 1) {
             const ul = el("ul", { class: "ranking" });
-            data.ranking.forEach((r) => {
+            // Disambiguate identical display labels (e.g. several pages from the
+            // same domain) by appending a running number.
+            const labels = data.ranking.map((r) => docLabel(r));
+            const totals = {};
+            labels.forEach((l) => { totals[l] = (totals[l] || 0) + 1; });
+            const seen = {};
+            data.ranking.forEach((r, i) => {
+                let rkLabel = labels[i];
+                if (totals[rkLabel] > 1) {
+                    seen[rkLabel] = (seen[rkLabel] || 0) + 1;
+                    rkLabel = `${rkLabel} (${seen[rkLabel]})`;
+                }
                 const li = el("li", {});
-                const rkLabel = docLabel(r);
-                const url = r.url || r.archive_url;
-                if (url) {
+                const left = el("span", { class: "rk-left" });
+                if (r.url) {
                     const a = el("a", {
-                        class: "rk-doc", href: url,
+                        class: "rk-doc", href: r.url,
                         target: "_blank", rel: "noopener",
                     });
                     a.textContent = rkLabel;
-                    li.append(a);
+                    left.append(a);
                 } else {
-                    li.append(el("span", { class: "rk-doc" }, rkLabel));
+                    left.append(el("span", { class: "rk-doc" }, rkLabel));
                 }
+                if (r.archive_url) {
+                    left.append(document.createTextNode(" · "));
+                    const arc = el("a", {
+                        href: r.archive_url, target: "_blank", rel: "noopener",
+                        class: "archive-link",
+                    });
+                    arc.textContent = "archived";
+                    left.append(arc);
+                }
+                li.append(left);
                 li.append(el("span", {}, String(r.score)));
                 ul.append(li);
             });

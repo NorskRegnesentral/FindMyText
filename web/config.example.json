@@ -52,7 +52,7 @@
             "description": "A large multilingual web-crawl corpus (HPLT). Try pasting text from a web page.",
             "index_dir": "/home/jullum/copyai_local/hplt/index(4,6)",
             "doc_url_template": "",
-            "url_map_path": "/home/jullum/copyai_local/hplt/urls.json.gz",
+            "url_map_path": "/home/jullum/copyai_local/hplt/urls.sqlite",
             "samples": [
                 {
                     "label": "Travel diary \u2014 safari in Kenya",

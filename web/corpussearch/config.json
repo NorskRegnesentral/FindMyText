@@ -48,7 +48,7 @@
             "index_dir": "hplt/index(4,6)",
             "doc_url_template": "",
             "title_map": "",
-            "url_map": "hplt/urls.json.gz",
+            "url_map": "hplt/urls.sqlite",
             "dataset_url": ""
         }
     ]

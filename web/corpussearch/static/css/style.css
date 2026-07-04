@@ -426,6 +426,14 @@ textarea {
     word-break: break-word;
 }
 
+.ranking .rk-left {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
 .doc-text {
     white-space: pre-wrap;
     word-wrap: break-word;

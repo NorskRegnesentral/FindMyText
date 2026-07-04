@@ -42,10 +42,10 @@ def create_app() -> Flask:
     @rate_limited
     def api_titles(corpus_id):
         corpus = cfg.corpus(corpus_id)
-        if corpus is None or not corpus.title_map_path:
+        if corpus is None or not corpus.search_kind:
             return jsonify({"results": []})
         query = request.args.get("q", "")
-        results = corpus.search_titles(query, limit=20)
+        results = corpus.search(query, limit=20)
         return jsonify({"results": results})
 
     @app.post("/api/detect")

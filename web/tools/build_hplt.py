@@ -1,130 +1,259 @@
-"""Build the HPLT doc_id -> {url, ts} side-car map and propose live samples.
+"""Build the HPLT ``doc_id -> {url, ts}`` side-car map.
 
-Reads the local indexed-samples file (the only place HPLT urls live) and writes
-a compact gzip-JSON map used by the web app to turn a matched content-hash into
-a clickable source URL (plus a web.archive.org fallback, since it is a
+The web app turns a matched content-hash (the index' external doc id) into a
+clickable source URL (plus a web.archive.org fallback, since HPLT is a
 2015-2017 crawl and many originals are dead).
 
-Also verifies a handful of varied English candidates and prints the live ones so
-they can be curated into the app config as samples.
+The index doc ids are exactly the ``id`` field of the HPLT records that passed
+the indexing filter (see ``utils.json_line_reader``: text length in
+[2000, 100000] and no ``sex``/``porn`` token). We reproduce that filter while
+streaming the raw ``*.jsonl.zst`` shards and record ``id -> (url, ts)``.
 
-Run:  ./.venv/bin/python web/tools/build_hplt.py
+Because the corpus has ~50M documents, the map is stored as **SQLite** (queried
+on disk by the web app) rather than an in-memory gzip-JSON dict. Shards are
+processed in parallel (one worker per shard) into per-shard SQLite files, then
+merged and indexed.
+
+Run (full build, ~hours):   ./.venv/bin/python web/tools/build_hplt.py
+Quick sample DB for testing: ./.venv/bin/python web/tools/build_hplt.py --samples
 """
 
 from __future__ import annotations
 
-import gzip
-import json
+import argparse
+import glob
+import io
 import os
-import re
-import urllib.parse
-import urllib.request
+import sqlite3
+import sys
+import time
+from multiprocessing import Pool
+from urllib.parse import urlsplit
 
-SRC = "/home/jullum/copyai_local/hplt/indexed_samples_hplt.jsonl"
-OUT = "/home/jullum/copyai_local/hplt/urls.json.gz"
+import orjson
+import zstandard as zstd
 
+# --- Paths -----------------------------------------------------------------
+SHARD_GLOB = "/nr/samba/user/jullum/Local_work/Projects/COPY.AI/data/hplt/*.jsonl.zst"
+SAMPLES_SRC = "/home/jullum/copyai_local/hplt/indexed_samples_hplt.jsonl"
+OUT_DIR = "/home/jullum/copyai_local/hplt"
+FINAL_DB = os.path.join(OUT_DIR, "urls.sqlite")
+SHARD_DIR = os.path.join(OUT_DIR, "_url_shards")
 
-def wayback(url: str, ts: str) -> str:
-    compact = re.sub(r"[^0-9]", "", ts or "")[:14]
-    return f"https://web.archive.org/web/{compact}/{url}"
-
-
-def url_alive(url: str, timeout: float = 6.0) -> bool:
-    try:
-        req = urllib.request.Request(
-            url, method="GET",
-            headers={"User-Agent": "Mozilla/5.0 (FindMyTextDemo link check)"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return 200 <= resp.status < 400
-    except Exception:
-        return False
+# --- Indexing filter (must match utils.json_line_reader) -------------------
+MIN_LEN = 2000
+MAX_LEN = 100000
+BAD_WORDS = {"sex", "porn"}
+BATCH = 100_000
 
 
-def wayback_snapshot(url: str, ts: str, timeout: float = 12.0) -> str | None:
-    """Return a Wayback URL if the page is archived, else None (via CDX API)."""
-    compact = re.sub(r"[^0-9]", "", ts or "")[:14]
-    cdx = "https://web.archive.org/cdx/search/cdx?" + urllib.parse.urlencode(
-        {"url": url, "output": "json", "limit": "1", "filter": "statuscode:200"}
-    )
-    try:
-        req = urllib.request.Request(
-            cdx, headers={"User-Agent": "Mozilla/5.0 (FindMyTextDemo link check)"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            rows = json.loads(resp.read().decode())
-        if len(rows) > 1:  # row[0] is the header
-            return f"https://web.archive.org/web/{compact or rows[1][1]}/{url}"
-    except Exception:
-        return None
-    return None
+def _new_db(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=OFF")
+    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("CREATE TABLE urls (id TEXT, u TEXT, ts TEXT)")
+    return conn
 
 
-def excerpt(text: str, target: int = 1400) -> str:
-    """A clean, paste-friendly excerpt: whole sentences up to ~target chars."""
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) <= target:
-        return text
-    cut = text[:target]
-    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
-    return cut[: end + 1].strip() if end > target // 2 else cut.strip()
+def build_shard(shard_path: str) -> tuple[str, int]:
+    """Stream one zst shard into its own SQLite file. Skips if already done."""
+    name = os.path.basename(shard_path).replace(".jsonl.zst", "")
+    out = os.path.join(SHARD_DIR, f"{name}.sqlite")
+    part = out + ".part"
+    if os.path.exists(out):
+        return (name, -1)  # already built
 
+    os.makedirs(SHARD_DIR, exist_ok=True)
+    if os.path.exists(part):
+        os.remove(part)
+    conn = _new_db(part)
+    cur = conn.cursor()
 
-def main() -> None:
-    url_map: dict[str, dict] = {}
-    candidates: list[dict] = []
-
-    with open(SRC, "r", encoding="utf-8") as fh:
-        for line in fh:
-            rec = json.loads(line)
-            doc_id = rec.get("id")
-            u = rec.get("u")
-            ts = rec.get("ts", "")
+    t0 = time.time()
+    n = 0
+    batch: list[tuple[str, str, str]] = []
+    dctx = zstd.ZstdDecompressor()
+    with open(shard_path, "rb") as fh, dctx.stream_reader(fh) as reader:
+        text_stream = io.TextIOWrapper(reader, encoding="utf-8")
+        for line in text_stream:
+            if not line.strip():
+                continue
+            try:
+                d = orjson.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            text = d.get("text") or ""
+            tlen = len(text)
+            if tlen < MIN_LEN or tlen > MAX_LEN:
+                continue
+            if any(w in BAD_WORDS for w in text.split()):
+                continue
+            doc_id = d.get("id")
+            u = d.get("u")
             if not doc_id or not u:
                 continue
-            url_map[doc_id] = {"u": u, "ts": ts}
+            batch.append((doc_id, u, d.get("ts") or ""))
+            if len(batch) >= BATCH:
+                cur.executemany("INSERT INTO urls VALUES (?, ?, ?)", batch)
+                n += len(batch)
+                batch.clear()
+                print(f"[{name}] {n:,} rows  ({n/(time.time()-t0):,.0f}/s)", flush=True)
+    if batch:
+        cur.executemany("INSERT INTO urls VALUES (?, ?, ?)", batch)
+        n += len(batch)
+    conn.commit()
+    conn.close()
+    os.replace(part, out)
+    print(f"[{name}] DONE {n:,} rows in {time.time()-t0:,.0f}s -> {out}", flush=True)
+    return (name, n)
 
-            # collect diverse english candidates for manual curation
-            text = rec.get("text") or ""
-            langs = rec.get("lang") or []
-            probs = rec.get("prob") or []
-            eng = bool(langs) and langs[0] == "eng_Latn" and (not probs or probs[0] > 0.95)
-            if eng and len(text) >= 1200 and len(candidates) < 400:
-                candidates.append({"id": doc_id, "u": u, "ts": ts, "text": text})
 
-    with gzip.open(OUT, "wt", encoding="utf-8") as fh:
-        json.dump(url_map, fh, ensure_ascii=False)
-    print(f"wrote {OUT}: {len(url_map):,} url entries")
-
-    # prefer candidates from varied domains that have a Wayback snapshot
-    seen_domains: set[str] = set()
-    live: list[dict] = []
-    for c in candidates:
-        dom = re.sub(r"^https?://(www\.)?", "", c["u"]).split("/")[0]
-        if dom in seen_domains:
+def merge(shard_dbs: list[str]) -> None:
+    """Merge per-shard SQLite files into FINAL_DB and build the id index."""
+    tmp = FINAL_DB + ".part"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    conn = _new_db(tmp)
+    total = 0
+    for db in shard_dbs:
+        if not os.path.exists(db):
+            print(f"WARNING missing shard db {db}", flush=True)
             continue
-        snap = wayback_snapshot(c["u"], c["ts"])
-        if snap:
-            seen_domains.add(dom)
-            c["archive_url"] = snap
-            live.append(c)
-        if len(live) >= 12:
-            break
+        conn.execute("ATTACH DATABASE ? AS s", (db,))
+        conn.execute("INSERT INTO urls SELECT id, u, ts FROM s.urls")
+        conn.commit()
+        conn.execute("DETACH DATABASE s")
+        total = conn.execute("SELECT COUNT(*) FROM urls").fetchone()[0]
+        print(f"merged {os.path.basename(db)} -> total {total:,}", flush=True)
+    print(f"building index on {total:,} rows ...", flush=True)
+    conn.execute("CREATE INDEX idx_urls_id ON urls (id)")
+    conn.commit()
+    conn.close()
+    os.replace(tmp, FINAL_DB)
+    print(f"wrote {FINAL_DB}: {total:,} rows", flush=True)
 
-    print(f"\n=== {len(live)} candidates WITH Wayback snapshot ===")
-    for c in live:
-        print(f"\nid={c['id']}\nurl={c['u']}\nts={c['ts']}\narchive={c['archive_url']}\ntext={excerpt(c['text'])}")
 
-    dump = [
-        {"id": c["id"], "u": c["u"], "ts": c["ts"],
-         "archive_url": c["archive_url"], "text": excerpt(c["text"])}
-        for c in live
+def build_full() -> None:
+    shards = sorted(glob.glob(SHARD_GLOB))
+    if not shards:
+        sys.exit(f"no shards match {SHARD_GLOB}")
+    print(f"{len(shards)} shards; processing in parallel ...", flush=True)
+    os.makedirs(SHARD_DIR, exist_ok=True)
+    with Pool(processes=len(shards)) as pool:
+        results = pool.map(build_shard, shards)
+    for name, n in results:
+        print(f"  {name}: {'(cached)' if n < 0 else f'{n:,} rows'}", flush=True)
+    shard_dbs = [
+        os.path.join(SHARD_DIR, os.path.basename(s).replace(".jsonl.zst", ".sqlite"))
+        for s in shards
     ]
-    cand_path = os.path.join(os.path.dirname(__file__), "_hplt_candidates.json")
-    with open(cand_path, "w", encoding="utf-8") as fh:
-        json.dump(dump, fh, ensure_ascii=False, indent=2)
-    print(f"\nwrote {cand_path}: {len(dump)} candidates")
+    merge(shard_dbs)
+
+
+def build_samples() -> None:
+    """Small SQLite from the indexed-samples file, for quick end-to-end testing."""
+    tmp = FINAL_DB + ".part"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    conn = _new_db(tmp)
+    cur = conn.cursor()
+    n = 0
+    batch: list[tuple[str, str, str]] = []
+    with open(SAMPLES_SRC, "r", encoding="utf-8") as fh:
+        for line in fh:
+            d = orjson.loads(line)
+            doc_id, u = d.get("id"), d.get("u")
+            if not doc_id or not u:
+                continue
+            batch.append((doc_id, u, d.get("ts") or ""))
+            if len(batch) >= BATCH:
+                cur.executemany("INSERT INTO urls VALUES (?, ?, ?)", batch)
+                n += len(batch)
+                batch.clear()
+        if batch:
+            cur.executemany("INSERT INTO urls VALUES (?, ?, ?)", batch)
+            n += len(batch)
+    conn.execute("CREATE INDEX idx_urls_id ON urls (id)")
+    conn.commit()
+    conn.close()
+    os.replace(tmp, FINAL_DB)
+    print(f"wrote {FINAL_DB}: {n:,} rows (from samples)")
+
+
+def _host(url: str) -> str:
+    """Bare hostname for search (drops scheme, port and a leading ``www.``)."""
+    try:
+        host = urlsplit(url).hostname or ""
+    except Exception:  # noqa: BLE001
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def build_fts(db_path: str = FINAL_DB) -> None:
+    """Add an FTS5 ``url_fts(host, url, id)`` table to an existing url map.
+
+    Enables the in-app domain search for HPLT. ``host`` is the only indexed
+    column; ``url``/``id`` are stored (UNINDEXED) for retrieval. Rebuilt from
+    scratch each run, paging over ``urls`` by rowid so a single connection both
+    reads and writes safely.
+    """
+    if not os.path.exists(db_path):
+        sys.exit(f"no url map at {db_path}; build it first")
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=OFF")
+    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-1000000")  # ~1GB page cache
+    conn.execute("DROP TABLE IF EXISTS url_fts")
+    conn.execute(
+        "CREATE VIRTUAL TABLE url_fts USING fts5("
+        "host, url UNINDEXED, id UNINDEXED, tokenize='unicode61')"
+    )
+    total = conn.execute("SELECT COUNT(*) FROM urls").fetchone()[0]
+    print(f"indexing {total:,} rows into url_fts ...", flush=True)
+
+    ins = conn.cursor()
+    read = conn.cursor()
+    t0 = time.time()
+    n = 0
+    last_rowid = 0
+    while True:
+        rows = read.execute(
+            "SELECT rowid, id, u FROM urls WHERE rowid > ? "
+            "ORDER BY rowid LIMIT ?",
+            (last_rowid, BATCH),
+        ).fetchall()
+        if not rows:
+            break
+        last_rowid = rows[-1][0]
+        ins.executemany(
+            "INSERT INTO url_fts (host, url, id) VALUES (?, ?, ?)",
+            [(_host(u), u, doc_id) for _rid, doc_id, u in rows],
+        )
+        n += len(rows)
+        if n % (BATCH * 10) == 0:
+            print(f"  {n:,}/{total:,}  ({n/(time.time()-t0):,.0f}/s)", flush=True)
+    conn.commit()
+    print("optimizing FTS index ...", flush=True)
+    conn.execute("INSERT INTO url_fts(url_fts) VALUES('optimize')")
+    conn.commit()
+    conn.close()
+    print(f"done: {n:,} rows indexed in {time.time()-t0:,.0f}s", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--samples", action="store_true",
+                    help="build a small DB from indexed_samples for testing")
+    ap.add_argument("--fts", action="store_true",
+                    help="build the FTS5 domain-search index on an existing map")
+    args = ap.parse_args()
+    if args.fts:
+        build_fts()
+    elif args.samples:
+        build_samples()
+    else:
+        build_full()

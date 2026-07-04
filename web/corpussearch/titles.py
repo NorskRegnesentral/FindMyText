@@ -18,16 +18,29 @@ import gzip
 import json
 import os
 import re
+import sqlite3
 import threading
 from typing import Optional
 
 
 class MetaResolver:
-    """Thread-safe, lazily-loaded cache of per-corpus side-car maps."""
+    """Thread-safe, lazily-loaded cache of per-corpus side-car maps.
+
+    Small maps (arXiv/Wikipedia titles, HPLT sample urls) are gzip-JSON dicts
+    loaded fully into memory. Very large maps (e.g. the ~50M-row HPLT url map)
+    are stored as SQLite and queried on disk, so the web process never has to
+    hold tens of millions of entries in RAM. A map path ending in ``.sqlite``
+    (or ``.db``) is treated as SQLite; anything else as gzip-JSON.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._cache: dict[str, dict] = {}
+        self._conns: dict[str, Optional[sqlite3.Connection]] = {}
+
+    @staticmethod
+    def _is_sqlite(path: str) -> bool:
+        return path.endswith(".sqlite") or path.endswith(".db")
 
     def _load(self, path: str) -> dict:
         with self._lock:
@@ -45,10 +58,71 @@ class MetaResolver:
             self._cache[path] = data
         return data
 
+    def _conn(self, path: str) -> Optional[sqlite3.Connection]:
+        with self._lock:
+            if path in self._conns:
+                return self._conns[path]
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            if path and os.path.exists(path):
+                conn = sqlite3.connect(
+                    f"file:{path}?mode=ro", uri=True, check_same_thread=False
+                )
+        except Exception:  # noqa: BLE001 - a broken db must not break the app
+            conn = None
+        with self._lock:
+            self._conns[path] = conn
+        return conn
+
     def lookup(self, path: Optional[str], doc_id: str):
         if not path:
             return None
+        if self._is_sqlite(path):
+            conn = self._conn(path)
+            if conn is None:
+                return None
+            try:
+                with self._lock:
+                    row = conn.execute(
+                        "SELECT u, ts FROM urls WHERE id = ? LIMIT 1", (doc_id,)
+                    ).fetchone()
+            except Exception:  # noqa: BLE001
+                return None
+            if not row:
+                return None
+            return {"u": row[0], "ts": row[1]}
         return self._load(path).get(doc_id)
+
+    def search_urls(self, path: Optional[str], query: str, limit: int = 20):
+        """Full-text search a SQLite url map by domain, returning ``[(id, url, ts)]``.
+
+        Requires a companion FTS5 table ``url_fts(host, url, id)`` (built by
+        ``web/tools/build_hplt.py --fts``). The query is reduced to alphanumeric
+        tokens; the last token is treated as a prefix so typing ``wikip`` already
+        matches ``wikipedia``. ``ts`` (the crawl timestamp, for a Wayback link)
+        is joined back from the ``urls`` table.
+        """
+        if not path or not self._is_sqlite(path):
+            return []
+        tokens = re.sub(r"[^0-9a-z]+", " ", (query or "").lower()).split()
+        if not tokens:
+            return []
+        match = " ".join(tokens[:-1] + [tokens[-1] + "*"])
+        conn = self._conn(path)
+        if conn is None:
+            return []
+        try:
+            with self._lock:
+                rows = conn.execute(
+                    "SELECT f.id, f.url, u.ts FROM url_fts f "
+                    "JOIN urls u ON u.id = f.id "
+                    "WHERE url_fts MATCH ? ORDER BY rank LIMIT ?",
+                    (match, limit),
+                ).fetchall()
+        except Exception:  # noqa: BLE001 - missing/broken FTS must not 500
+            return []
+        return [(r[0], r[1], r[2]) for r in rows]
+
 
 
 RESOLVER = MetaResolver()
