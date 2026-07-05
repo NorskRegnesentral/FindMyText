@@ -1,36 +1,31 @@
 # findmytext.nr.no — corpus inclusion web demo
 
-A small, modern Flask website that lets anyone check whether a piece of text (or
-a substantial part of it) appears in one of our document corpora, using the
+A small Flask website that lets anyone check whether a piece of text (or a
+substantial part of it) appears in one of our document corpora, using the
 winnowing-fingerprint detection methods from this repository.
 
 It is intentionally lightweight: vanilla HTML/CSS/JS on the front end (no build
-step, no framework) and a thin Flask layer that **reuses the project's own
-detection code** rather than re-implementing anything.
-
+step) and a thin Flask layer that **reuses the project's own detection code**.
 
 ---
 
 ## What it does
 
-1. **Pick a corpus** — corpus indexes live on the server and are loaded on demand.
-2. **Paste/type text** — choose from a dropdown of curated example texts (each
-   with a link to its original source) or paste your own, with a character counter.
+1. **Pick a corpus** — indexes live on the server and are loaded on demand.
+2. **Paste/type text** — choose a curated example (each linked to its source) or
+   paste your own.
 3. **Pick algorithm(s)** and run:
    - **Position-aware match (our method)** — the clustering score (largest
-     geometrically-coherent cluster of shared fingerprints), computed by the
-     FindMyText core via
+     geometrically-coherent cluster of shared fingerprints), via
      [`detector.TextContainmentDetector.find_matches_clustering`](../detector.py).
-   - **Shared fingerprints (baseline)** — number of shared winnowed
-     fingerprints, via
-     [`detector.TextContainmentDetector.find_matches_jaccard`](../detector.py).
-4. **See results** — a summary score + best match per algorithm, a short ranking,
-   and your text with the **matching passages highlighted**. Where possible each
-   match shows the document's **title as a clickable link** (resolved from
-   optional side-car maps; see below).
+   - **Shared fingerprints (baseline)** — number of shared winnowed fingerprints,
+     via [`detector.TextContainmentDetector.find_matches_jaccard`](../detector.py).
+4. **See results** — a score + best match per algorithm, a short ranking, and your
+   text with the **matching passages highlighted**. Where possible each match
+   shows the document's **title as a clickable link**.
 
-While a check runs, the server streams progress events (newline-delimited JSON)
-so the page shows a **live progress bar, stage label and elapsed time**.
+While a check runs, the server streams progress events (newline-delimited JSON),
+so the page shows a live progress bar, stage label and elapsed time.
 
 ---
 
@@ -38,7 +33,7 @@ so the page shows a **live progress bar, stage label and elapsed time**.
 
 ```
 web/
-├── wsgi.py                 # entry point (dev server + gunicorn/mod_wsgi target)
+├── wsgi.py                 # entry point (dev server + gunicorn target)
 ├── requirements.txt        # web-only deps (Flask, gunicorn) + core requirements
 ├── run_local.sh            # convenience launcher using the repo venv
 └── corpussearch/
@@ -53,14 +48,12 @@ web/
     └── static/{css,js}/
 ```
 
-Optional helper scripts under [`web/tools/`](tools/) build the side-car
-title/url maps for a corpus (`build_arxiv.py`, `build_hplt.py`, `build_wiki.py`).
+Optional helper scripts under [`web/tools/`](tools/) build the side-car title/url
+maps for a corpus (`build_arxiv.py`, `build_hplt.py`, `build_wiki.py`).
 
-All scoring and tokenisation live in the FindMyText core
-([`detector.py`](../detector.py), [`winnower.py`](../winnower.py),
-[`indexing.py`](../indexing.py)); the web layer only does routing, progress
-streaming, corpus/LRU config and turning the core's highlight positions into
-character spans.
+All scoring and tokenisation live in the FindMyText core; the web layer only does
+routing, progress streaming, corpus/LRU config and turning the core's highlight
+positions into character spans.
 
 ---
 
@@ -81,65 +74,50 @@ cd web
 
 The three corpora — **arXiv**, **English Wikipedia** and the **HPLT** web crawl —
 are offered automatically whenever their prebuilt indexes are found. Their
-location is set by `index_root` in [`corpussearch/config.json`](corpussearch/config.json)
-(default `/home/jullum/copyai_local`); each corpus's `index_dir` is resolved
-relative to it. At least one index must be present for the site to have
-something to search.
-
-Each corpus ships with two one-click sample texts: one that is known to match
-the corpus and one unrelated passage that is known **not** to match.
+location is set by `index_root` in
+[`corpussearch/config.json`](corpussearch/config.json); each corpus's `index_dir`
+is resolved relative to it. At least one index must be present.
 
 ---
 
 ## Configure corpora & links
 
-Everything is driven by two files in `corpussearch/`, both always loaded:
+Everything is driven by two files in `corpussearch/`:
 
-- [`config.json`](corpussearch/config.json) — the single place for paths
-  (`index_root`, per-corpus `index_dir`, `title_map`, `url_map`), the detection
-  `params`, abuse `protection`, and per-corpus metadata (`label`,
-  `description`, `doc_url_template`, `dataset_url`).
-- [`samples_data.json`](corpussearch/samples_data.json) — the example texts,
-  keyed by corpus id, plus a shared `no_match` example appended to every corpus.
-  Each sample may carry a `url` (original source) and optional `archive_url`
-  (e.g. a Wayback snapshot), both shown as links under the example picker.
+- [`config.json`](corpussearch/config.json) — paths (`index_root`, per-corpus
+  `index_dir`, `title_map`, `url_map`), the detection `params`, abuse
+  `protection`, and per-corpus metadata (`label`, `description`,
+  `doc_url_template`, `dataset_url`). Also set `github_url` and `paper_url`.
+- [`samples_data.json`](corpussearch/samples_data.json) — example texts keyed by
+  corpus id, plus a shared `no_match` example. Each sample may carry a `url` and
+  optional `archive_url` (e.g. a Wayback snapshot).
 
-For a deployment you can either edit `config.json` in place, or keep your own
-copy elsewhere and point the app at it (its `samples_file` key can likewise
-relocate the samples):
+To relocate the config for a deployment, point the app at your own copy:
 
 ```bash
 export FINDMYTEXT_CONFIG=/srv/findmytext/config.json
 ```
 
-Each corpus entry needs a prebuilt `DiskBasedIndex` directory (the folder that
-contains `meta.json`, `fingerprints.npy`, `postings.dat`, …). Build one with
+Each corpus needs a prebuilt `DiskBasedIndex` directory (`meta.json`,
+`fingerprints.npy`, `postings.dat`, …), built with
 [`index_builder.py`](../index_builder.py). Set `doc_url_template` to turn a
-matched document id into a clickable link (e.g. `https://arxiv.org/abs/{doc_id}`
-for arXiv), or leave it empty for ids that have no public URL.
+matched doc id into a link (e.g. `https://arxiv.org/abs/{doc_id}`), or leave it
+empty for ids with no public URL (e.g. the Wikipedia index uses internal ids).
 
 For richer results attach optional **side-car maps** (built by the scripts in
-[`web/tools/`](tools/); paths are relative to `index_root`):
+[`web/tools/`](tools/); paths relative to `index_root`):
 
-- `title_map` — resolves a matched doc id to a human-readable **title** shown as
-  the link text.
-- `url_map` — resolves a doc id whose id is not itself a URL (e.g. HPLT content
-  hashes) to a source url, with an automatic Wayback fallback.
-- `dataset_url` — a link to browse/search the underlying dataset yourself.
+- `title_map` — doc id → human-readable **title** (shown as the link text).
+- `url_map` — doc id → source url, with an automatic Wayback fallback.
+- `dataset_url` — a link to browse the underlying dataset yourself.
 
-Note that some indexes use **internal document ids** rather than a public
-identifier (the Wikipedia index ids, for example, are not Wikipedia page ids),
-so leave `doc_url_template` empty for those and rely on the maps above.
-
-Also set `github_url` and `paper_url` so the page links to the code and paper.
-
-### Memory note (important on a 16 GB host)
+### Memory note
 
 Each loaded disk index uses **~1.7–2 GB RAM** and the first query after loading
 reads ~2 GB from disk (≈7 s on local NVMe, much slower over a network FS). The
-app therefore loads indexes **on demand** and keeps only `max_loaded_indexes`
-(default **1**) resident, evicting the least-recently-used one. Keep indexes on
-**local SSD/NVMe**, not a network share, for acceptable first-query latency.
+app loads indexes **on demand** and keeps only `max_loaded_indexes` (default
+**1**) resident, evicting the least-recently-used one. Keep indexes on **local
+SSD/NVMe** for acceptable first-query latency.
 
 ---
 
@@ -152,27 +130,22 @@ Nothing is enabled by default. Turn on any combination in the config
 |---|---|---|
 | **Shared password** | `"password": "secret"` | A password box appears on the page; the value is checked server-side. Simplest option. |
 | **Per-IP rate limit** | `"rate_limits": ["20 per hour", "5 per minute"]` | Requires `pip install Flask-Limiter`. Good default protection. |
-| **CAPTCHA** | `"captcha_provider": "hcaptcha"` (or `"recaptcha"`) + `captcha_secret` + `captcha_sitekey` | Widget is injected automatically and verified server-side. |
+| **CAPTCHA** | `"captcha_provider": "hcaptcha"` (or `"recaptcha"`) + `captcha_secret` + `captcha_sitekey` | Widget injected and verified server-side. |
 
-The single `guard_request()` function is the place to add other ideas later: an
-IP allow-list, a per-day quota in a small SQLite/Redis counter, a concurrency
-cap/queue, or putting the whole site behind NR SSO / reverse-proxy basic-auth.
-
-**Recommendation for launch:** a per-IP rate limit (Flask-Limiter) is usually
-enough and invisible to honest users; add a shared password if you want to keep
-the demo semi-private during testing. CAPTCHA only if you see abuse.
+**Recommendation for launch:** a per-IP rate limit is usually enough and
+invisible to honest users; add a shared password to keep the demo semi-private.
 
 ---
 
-## Deploy on the server (Apache + gunicorn)
+## Deploy on the server (gunicorn + Apache)
 
-Apache + `mod_wsgi` works, but the simplest and most robust modern setup is
-**gunicorn behind Apache as a reverse proxy** — it keeps the heavy, long-lived
-Python process (with the big index in RAM) separate from Apache and survives
-Apache restarts.
+Run the app under **gunicorn behind Apache as a reverse proxy**: this keeps the
+heavy, long-lived Python process (with the big index in RAM) separate from Apache
+and lets it survive Apache restarts.
 
-1. Run the app with gunicorn (a couple of workers; long timeout because a cold
-   first query can take several seconds, and the progress endpoint streams):
+1. Run gunicorn (a couple of workers; long timeout because a cold first query can
+   take several seconds, and the progress endpoint streams). Run it as a
+   `systemd` service so it starts on boot and restarts on failure:
 
    ```bash
    cd /srv/findmytext/web
@@ -181,10 +154,8 @@ Apache restarts.
        --timeout 180 --bind 127.0.0.1:8001 wsgi:app
    ```
 
-   Run it as a `systemd` service so it starts on boot and restarts on failure.
-
-2. Apache (`mod_proxy` + `mod_proxy_http`, and `mod_ssl` for HTTPS) as a
-   reverse proxy for `findmytext.nr.no`:
+2. Apache (`mod_proxy` + `mod_proxy_http`, `mod_ssl` for HTTPS) as a reverse
+   proxy for `findmytext.nr.no`:
 
    ```apache
    <VirtualHost *:443>
@@ -198,27 +169,18 @@ Apache restarts.
 
    Enable the modules (`a2enmod proxy proxy_http ssl`) and reload Apache.
 
-> **Why not `mod_wsgi`?** It embeds Python inside Apache, which makes the large
-> in-RAM index awkward to manage (per-worker memory, reloads tied to Apache) and
-> can buffer the streaming progress responses. If you prefer `mod_wsgi` anyway,
-> point its `WSGIScriptAlias` at `web/wsgi.py` (it exposes `app`) and set
-> `WSGIDaemonProcess` with 1 process so the index is loaded once.
-
-### Worker/concurrency note
-
-A running detection holds its worker for the duration of the (streamed) request.
+A running detection holds its worker for the duration of the streamed request.
 With `--workers 2 --threads 4` a couple of users can run checks concurrently;
-combine this with the rate limit above so a single visitor can't tie up the box.
+combine this with the rate limit above so one visitor can't tie up the box.
 
 ---
 
 ## How the visualization works
 
 The matched-passage highlighting maps shared-fingerprint **token positions** back
-to character offsets in your original text using the winnower's exact
-tokenisation (see `tokenize_with_offsets` in [`winnower.py`](../winnower.py)) and
-the query positions returned by
-`TextContainmentDetector.get_match_highlight_positions`. For "our method" the
-highlighted positions are those in the largest cluster; for Jaccard they are all
-shared fingerprints of the top match. No corpus document text is needed for this,
-which keeps the server lightweight.
+to character offsets in your text using the winnower's exact tokenisation
+(`tokenize_with_offsets` in [`winnower.py`](../winnower.py)) and the query
+positions from `TextContainmentDetector.get_match_highlight_positions`. For "our
+method" the highlighted positions are those in the largest cluster; for the
+baseline they are all shared fingerprints of the top match. No corpus document
+text is needed, which keeps the server lightweight.
