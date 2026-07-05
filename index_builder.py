@@ -26,13 +26,14 @@ import multiprocessing as mp
 import os
 import random
 import sys
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
 
-import indexing
 import numpy as np
 import orjson
-import utils
 import zstandard as zstd
+
+import indexing
+import utils
 
 try:
     import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
@@ -45,7 +46,7 @@ except ImportError:
 #####################################################
 
 
-def do_indexing(
+def index_file(
     corpus_file: str,
     length=4,
     window_size=6,
@@ -82,12 +83,7 @@ def do_indexing(
             dirname,
             f"index({length},{window_size})_{filename_without_suffix}.jsonl.gz",
         )
-    elif not output_file.endswith(".jsonl.gz"):
-        raise ValueError("Output file must end with .jsonl.gz")
-
     print("Indexing documents from", corpus_file)
-    output_template = output_file.replace(".jsonl.gz", "-{}.jsonl.gz")
-    print(f"And saving intermediate indexes under {output_template}".format("*"))
 
     if corpus_file.endswith(".jsonl"):
         stream = utils.stream_jsonl(corpus_file)
@@ -100,9 +96,50 @@ def do_indexing(
             "Unsupported file format. Please provide a .jsonl, .jsonl.gz, or .jsonl.zst file."
         )
 
+    index_files = index_data(
+        stream,
+        output_file,
+        length=length,
+        window_size=window_size,
+        intermediate_save_freq=intermediate_save_freq,
+        stop_after=stop_after,
+    )
+    return index_files
+
+
+def index_data(
+    data_stream: Iterator[Dict[str, Any]],
+    output_file: str,
+    length=4,
+    window_size=6,
+    intermediate_save_freq: int = 300_000,
+    stop_after: Optional[int] = None,
+) -> List[str]:
+    """Index documents from a corpus and save intermediate indexes (every intermediate_save_freq documents).
+
+    Args:
+        data_stream (Iterator[Dict[str, Any]]): An iterator over the input data. Each item should be a dictionary
+         with at least two fields: "id" (a unique document identifier) and "text" (the document content to be indexed).
+        output_file (str): Path to the output file where the final index will be saved.
+        length (int): Length of k-grams to use for indexing.
+        window_size (int): Window size for winnowing.
+        intermediate_save_freq (int): Frequency (in number of documents) at which to save intermediate indexes.
+        stop_after (Optional[int]): If provided, stop indexing after this many documents (for testing purposes).
+
+    Returns:
+        List of paths to the saved intermediate index files.
+
+    """
+
+    if not output_file.endswith(".jsonl.gz"):
+        raise ValueError("Output file must end with .jsonl.gz")
+
+    output_template = output_file.replace(".jsonl.gz", "-{}.jsonl.gz")
+    print(f"saving intermediate indexes under {output_template}".format("*"))
+
     index = indexing.MemoryBasedIndex(length=length, window_size=window_size)
     index_files = []
-    for i, result in enumerate(stream):
+    for i, result in enumerate(data_stream):
         index.add_doc(result["text"], result["id"])
         if stop_after is not None and i + 1 >= stop_after:
             break
@@ -507,7 +544,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.task == "index":
-        do_indexing(
+        index_file(
             args.corpus_file,
             length=args.length,
             window_size=args.window_size,
