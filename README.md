@@ -1,6 +1,10 @@
-# FindMyText
+<p align="center">
+  <img src="assets/findmytext_logo.png" alt="FindMyText logo" width="320"/>
+</p>
 
-**FindMyText** is an open-source Python package for efficiently detecting whether a given text appears, in part or in full, within a large text corpus. It is particularly suited for verifying the presence of copyrighted or licensed material in web-crawled datasets.
+# <font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font>
+
+<font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font> is an open-source Python package for efficiently detecting whether a given text appears, in part or in full, within a large text corpus. It is particularly suited for verifying the presence of copyrighted or licensed material in large, web-crawled corpora. This can notably provide important insights into which texts have been used to pre-train LLMs. 
 
 The tool builds on standard document fingerprinting techniques, and extends them with a novel mechanism that explicitly captures *sequences* (chains) of matching fingerprints. This makes it robust to near-verbatim copies — texts that share the same content but with minor differences due to OCR errors, formatting variants, text normalisation, or added boilerplate. Leveraging a distributed, disk-based indexing framework, FindMyText scales to large corpora that cannot be held in memory.
 
@@ -34,7 +38,7 @@ index_builder.merge_indexes_from_prefix("data/my_fingerprints", "my_index")
 
 The resulting index is stored on disk and memory-mapped at query time, so it scales to corpora that are too large to fit in RAM.
 
-### 2. Detect verbatim content
+### 2. Detect content
 
 Once the index is built, detection is a single call:
 
@@ -42,30 +46,16 @@ Once the index is built, detection is a single call:
 import detectors
 
 detector = detectors.FingerprintChainDetector("my_index")
-scores = detector.get_containment_score(query_text)
+scores = detector.get_containment_scores(query_text)
 
 # `scores` is a dict mapping document IDs to containment scores
 best_match_id = max(scores, key=scores.get)
 print(f"Best match: {best_match_id}  (score: {scores[best_match_id]:.3f})")
 ```
 
-### 3. Near-verbatim detection
+The text in `query_text` does not need to be exactly identical to the one found in the corpus. <font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font> is designed to be robust to small differences between the documents. 
 
-`FingerprintChainDetector` is robust to small discrepancies between the query and the indexed text. A simpler baseline (`NbSharedFingerprintsDetector`) is also available, which counts shared fingerprints without considering their order:
-
-```python
-# Baseline: counts shared fingerprints (fast, but fooled by jumbled text)
-baseline = detectors.NbSharedFingerprintsDetector("my_index")
-scores_baseline = baseline.get_containment_score(query_text)
-
-# Chain detector: requires fingerprints to appear in the same order (more precise)
-chain = detectors.FingerprintChainDetector("my_index")
-scores_chain = chain.get_containment_score(query_text)
-```
-
-The chain detector correctly assigns a low score to texts where the words or lines have been reordered, whereas the baseline does not.
-
-### 4. Verifying a match with local alignment
+### 3. Verifying a match with local alignment
 
 To inspect a detected match in detail, use the built-in local alignment:
 
