@@ -221,7 +221,7 @@ def run_detection(
 # ---------------------------------------------------------------------------
 HIGHLIGHT_MODES = {
     "jaccard": {
-        "label": "Shared fingerprints (Jaccard) — all overlapping passages",
+        "label": "Shared fingerprints (baseline) — all overlapping passages",
         "method": "jaccard",
         "which": "largest",
     },

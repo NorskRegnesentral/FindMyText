@@ -4,7 +4,7 @@ const CONFIG = JSON.parse(document.getElementById("public-config").textContent);
 
 const ALGO_LABELS = {
     connected_components: "Position-aware match (our method)",
-    jaccard: "Shared fingerprints (Jaccard)",
+    jaccard: "Shared fingerprints (baseline)",
 };
 const STAGE_LABELS = {
     starting: "Starting…",
@@ -502,31 +502,81 @@ function renderResult(res) {
 
 function escapeText(s) { return s == null ? "" : String(s); }
 
-// Prepare the on-demand highlight controls once results are in. Highlighting is
-// computed against a single "best match" document: the position-aware method's
-// top doc if available, otherwise the Jaccard top doc.
+// Prepare the on-demand highlight controls once results are in. The user can
+// pick which matched document to compare against; the default is the
+// position-aware method's top doc if available, otherwise the baseline's.
 function renderHighlightControls(res) {
     const wrap = document.getElementById("highlight-wrap");
     const target = document.getElementById("highlight");
     const meta = document.getElementById("highlight-meta");
     const err = document.getElementById("hl-error");
+    const select = document.getElementById("highlight-doc-select");
     target.innerHTML = "";
     meta.textContent = "";
     err.textContent = "";
+    select.innerHTML = "";
 
-    const cc = res.results.connected_components && res.results.connected_components.top;
-    const jac = res.results.jaccard && res.results.jaccard.top;
-    const topMatch = cc || jac || null;
-    const doc = (topMatch && topMatch.doc_id) || null;
-    if (!doc) {
+    // Collect every candidate document from all algorithm rankings, keeping the
+    // best score each doc reached across methods (so a doc the baseline flagged
+    // but our method scored 0 is still available to compare against).
+    const byId = new Map();
+    for (const key of Object.keys(res.results)) {
+        const ranking = (res.results[key] && res.results[key].ranking) || [];
+        ranking.forEach((r) => {
+            if (!r || r.doc_id == null) return;
+            const id = String(r.doc_id);
+            const prev = byId.get(id);
+            if (!prev) byId.set(id, { item: r, best: r.score || 0 });
+            else prev.best = Math.max(prev.best, r.score || 0);
+        });
+    }
+    const candidates = [...byId.values()].filter((c) => c.best > 0);
+    candidates.sort((a, b) => b.best - a.best);
+
+    if (!candidates.length) {
         highlightDoc = null;
         highlightDocLabel = null;
         wrap.classList.add("hidden");
         return;
     }
-    highlightDoc = doc;
-    highlightDocLabel = (topMatch && (topMatch.title || (topMatch.doc_id != null ? docLabel(topMatch) : null))) || doc;
-    document.getElementById("highlight-doc-label").textContent = `“${highlightDocLabel}”`;
+
+    // Populate the picker, disambiguating identical display labels.
+    const labels = candidates.map((c) => docLabel(c.item));
+    const totals = {};
+    labels.forEach((l) => { totals[l] = (totals[l] || 0) + 1; });
+    const seen = {};
+    candidates.forEach((c, i) => {
+        let lbl = labels[i];
+        if (totals[lbl] > 1) {
+            seen[lbl] = (seen[lbl] || 0) + 1;
+            lbl = `${lbl} (${seen[lbl]})`;
+        }
+        select.append(el("option", { value: String(c.item.doc_id) },
+            `${lbl} — score ${c.best}`));
+    });
+
+    // Default to the position-aware top match, else the baseline top match.
+    const cc = res.results.connected_components && res.results.connected_components.top;
+    const jac = res.results.jaccard && res.results.jaccard.top;
+    const defaultId = String(
+        (cc && cc.doc_id) || (jac && jac.doc_id) || candidates[0].item.doc_id
+    );
+    select.value = defaultId;
+
+    const applySelection = (clear) => {
+        const id = select.value;
+        const c = candidates.find((x) => String(x.item.doc_id) === id) || candidates[0];
+        highlightDoc = c.item.doc_id;
+        highlightDocLabel = c.item.title || docLabel(c.item) || String(c.item.doc_id);
+        if (clear) {
+            target.innerHTML = "";
+            meta.textContent = "";
+            err.textContent = "";
+        }
+    };
+    select.onchange = () => applySelection(true);
+    applySelection(false);
+
     wrap.classList.remove("hidden");
 }
 

@@ -101,10 +101,13 @@
             <div id="highlight-wrap" class="hidden">
                 <h3>Matching passages in your text</h3>
                 <p class="hint" id="highlight-intro">
-                    Highlight which parts of your text overlap
-                    <span id="highlight-doc-label">the best match</span>. Pick one or more
-                    styles — they can be shown together.
+                    Highlight which parts of your text overlap the selected match.
+                    Pick one or more styles — they can be shown together.
                 </p>
+                <div class="hl-doc-picker">
+                    <label for="highlight-doc-select">Compare against:</label>
+                    <select id="highlight-doc-select" class="hl-doc-select"></select>
+                </div>
                 <div class="hl-modes" id="hl-modes">
                     <label class="hl-mode">
                         <input type="checkbox" name="hl-mode" value="cc_largest" checked />
