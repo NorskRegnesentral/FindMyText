@@ -14,6 +14,25 @@ import numpy as np
 from numba import jit, objmode
 
 
+def align(text1: str, text2: str, multiple_passes: bool = False) -> AlignmentResult:
+    """Align two texts and return an AlignmentResult object.
+
+    Arguments:
+        text1: The first text to align.
+        text2: The second text to align.
+        multiple_passes: If True, the alignment will be performed in multiple passes to find all matching regions.
+    Results:
+        An AlignmentResult object containing the original texts and a list of matching regions.
+
+    """
+
+    aligner = LocalAligner()
+    if multiple_passes:
+        return aligner.run_all(text1, text2)
+    else:
+        return aligner.run(text1, text2)
+
+
 class AlignmentResult:
     """Class representing the result of a local alignment, including the original texts
     and a list of matching regions.
@@ -60,6 +79,102 @@ class AlignmentResult:
                 f"[{start2}:{end2}]={aligned_seq2!r})"
             )
         return "\n".join(alignment_strs)
+
+    def show(self, show_regions_only=True):
+        """Display a colour-coded HTML visualisation of the alignment in a Jupyter notebook.
+
+        Characters that are matched between the two texts are highlighted in green; characters
+        that differ (mismatches or gaps) are highlighted in red. If `show_regions_only` is True,
+        only the matching regions are shown side by side. Otherwise the full texts are shown, with
+        non-aligned portions left unformatted.
+        """
+        from difflib import SequenceMatcher
+        from html import escape
+
+        from IPython.display import HTML, display
+
+        GREEN = "background-color:#90ee90"
+        RED = "background-color:#ff9999"
+
+        def _span(text, color):
+            return (
+                f'<mark style="{color}">{escape(text).replace(chr(10), "<br>")}</mark>'
+            )
+
+        def _diff_render(s1, s2):
+            """Return (html1, html2) with matched characters in green, differing in red."""
+            parts1, parts2 = [], []
+            for tag, i1, i2, j1, j2 in SequenceMatcher(
+                None, s1, s2, autojunk=False
+            ).get_opcodes():
+                c1, c2 = s1[i1:i2], s2[j1:j2]
+                color = GREEN if tag == "equal" else RED
+                if c1:
+                    parts1.append(_span(c1, color))
+                if c2:
+                    parts2.append(_span(c2, color))
+            return "".join(parts1), "".join(parts2)
+
+        col_style = (
+            "font-family:monospace;white-space:pre-wrap;"
+            "border:1px solid #ccc;padding:10px;flex:1;min-width:0"
+        )
+        row_style = "display:flex;gap:10px;margin:6px 0"
+        header_style = "font-weight:bold;margin-bottom:6px"
+
+        if show_regions_only:
+            blocks = []
+            for i, r in enumerate(
+                sorted(self.regions, key=lambda r: r["score"], reverse=True), 1
+            ):
+                s1 = self.text1[r["start1"] : r["end1"]]
+                s2 = self.text2[r["start2"] : r["end2"]]
+                html1, html2 = _diff_render(s1, s2)
+                blocks.append(
+                    f'<div style="margin:6px 0">'
+                    f'<div style="{header_style}">Region {i} &mdash; score {r["score"]:.1f}</div>'
+                    f'<div style="{row_style}">'
+                    f'<div style="{col_style}"><b>Text 1</b> [{r["start1"]}:{r["end1"]}]<br><br>{html1}</div>'
+                    f'<div style="{col_style}"><b>Text 2</b> [{r["start2"]}:{r["end2"]}]<br><br>{html2}</div>'
+                    f"</div></div>"
+                )
+            html = "\n".join(blocks) if blocks else "<i>No aligned regions found.</i>"
+        else:
+            # Build per-character colour maps for the full texts.
+            # Regions are paired: region i covers [start1_i:end1_i] in text1 and
+            # [start2_i:end2_i] in text2. Outside regions, characters are unstyled.
+            rendered1: dict[int, str] = {}  # char_index → html span
+            rendered2: dict[int, str] = {}
+            for r in self.regions:
+                s1 = self.text1[r["start1"] : r["end1"]]
+                s2 = self.text2[r["start2"] : r["end2"]]
+                for tag, i1, i2, j1, j2 in SequenceMatcher(
+                    None, s1, s2, autojunk=False
+                ).get_opcodes():
+                    color = GREEN if tag == "equal" else RED
+                    for k, ch in enumerate(s1[i1:i2]):
+                        rendered1[r["start1"] + i1 + k] = _span(ch, color)
+                    for k, ch in enumerate(s2[j1:j2]):
+                        rendered2[r["start2"] + j1 + k] = _span(ch, color)
+
+            def _apply(text, rendered):
+                parts = []
+                for i, ch in enumerate(text):
+                    if i in rendered:
+                        parts.append(rendered[i])
+                    else:
+                        parts.append(escape(ch).replace(chr(10), "<br>"))
+                return "".join(parts)
+
+            body1 = _apply(self.text1, rendered1)
+            body2 = _apply(self.text2, rendered2)
+            html = (
+                f'<div style="{row_style}">'
+                f'<div style="{col_style}"><b>Text 1</b><br><br>{body1}</div>'
+                f'<div style="{col_style}"><b>Text 2</b><br><br>{body2}</div>'
+                f"</div>"
+            )
+        display(HTML(html))
 
 
 class LocalAligner:

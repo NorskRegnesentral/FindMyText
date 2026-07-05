@@ -28,9 +28,9 @@ import random
 import sys
 from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
 
+import datasets
 import numpy as np
 import orjson
-import zstandard as zstd
 
 import indexing
 import utils
@@ -108,7 +108,7 @@ def index_file(
 
 
 def index_data(
-    data_stream: Iterator[Dict[str, Any]],
+    data_stream: Any,
     output_file: str,
     length=4,
     window_size=6,
@@ -135,11 +135,12 @@ def index_data(
         raise ValueError("Output file must end with .jsonl.gz")
 
     output_template = output_file.replace(".jsonl.gz", "-{}.jsonl.gz")
-    print(f"saving intermediate indexes under {output_template}".format("*"))
 
     index = indexing.MemoryBasedIndex(length=length, window_size=window_size)
     index_files = []
     for i, result in enumerate(data_stream):
+        result = utils.normalise_json(result)
+
         index.add_doc(result["text"], result["id"])
         if stop_after is not None and i + 1 >= stop_after:
             break
@@ -166,6 +167,75 @@ def index_data(
     return index_files
 
 
+def index_data_parallel(
+    data: Any,
+    output_base: str,
+    n_workers: int,
+    length=4,
+    window_size=6,
+    intermediate_save_freq: int = 300_000,
+) -> List[str]:
+    """Index documents in parallel by splitting data across n_workers processes.
+
+    Args:
+        data (List[Dict[str, Any]]): The full dataset to index. Each item must have "id" and "text" fields.
+        output_base (str): Base name for worker output files (e.g. "my_index" produces
+            "my_index_worker00.jsonl.gz", "my_index_worker01.jsonl.gz", ...).
+        n_workers (int): Number of parallel worker processes.
+        length (int): Length of k-grams to use for indexing.
+        window_size (int): Window size for winnowing.
+        intermediate_save_freq (int): Frequency at which to save intermediate indexes per worker.
+
+    Returns:
+        Flat list of all intermediate index file paths produced by all workers.
+
+    """
+
+    if isinstance(data, datasets.Dataset):
+        data = list(data)
+
+    output_base = output_base.replace(".gz", "").replace(".jsonl", "")
+
+    split_size = (len(data) + n_workers - 1) // n_workers
+    print(
+        "Indexing %d documents across %d workers..." % (len(data), n_workers),
+        flush=True,
+    )
+    worker_args = [
+        (
+            i,
+            data[i * split_size : (i + 1) * split_size],
+            output_base,
+            length,
+            window_size,
+            intermediate_save_freq,
+        )
+        for i in range(n_workers)
+    ]
+
+    all_files = []
+    ctx = mp.get_context("fork")
+    with ctx.Pool(processes=n_workers) as pool:
+        for files in pool.imap_unordered(_parallel_worker, worker_args):
+            all_files.extend(files)
+            print("  indexed -> %s" % files[-1], flush=True)
+    return all_files
+
+
+def _parallel_worker(args: Tuple) -> List[str]:
+    """Module-level worker for index_data_parallel (must be picklable)."""
+    worker_idx, split, worker_base, length, window_size, intermediate_save_freq = args
+    sys.stdout = open(os.devnull, "w")
+    output_file = f"{worker_base}_worker{worker_idx:02d}.jsonl.gz"
+    return index_data(
+        iter(split),
+        output_file,
+        length=length,
+        window_size=window_size,
+        intermediate_save_freq=intermediate_save_freq,
+    )
+
+
 #####################################################
 # STEP 2: MERGE INTO SINGLE DISK-BASED INDEX
 #####################################################
@@ -184,8 +254,6 @@ def merge_indexes_from_prefix(index_prefix: str, output_dir: Optional[str] = Non
         dirname = os.path.dirname(index_prefix)
         output_dir = os.path.join(dirname, os.path.basename(index_prefix))
 
-    print("Merging the following index files:", index_files)
-    print("Saving merged index to", output_dir)
     merge_indexes(index_files, output_dir)
 
 
@@ -212,13 +280,14 @@ def merge_indexes(
         ValueError: If no index files are provided or if the input files are not in the expected format.
 
     """
-    print("Merging intermediate indexes:", index_files)
+
+    print("Merging the following index files:", index_files)
+    print("Saving merged index to", output_dir)
 
     if not index_files:
         raise ValueError("At least one JSONL file must be provided to load the index")
 
     os.makedirs(output_dir, exist_ok=True)
-    print("Output directory:", output_dir)
 
     # Peek at the first line of the first JSONL file to read the index parameters,
     # and save them to the output directory in a meta.json file.
@@ -263,18 +332,20 @@ def merge_indexes(
             current_offset += len(data)
 
             if buf.count % 1_000_000 == 0:
-                print(f"Processed {buf.count} fingerprints...", flush=True)
+                print(f"Processed {buf.count:,} fingerprints...", flush=True)
 
             if save_every_n and buf.count > 0 and buf.count % save_every_n == 0:
                 print(
-                    f"Saving intermediate index ({buf.count} fingerprints)...",
+                    f"Saving intermediate index ({buf.count:,} fingerprints)...",
                     end="",
                     flush=True,
                 )
                 buf.save(output_dir)
                 print("Done")
 
+    print(f"Saving final index ({buf.count:,} fingerprints)...", end="", flush=True)
     buf.save(output_dir)
+    print("Done")
 
 
 class ExpandingBuffer:

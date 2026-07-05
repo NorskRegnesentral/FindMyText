@@ -11,7 +11,7 @@ import orjson
 
 # Common field names for text and ID in JSON objects
 COMMON_TEXT_FIELDS = ["text", "content", "document", "report"]
-COMMON_ID_FIELDS = ["id", "doc_id", "document_id", "report_id", "title"]
+COMMON_ID_FIELDS = ["id", "doc_id", "document_id", "report_id", "text_id", "title"]
 
 
 def stream_json_zst(

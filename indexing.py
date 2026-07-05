@@ -350,6 +350,8 @@ class DiskBasedIndex:
             query_fps, _ = self.runtime_winnower.get_winnowed_fingerprints(query)
         elif isinstance(query, np.ndarray):
             query_fps = query
+        elif hasattr(query, "to_numpy"):
+            query_fps = query.to_numpy()
         else:
             raise ValueError("query must be a string or an array of fingerprints")
 

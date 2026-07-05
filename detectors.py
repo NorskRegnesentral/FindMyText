@@ -247,7 +247,7 @@ class NbSharedFingerprintsDetector(_BaseDetector):
         if len(text) < min_fragment_length:
             warnings.warn(
                 f"Query ({len(text)} chars) is shorter than min_fragment_length "
-                f"({min_fragment_length} chars); containment score will be near zero.",
+                f"({min_fragment_length} chars)",
                 UserWarning,
                 stacklevel=2,
             )
@@ -262,6 +262,7 @@ class NbSharedFingerprintsDetector(_BaseDetector):
         weights_df = pl.DataFrame(
             list(fingerprint_weights.items()),
             schema={"hash": pl.Int64, "weight": pl.Float64},
+            orient="row",
         )
 
         # Compute the total weight of unique shared fingerprints for each candidate document.
@@ -369,7 +370,7 @@ class FingerprintChainDetector(_BaseDetector):
         if len(text) < min_fragment_length:
             warnings.warn(
                 f"Query ({len(text)} chars) is shorter than min_fragment_length "
-                f"({min_fragment_length} chars); containment score will be near zero.",
+                f"({min_fragment_length} chars)",
                 UserWarning,
                 stacklevel=2,
             )
