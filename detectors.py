@@ -82,7 +82,7 @@ class _BaseDetector(ABC):
         )
 
     @abstractmethod
-    def get_containment_score(
+    def get_containment_scores(
         self, text: str, min_fragment_length: float = 1000.0
     ) -> dict[str, float]:
         """Return a containment-probability score for each candidate document.
@@ -220,7 +220,7 @@ class NbSharedFingerprintsDetector(_BaseDetector):
 
     """
 
-    def get_containment_score(
+    def get_containment_scores(
         self, text: str, min_fragment_length: float = 1000.0
     ) -> dict[str, float]:
         """Return a containment-probability score for each candidate document.
@@ -341,7 +341,7 @@ class FingerprintChainDetector(_BaseDetector):
         self.distance_threshold = distance_threshold
         self.min_cluster_size = min_cluster_size
 
-    def get_containment_score(
+    def get_containment_scores(
         self, text: str, min_fragment_length: float = 1000.0
     ) -> dict[str, float]:
         """Return a containment-probability score for each candidate document.
@@ -788,7 +788,7 @@ def main() -> None:
         )
 
     # ── Score ────────────────────────────────────────────────────────────── #
-    scores = detector.get_containment_score(
+    scores = detector.get_containment_scores(
         text, min_fragment_length=args.min_fragment_length
     )
 

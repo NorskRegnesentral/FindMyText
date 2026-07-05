@@ -1,4 +1,5 @@
 # Core dependencies for FindMyText
+datasets
 filelock
 numba
 numpy
