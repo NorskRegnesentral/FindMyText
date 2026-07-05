@@ -13,11 +13,12 @@ try:
 except ImportError:
     import gzip
 
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import numpy as np
-import winnower
 from numpy import ndarray
+
+import winnower
 
 
 class MemoryBasedIndex:
@@ -312,7 +313,7 @@ class DiskBasedIndex:
 
     def get_closest_matches_with_positions(
         self,
-        query_text: str,
+        query: Union[str, np.ndarray],
         min_fingerprints=5,
         top_k: int = 5,
         verbose: bool = True,
@@ -323,7 +324,8 @@ class DiskBasedIndex:
         document.
 
         Args:
-            query_text: The text of the query document to find matches for.
+            query: The text of the query document to find matches for, or an array of precomputed
+             fingerprints for that text.
             min_fingerprints: The minimum number of shared fingerprints required for a document to be
             considered a match (default: 5).
             top_k: The number of top matching documents to return based on shared fingerprint counts
@@ -344,7 +346,12 @@ class DiskBasedIndex:
             raise ValueError("Index not initialized")
 
         # Compute the winnowed fingerprints for the query text
-        query_fps, _ = self.runtime_winnower.get_winnowed_fingerprints(query_text)
+        if isinstance(query, str):
+            query_fps, _ = self.runtime_winnower.get_winnowed_fingerprints(query)
+        elif isinstance(query, np.ndarray):
+            query_fps = query
+        else:
+            raise ValueError("query must be a string or an array of fingerprints")
 
         # Retrieve the postings lists for each fingerprint in the query
         # (NB: we ignore the positions in the postings here)
