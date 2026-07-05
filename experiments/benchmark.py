@@ -28,6 +28,7 @@ import re
 import sys
 import time
 import unicodedata
+from email.mime import text
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import filelock
@@ -76,12 +77,12 @@ BOILERPLATE_SEGMENTS = [
     "See all latest stories.",
 ]
 
-PROMPT_TEMPLATE = """You are a helpful assistant for paraphrasing text. Your task is to take the input text and produce a new version that retains the meaning but with slightly different words. You should aim to change about 30% of the words in the text.
+PROMPT_TEMPLATE = """You are a helpful assistant for paraphrasing text. Your task is to take the input text and produce a new version that retains the meaning but with different words. You should change most of the words in the text.
 
 Here is the input text:
 {text}
 
-Just output a paraphrased version of the input text. DO NOT include any commentary or explanation, either before or after the paraphrase."""
+Just output the paraphrase. DO NOT include any commentary or explanation, either before or after."""
 
 
 class Corpus:
@@ -161,13 +162,15 @@ class PositiveExampleGenerator:
         # for edits while still retaining a shared segment that is sufficiently long.
         min_chunk_size = int(self.min_oracle_score)
         chunks = chunk_min(doc_text, min_chunk_size=min_chunk_size)
-        chunk_to_edit = np.random.choice(chunks)
-        if len(chunk_to_edit) < (self.min_oracle_score + 30):
-            print("Selected chunk is too short. Skipping.")
+        suitable_chunks = [
+            c
+            for c in chunks
+            if len(c) < self.min_oracle_score * 1.05 and len(c) >= min_chunk_size + 10
+        ]
+        if not suitable_chunks:
+            print("No suitable chunks found. Skipping.")
             return None
-        if len(chunk_to_edit) > (self.min_oracle_score * 1.1):
-            print("Selected chunk is too long. Skipping.")
-            return None
+        chunk_to_edit = np.random.choice(suitable_chunks)
 
         doc_id = doc.get("u", doc.get("id", "unknown"))
         print(
@@ -431,7 +434,7 @@ class NegativeExampleGenerator:
         self.aligner = oracle.LocalAligner()
         self.min_oracle_score = min_oracle_score
 
-    def sample_negative(self, max_nb_attempts=80, debug=False) -> dict:
+    def sample_negative(self, max_nb_attempts=100, debug=False) -> dict:
         """Sample a negative example from the corpus by randomly selecting a document
         and editing it, either by paraphrasing it using the LLM or by randomly permuting
         the order of a few chunks of the text. The method applies a series of edits to
@@ -444,7 +447,7 @@ class NegativeExampleGenerator:
 
         # We sample a document from the corpus that is long enough to allow for editing
         # but not too long to avoid excessively long processing times.
-        doc = self.corpus.sample_doc(int(self.min_oracle_score * 1.1), 30000)
+        doc = self.corpus.sample_doc(int(self.min_oracle_score * 2.0), 30000)
 
         initial_text = str(doc["text"])
         initial_text_nobreaks = re.sub(r"\s+", " ", initial_text).strip()
@@ -456,6 +459,7 @@ class NegativeExampleGenerator:
         cur_text = str(initial_text_nobreaks)
 
         step_nr = 1
+        nb_consecutive_skips = 0
         while step_nr <= max_nb_attempts and cur_score > self.min_oracle_score:
             print("STEP %i:" % (step_nr), flush=True)
 
@@ -470,7 +474,7 @@ class NegativeExampleGenerator:
             # b) If we are in the second half of the maximum attempts, we do paraphrasing
             # c) Otherwise, we do permutation if the region is more than twice the minimum oracle score,
             # and paraphrasing otherwise.
-            if self.model is None:
+            if self.model is None or nb_consecutive_skips >= 2:
                 operation = "permutation"
             elif step_nr > max_nb_attempts / 2:
                 operation = "paraphrasing"
@@ -486,7 +490,7 @@ class NegativeExampleGenerator:
             # Otherwise, we paraphrase a smaller chunk of the region using the LLM
             else:
                 edit_start, edit_end = self._get_region_to_edit(
-                    initial_text_nobreaks, cur_text, max_chunk_size=400
+                    initial_text_nobreaks, cur_text, max_chunk_size=500
                 )
                 print("Paraphrasing of region [%i:%i]" % (edit_start, edit_end))
                 chunk_to_edit = cur_text[edit_start:edit_end]
@@ -505,17 +509,21 @@ class NegativeExampleGenerator:
                 print("After edit:", new_text)
 
             # We compute the oracle score of the new text compared to the original text
-            new_score = self.aligner.get_largest_region_score(initial_text, new_text)
+            new_score = self.aligner.get_largest_region_score(
+                initial_text_nobreaks, new_text
+            )
             print("==> Region score after edit: %.1f" % new_score)
             step_nr += 1
 
             # If the new score is higher than the current score, we skip this edit and keep the previous text
             if new_score > cur_score:
                 print("WARNING: Region score increased after edit, skipping step")
+                nb_consecutive_skips += 1
                 continue
             else:
                 cur_score = new_score
                 cur_text = new_text
+                nb_consecutive_skips = 0
 
         if cur_score >= self.min_oracle_score:
             raise RuntimeError(
@@ -539,8 +547,104 @@ class NegativeExampleGenerator:
         }
         return result
 
+    def continue_negative(
+        self, doc_incr: int, max_nb_attempts=150, debug=False
+    ) -> dict:
+        """Assuming self.corpus is a corpus of negative examples, continue editing the text through
+        paraphrasing."""
+
+        doc = self.corpus.data[doc_incr]
+
+        initial_text = str(doc["source_text"])
+        initial_text_nobreaks = re.sub(r"\s+", " ", initial_text).strip()
+
+        print("Working on text", doc["source_doc_id"], flush=True)
+        if debug:
+            print("Original text:", initial_text_nobreaks)
+
+        cur_score = doc["oracle_score"]
+        cur_text = str(doc["text"])
+
+        step_nr = 1
+        while step_nr <= max_nb_attempts and cur_score >= self.min_oracle_score:
+            print("STEP %i:" % (step_nr), flush=True)
+
+            # We identify the region of the text that will have the maximum impact on the oracle score if edited
+            edit_start, edit_end = self._get_region_to_edit(
+                initial_text_nobreaks, cur_text, max_chunk_size=400
+            )
+
+            print("Paraphrasing of region [%i:%i]" % (edit_start, edit_end))
+            chunk_to_edit = cur_text[edit_start:edit_end]
+            edited_chunk = self.get_paraphrase(chunk_to_edit)
+
+            # We construct the new text by replacing the selected region with the edited chunk
+            parts = [
+                cur_text[:edit_start],
+                edited_chunk,
+                cur_text[edit_end:],
+            ]
+            new_text = " ".join(parts)
+            new_text = re.sub(r"\s+", " ", new_text).strip()
+
+            if debug:
+                print("After edit:", new_text)
+
+            # We compute the oracle score of the new text compared to the original text
+            new_score = self.aligner.get_largest_region_score(
+                initial_text_nobreaks, new_text
+            )
+            print("==> Region score after edit: %.1f" % new_score)
+            step_nr += 1
+
+            # If the new score is higher than the current score, we skip this edit, but add a boilerplate
+            # segment somewhere in the region that was edited, to reduce the score in the next step.
+            if new_score > cur_score:
+                print(
+                    "WARNING: Region score increased after edit, skipping step, and adding boilerplate"
+                )
+                segment_to_insert = np.random.choice(BOILERPLATE_SEGMENTS)
+                insertion_point = np.random.randint(edit_start, edit_end)
+                while cur_text[insertion_point] != " ":
+                    insertion_point += 1
+                cur_text = (
+                    cur_text[:insertion_point]
+                    + " "
+                    + segment_to_insert
+                    + cur_text[insertion_point:]
+                )
+                continue
+            else:
+                cur_score = new_score
+                cur_text = new_text
+
+        if cur_score >= self.min_oracle_score:
+            raise RuntimeError(
+                "Example pair still above threshold after %i paraphrasing/permutation attempts, aborting."
+                % max_nb_attempts
+            )
+
+        print(
+            "Finished editing doc %s after %i paraphrasing steps. Final score: %.1f"
+            % (doc["source_doc_id"], step_nr - 1, cur_score)
+        )
+        if debug:
+            print("Final text:", cur_text)
+
+        result = {
+            "text1": initial_text,
+            "text2": cur_text,
+            "score": cur_score,
+            "meta": {"id": doc["source_doc_id"]},
+        }
+        return result
+
     def _get_region_to_edit(
-        self, initial_text: str, edited_text: str, max_chunk_size: Optional[int] = None
+        self,
+        initial_text: str,
+        edited_text: str,
+        max_chunk_size: Optional[int] = None,
+        nb_retries=5,
     ) -> Tuple[int, int]:
         """Identify a region of the edited text that fullfills the following criteria:
         - it belongs to the region of high similarity with the initial text
@@ -551,6 +655,7 @@ class NegativeExampleGenerator:
             initial_text: The original text before editing.
             edited_text: The edited text after paraphrasing or permutation.
             max_chunk_size: The maximum number of characters for the edit region.
+            nb_retries: The number of retries to find a suitable region if the initial attempt fails.
 
         Returns:
             A tuple (start, end) representing the start and end indices of the region to edit.
@@ -587,8 +692,6 @@ class NegativeExampleGenerator:
 
         if max_chunk_size is not None:
             hard_end = min(edit_start + max_chunk_size, region_end)
-            if hard_end <= edit_start:
-                return (edit_start, edit_start)
         else:
             hard_end = region_end
 
@@ -600,7 +703,23 @@ class NegativeExampleGenerator:
         else:
             edit_end = hard_end
 
-        return (edit_start, edit_end)
+        if (
+            edit_end > edit_start + 30
+        ):  # Ensure the region is at least 30 characters long
+            return (edit_start, edit_end)
+        elif nb_retries > 0:
+            print("WARNING: Could not find a suitable region to edit. trying again...")
+            return self._get_region_to_edit(
+                initial_text,
+                edited_text,
+                max_chunk_size=max_chunk_size,
+                nb_retries=nb_retries - 1,
+            )
+        else:
+            if max_chunk_size is not None:
+                return (region_start, min(region_start + max_chunk_size, region_end))
+            else:
+                return (region_start, region_end)
 
     def get_paraphrase(self, chunk: str) -> str:
         """Use the LLM to generate a paraphrase of the input chunk of text, by prompting it
@@ -821,6 +940,91 @@ def create_negative_samples(
                 with open(output_path, "a") as f:
                     f.write(orjson.dumps(result).decode("utf-8") + "\n")
                     print("DONE")
+
+        except Exception as e:
+            print(f"Error occurred while sampling negative example: {e}")
+
+
+def continue_negative_samples(
+    input_negative_samples_path: str,
+    min_oracle_score: float = 1000,
+    output_path: str = "negative_samples_1000.jsonl",
+    overwrite_existing: bool = False,
+    max_nb_attempts: int = 150,
+):
+    """Create negative samples (in relation to a corpus of indexed texts) and save them
+    to a JSONL file.
+
+    The method continuously samples negative examples using the NegativeExampleGenerator
+    and appends them to the output file.
+
+    Args:
+        input_negative_samples_path: Path to the JSONL file containing the existing negative samples
+      (the corpus from which the negative examples will be generated).
+        min_oracle_score: Minimum oracle score required for a sample to be considered
+        a valid negative example.
+        output_path: Path to the JSONL file where the generated negative samples
+      will be saved.
+        max_nb_attempts: Maximum number of attempts to generate a valid negative example.
+        overwrite_existing: If True, the method will overwrite the output
+      file if it already exists. If False, it will append to the existing file.
+
+    """
+    corpus = Corpus(input_negative_samples_path)
+
+    neg_gen = NegativeExampleGenerator(corpus, min_oracle_score=min_oracle_score)
+
+    if os.path.exists(output_path) and overwrite_existing:
+        os.remove(output_path)
+    print("Storing negative samples in %s" % output_path)
+
+    source_doc_ids_already_done = set()
+    if not overwrite_existing and os.path.exists(output_path):
+        with open(output_path, "r") as f:
+            for line in f:
+                try:
+                    sample = orjson.loads(line)
+                    source_doc_ids_already_done.add(sample["source_doc_id"])
+                except Exception as e:
+                    print(f"Error occurred while reading existing output file: {e}")
+
+    doc_indices_to_do = list(range(len(corpus.data)))
+    random.shuffle(doc_indices_to_do)
+
+    for doc_idx in doc_indices_to_do:
+        if corpus.data[doc_idx]["source_doc_id"] in source_doc_ids_already_done:
+            print(
+                f"Skipping doc {corpus.data[doc_idx]['source_doc_id']} as it is already done."
+            )
+            continue
+
+        print("Continue editing negative example pair")
+        try:
+            neg_example = neg_gen.continue_negative(
+                doc_idx, max_nb_attempts=max_nb_attempts
+            )
+            result = {
+                "text": neg_example["text2"],
+                "source_doc_id": neg_example["meta"]["id"],
+                "source_text": neg_example["text1"],
+                "type": "negative",
+                "oracle_score": neg_example["score"],
+            }
+
+            with filelock.FileLock(f"{output_path}.lock"):
+                with open(output_path, "a") as f:
+                    f.write(orjson.dumps(result).decode("utf-8") + "\n")
+                    print("DONE")
+
+                with open(output_path, "r") as f:
+                    for line in f:
+                        try:
+                            sample = orjson.loads(line)
+                            source_doc_ids_already_done.add(sample["source_doc_id"])
+                        except Exception as e:
+                            print(
+                                f"Error occurred while reading existing output file: {e}"
+                            )
 
         except Exception as e:
             print(f"Error occurred while sampling negative example: {e}")

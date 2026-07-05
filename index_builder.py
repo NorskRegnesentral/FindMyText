@@ -31,9 +31,8 @@ from typing import Dict, Generator, List, Optional, Tuple
 import indexing
 import numpy as np
 import orjson
-import zstandard as zstd
-
 import utils
+import zstandard as zstd
 
 try:
     import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
