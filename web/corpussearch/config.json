@@ -7,7 +7,7 @@
     "params": {
         "top_k": 10,
         "min_fingerprints": 5,
-        "cc_doc1_position_threshold": 10,
+        "cc_doc1_position_threshold": 30,
         "cc_offset_threshold": 10,
         "cc_min_cluster_size": 5,
         "normalizing_constant": 8.0
