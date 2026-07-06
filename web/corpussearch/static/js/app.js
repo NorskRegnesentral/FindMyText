@@ -32,6 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupPassword();
     setupCaptcha();
     setupCharCount();
+    setupMethodParams();
     document.getElementById("detect-form").addEventListener("submit", onSubmit);
     document.getElementById("hl-btn").addEventListener("click", onHighlight);
 });
@@ -325,6 +326,84 @@ function setupCharCount() {
 }
 
 // ---------------------------------------------------------------------------
+// Position-aware method hyperparameters. These map onto the core clustering
+// config: position_threshold (τ_pos), offset_threshold (τ_off) and the minimum
+// cluster size. They are only relevant to (and only shown for) the
+// position-aware method; the server clamps them to safe bounds.
+// ---------------------------------------------------------------------------
+const METHOD_PARAM_FIELDS = [
+    {
+        key: "position_threshold",
+        label: "Position threshold (τ<sub>pos</sub>)",
+        help: "Max gap, in query positions, between fingerprints in a cluster.",
+    },
+    {
+        key: "offset_threshold",
+        label: "Offset threshold (τ<sub>off</sub>)",
+        help: "Max change in query-vs-document offset within a cluster.",
+    },
+    {
+        key: "min_cluster_size",
+        label: "Min. cluster size",
+        help: "Smallest number of aligned fingerprints counted as a passage.",
+    },
+];
+
+function setupMethodParams() {
+    const wrap = document.getElementById("method-params");
+    const grid = document.getElementById("method-params-grid");
+    if (!wrap || !grid) return;
+    const spec = CONFIG.method_params || {};
+
+    METHOD_PARAM_FIELDS.forEach((f) => {
+        const conf = spec[f.key];
+        if (!conf) return;
+        const field = el("label", { class: "mp" });
+        field.append(el("span", { class: "mp-label", html: f.label }));
+        const input = el("input", {
+            type: "number", id: `mp-${f.key}`, class: "mp-input",
+            min: String(conf.min), max: String(conf.max), step: "1",
+            value: String(conf.default),
+        });
+        input.dataset.default = String(conf.default);
+        field.append(input);
+        field.append(el("span", { class: "mp-help" }, f.help));
+        grid.append(field);
+    });
+
+    const reset = document.getElementById("mp-reset");
+    if (reset) {
+        reset.addEventListener("click", () => {
+            grid.querySelectorAll("input.mp-input").forEach((inp) => {
+                inp.value = inp.dataset.default;
+            });
+        });
+    }
+
+    // Only show the settings while the position-aware method is selected.
+    const ccBox = document.querySelector("input[name='algorithm'][value='connected_components']");
+    const sync = () => wrap.classList.toggle("hidden", !(ccBox && ccBox.checked));
+    if (ccBox) ccBox.addEventListener("change", sync);
+    sync();
+}
+
+// Collect the current hyperparameter values, clamped to the configured bounds.
+function getMethodParams() {
+    const spec = CONFIG.method_params || {};
+    const out = {};
+    METHOD_PARAM_FIELDS.forEach((f) => {
+        const conf = spec[f.key];
+        const inp = document.getElementById(`mp-${f.key}`);
+        if (!conf || !inp) return;
+        let v = parseInt(inp.value, 10);
+        if (!Number.isFinite(v)) v = conf.default;
+        v = Math.max(conf.min, Math.min(conf.max, v));
+        out[f.key] = v;
+    });
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // "Scramble test": reorder blocks of the pasted text while keeping short local
 // runs intact. This mirrors web/corpussearch/shuffle.py. It preserves the set
 // of shared fingerprints (the baseline stays high) but breaks the long,
@@ -440,6 +519,7 @@ async function onSubmit(ev) {
     lastCorpus = corpus;
     const payload = {
         text, corpus, algorithms,
+        method_params: getMethodParams(),
         password: document.getElementById("password")?.value || null,
         captcha_token: getCaptchaToken(),
     };
@@ -715,6 +795,7 @@ async function onHighlight() {
                 corpus: lastCorpus,
                 doc_id: highlightDoc,
                 modes,
+                method_params: getMethodParams(),
                 password: document.getElementById("password")?.value || null,
                 captcha_token: getCaptchaToken(),
             }),

@@ -28,14 +28,53 @@ from detector import TextContainmentDetector  # noqa: E402  (FindMyText core)
 from .config import AppConfig, CorpusConfig, AlgoParams  # noqa: E402
 
 
-def _clustering_params(params: AlgoParams) -> dict:
-    """Map the web-layer AlgoParams onto the core clustering configuration."""
-    return {
+# User-tunable bounds for the position-aware ("our method") hyperparameters.
+# Keys match the core clustering-config keys used by ``_clustering_params``.
+CC_PARAM_BOUNDS = {
+    "position_threshold": (1, 200),
+    "offset_threshold": (1, 200),
+    "min_cluster_size": (1, 50),
+}
+
+
+def sanitize_cc_overrides(data: dict | None) -> dict:
+    """Extract and clamp user-supplied clustering hyperparameters.
+
+    Unknown/absent/invalid values are ignored, so the caller falls back to the
+    configured defaults. Returned keys match the core clustering config.
+    """
+    out: dict = {}
+    if not data:
+        return out
+    for key, (lo, hi) in CC_PARAM_BOUNDS.items():
+        v = data.get(key)
+        if v is None:
+            continue
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            continue
+        out[key] = max(lo, min(hi, iv))
+    return out
+
+
+def _clustering_params(params: AlgoParams, overrides: dict | None = None) -> dict:
+    """Map the web-layer AlgoParams onto the core clustering configuration.
+
+    ``overrides`` (already sanitized) may replace ``position_threshold``,
+    ``offset_threshold`` and/or ``min_cluster_size``.
+    """
+    cp = {
         "method": "rectangle",
         "position_threshold": params.cc_doc1_position_threshold,
         "offset_threshold": params.cc_offset_threshold,
         "min_cluster_size": params.cc_min_cluster_size,
     }
+    if overrides:
+        for key in CC_PARAM_BOUNDS:
+            if overrides.get(key) is not None:
+                cp[key] = overrides[key]
+    return cp
 
 
 def _spans_from_positions(
@@ -135,6 +174,7 @@ def run_detection(
     corpus: CorpusConfig,
     text: str,
     algorithms: list[str],
+    cc_overrides: dict | None = None,
 ) -> Iterator[dict]:
     """Generator yielding progress events and a final scoring result event.
 
@@ -157,7 +197,7 @@ def run_detection(
         return ev
 
     params = cfg.params
-    cparams = _clustering_params(params)
+    cparams = _clustering_params(params, cc_overrides)
 
     yield progress("starting", 5)
 
@@ -245,6 +285,7 @@ def run_highlight(
     text: str,
     doc_id: str,
     modes: list[str],
+    cc_overrides: dict | None = None,
 ) -> dict:
     """Compute highlight spans for one matched document in the requested modes.
 
@@ -254,7 +295,7 @@ def run_highlight(
     to be overlaid in the browser.
     """
     params = cfg.params
-    cparams = _clustering_params(params)
+    cparams = _clustering_params(params, cc_overrides)
     detector, _ = manager.get(corpus, params)
     winnower = detector.index.winnower
     length = winnower.length

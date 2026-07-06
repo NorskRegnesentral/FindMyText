@@ -119,6 +119,63 @@ body {
     text-decoration: underline;
 }
 
+/* Position-aware method hyperparameters */
+.method-params {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px dashed #d9e6dd;
+    border-radius: 10px;
+    background: #f7faf8;
+}
+
+.method-params-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.method-params-title {
+    font-weight: 600;
+    font-size: .85rem;
+    color: var(--accent-dark);
+}
+
+.method-params-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+.mp {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: .82rem;
+    color: var(--accent-dark);
+}
+
+.mp-label {
+    font-weight: 600;
+}
+
+.mp-input {
+    width: 100%;
+    max-width: 120px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    font-size: .85rem;
+    background: #fff;
+}
+
+.mp-help {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: .78rem;
+    line-height: 1.35;
+}
+
 /* Cards */
 .card {
     background: var(--card);

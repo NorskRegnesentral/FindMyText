@@ -296,6 +296,20 @@ def config_public_dict(cfg: AppConfig) -> dict[str, Any]:
         "github_url": cfg.github_url,
         "paper_url": cfg.paper_url,
         "max_text_chars": cfg.max_text_chars,
+        "method_params": {
+            "position_threshold": {
+                "default": cfg.params.cc_doc1_position_threshold,
+                "min": 1, "max": 200,
+            },
+            "offset_threshold": {
+                "default": cfg.params.cc_offset_threshold,
+                "min": 1, "max": 200,
+            },
+            "min_cluster_size": {
+                "default": cfg.params.cc_min_cluster_size,
+                "min": 1, "max": 50,
+            },
+        },
         "captcha": {
             "provider": cfg.protection.captcha_provider,
             "sitekey": cfg.protection.captcha_sitekey,

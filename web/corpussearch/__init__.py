@@ -11,6 +11,7 @@ from .detection import (
     IndexManager,
     run_detection,
     run_highlight,
+    sanitize_cc_overrides,
     ALGORITHMS,
     HIGHLIGHT_MODES,
 )
@@ -77,10 +78,12 @@ def create_app() -> Flask:
         if not algorithms:
             return jsonify({"error": "Select at least one detection algorithm."}), 400
 
+        cc_overrides = sanitize_cc_overrides(data.get("method_params"))
+
         # --- Stream progress + result as newline-delimited JSON ------------
         def generate():
             try:
-                for event in run_detection(manager, cfg, corpus, text, algorithms):
+                for event in run_detection(manager, cfg, corpus, text, algorithms, cc_overrides):
                     yield json.dumps(event) + "\n"
             except Exception as exc:  # noqa: BLE001
                 app.logger.exception("detection failed")
@@ -120,8 +123,10 @@ def create_app() -> Flask:
         if not modes:
             return jsonify({"error": "Select at least one highlight mode."}), 400
 
+        cc_overrides = sanitize_cc_overrides(data.get("method_params"))
+
         try:
-            result = run_highlight(manager, cfg, corpus, text, str(doc_id), modes)
+            result = run_highlight(manager, cfg, corpus, text, str(doc_id), modes, cc_overrides)
         except Exception as exc:  # noqa: BLE001
             app.logger.exception("highlighting failed")
             return jsonify({"error": str(exc)}), 500
