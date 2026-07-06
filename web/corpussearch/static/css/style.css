@@ -77,6 +77,48 @@ body {
     text-decoration: underline;
 }
 
+/* Paper / author card */
+.paper {
+    text-align: center;
+}
+
+.paper-logo {
+    display: inline-block;
+    margin: 0 0 14px;
+}
+
+.paper-logo img {
+    height: 42px;
+    width: auto;
+    display: block;
+}
+
+.paper-title {
+    font-size: 1.1rem;
+    margin: 0 0 10px;
+    line-height: 1.35;
+}
+
+.paper-authors {
+    margin: 0 0 4px;
+    font-weight: 600;
+}
+
+.paper-affil {
+    color: var(--muted);
+    font-size: .9rem;
+    margin: 0;
+}
+
+.paper-affil a {
+    color: var(--accent-dark);
+    text-decoration: none;
+}
+
+.paper-affil a:hover {
+    text-decoration: underline;
+}
+
 /* Cards */
 .card {
     background: var(--card);
