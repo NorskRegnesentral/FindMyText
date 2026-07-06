@@ -86,6 +86,14 @@ alignment.show()
 
 ---
 
+## License
+
+**FindMyText** is released under an MIT License.
+
+The MIT License is a short and simple permissive license allowing both commercial and non-commercial use of the software. The only requirement is to preserve the copyright and license notices (see file License). Licensed works, modifications, and larger works may be distributed under different terms and without source code.
+
+---
+
 ## Reference
 
 If you use **FindMyText** in your research, please cite our paper:
