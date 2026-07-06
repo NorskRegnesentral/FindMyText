@@ -10,12 +10,14 @@ The tool builds on standard document fingerprinting techniques, and extends them
 
 A full step-by-step walkthrough is available in [`demo.ipynb`](demo.ipynb).
 
+**Online demo**: [here](https://findmytext.nr.no).
+
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/FindMyText.git
+git clone https://github.com/NorskRegnesentral/FindMyText.git
 cd FindMyText
 pip install -r requirements.txt
 ```
@@ -36,6 +38,8 @@ files = index_builder.index_data_parallel(corpus, "data/my_fingerprints", n_work
 index_builder.merge_indexes_from_prefix("data/my_fingerprints", "my_index")
 ```
 
+See `index_builder` for more details on possible options to specify the input corpus. 
+
 The resulting index is stored on disk and memory-mapped at query time, so it scales to corpora that are too large to fit in RAM.
 
 ### 2. Detect content
@@ -46,6 +50,8 @@ Once the index is built, detection is a single call:
 import detectors
 
 detector = detectors.FingerprintChainDetector("my_index")
+
+query_text = "Here is the text I would like to check"
 scores = detector.get_containment_scores(query_text)
 
 # `scores` is a dict mapping document IDs to containment scores
@@ -72,7 +78,7 @@ alignment.show()
 
 1. **Fingerprinting**: each document is tokenised and converted to a set of $k$-gram hashes using the *winnowing* algorithm, which selects a representative subset of hashes from each sliding window.
 2. **Inverted index**: fingerprints are stored in a disk-based inverted index mapping each hash to the list of `(doc_id, position)` pairs where it was observed.
-3. **Chain detection**: at query time, the fingerprints of the query are looked up in the index. Rather than simply counting matches, FindMyText clusters matching fingerprints by their relative positions to identify *chains* — contiguous sequences of matches — and uses the total length of those chains as the containment score.
+3. **Chain detection**: at query time, the fingerprints of the query are looked up in the index. Rather than simply counting matches, <font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font> clusters matching fingerprints by their relative positions to identify *chains* — contiguous sequences of matches — and uses the total length of those chains as the containment score.
 
 ---
 
@@ -82,7 +88,8 @@ If you use FindMyText in your research, please cite our paper:
 
 ```
 @article{findmytext2026,
-  title   = {FindMyText: Efficient Detection of Near-Verbatim Text Containment in Large Corpora},
+  authors= {Lars Henry Berge Olsen and Pierre Lison and Martin Jullum\ and Mark Anderson},
+  title   = {FindMyText: Robust, Scalable Detection of Text Containment in Large Web-Crawled Corpora},
   year    = {2026}
 }
 ```
