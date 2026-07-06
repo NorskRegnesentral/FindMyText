@@ -208,6 +208,67 @@ textarea {
     white-space: nowrap;
 }
 
+.shuffle-row {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px dashed #d9e6dd;
+    border-radius: 10px;
+    background: #f7faf8;
+}
+
+.shuffle-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: .85rem;
+    color: var(--accent-dark);
+}
+
+.shuffle-label {
+    display: block;
+    font-weight: 600;
+    font-size: .85rem;
+    margin-bottom: 6px;
+}
+
+.shuffle-size {
+    width: 64px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    font-size: .85rem;
+}
+
+.shuffle-mode {
+    width: auto;
+    padding: 4px 8px;
+    border-radius: 8px;
+    font-size: .85rem;
+    background: #fff;
+}
+
+.btn.small {
+    padding: 5px 14px;
+    font-size: .82rem;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+}
+
+.btn.small:hover {
+    background: var(--accent-dark);
+}
+
+.btn.small.ghost {
+    background: #eef4ef;
+    color: var(--accent-dark);
+    border: 1px solid #d9e6dd;
+}
+
+.shuffle-hint {
+    margin-top: 8px;
+}
+
 .dataset-line a {
     color: var(--accent-dark);
     font-weight: 600;

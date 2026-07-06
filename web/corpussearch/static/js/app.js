@@ -32,6 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupPassword();
     setupCaptcha();
     setupCharCount();
+    setupShuffle();
     document.getElementById("detect-form").addEventListener("submit", onSubmit);
     document.getElementById("hl-btn").addEventListener("click", onHighlight);
 });
@@ -301,6 +302,100 @@ function setupCharCount() {
     const count = document.getElementById("char-count");
     ta.addEventListener("input", () => {
         count.textContent = ta.value.length.toLocaleString();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// "Scramble test": reorder blocks of the pasted text while keeping short local
+// runs intact. This mirrors web/corpussearch/shuffle.py. It preserves the set
+// of shared fingerprints (the baseline stays high) but breaks the long,
+// position-coherent chains the position-aware method relies on (its score
+// collapses) — a live illustration of the paper's headline result.
+// ---------------------------------------------------------------------------
+
+// Sentence splitter mirroring shuffle.py's _SENTENCE_RE: break after . ! or ?
+// (keeping the terminator + trailing space with the sentence).
+function splitSentences(text) {
+    const re = /[^.!?]*[.!?]+(?:\s+|$)|[^.!?]+$/g;
+    const out = [];
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        if (m[0].trim()) out.push(m[0]);
+        if (m.index === re.lastIndex) re.lastIndex++; // guard against zero-width
+    }
+    return out.length ? out : (text ? [text] : []);
+}
+
+function chunkArray(items, blockSize) {
+    const bs = Math.max(1, blockSize | 0);
+    const blocks = [];
+    for (let i = 0; i < items.length; i += bs) blocks.push(items.slice(i, i + bs));
+    return blocks;
+}
+
+// Fisher–Yates that (for n >= 2) is guaranteed to change something.
+function shuffledOrder(n) {
+    const order = Array.from({ length: n }, (_, i) => i);
+    if (n < 2) return order;
+    for (let attempt = 0; attempt < 10; attempt++) {
+        for (let i = n - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [order[i], order[j]] = [order[j], order[i]];
+        }
+        if (order.some((v, i) => v !== i)) break;
+    }
+    return order;
+}
+
+function shuffleSentenceBlocks(text, blockSize) {
+    const blocks = chunkArray(splitSentences(text), blockSize);
+    const order = shuffledOrder(blocks.length);
+    return order
+        .map((i) => blocks[i].join("").trim())
+        .filter(Boolean)
+        .join(" ");
+}
+
+function shuffleWordBlocks(text, blockSize) {
+    const blocks = chunkArray(text.split(/\s+/).filter(Boolean), blockSize);
+    const order = shuffledOrder(blocks.length);
+    return order.map((i) => blocks[i].join(" ")).join(" ");
+}
+
+let preShuffleText = null;
+
+function setupShuffle() {
+    const ta = document.getElementById("text");
+    const btn = document.getElementById("shuffle-btn");
+    const undo = document.getElementById("shuffle-undo");
+    const modeSel = document.getElementById("shuffle-mode");
+    const sizeInput = document.getElementById("shuffle-size");
+    if (!btn) return;
+
+    // The block-size default depends on the granularity.
+    const defaults = { word_blocks: 20, sentence_blocks: 1 };
+    modeSel.addEventListener("change", () => {
+        sizeInput.value = String(defaults[modeSel.value] ?? 20);
+    });
+
+    btn.addEventListener("click", () => {
+        const text = ta.value;
+        if (!text.trim()) return;
+        preShuffleText = text;
+        const size = Math.max(1, parseInt(sizeInput.value, 10) || 1);
+        ta.value = modeSel.value === "sentence_blocks"
+            ? shuffleSentenceBlocks(text, size)
+            : shuffleWordBlocks(text, size);
+        ta.dispatchEvent(new Event("input"));
+        undo.classList.remove("hidden");
+    });
+
+    undo.addEventListener("click", () => {
+        if (preShuffleText == null) return;
+        ta.value = preShuffleText;
+        preShuffleText = null;
+        ta.dispatchEvent(new Event("input"));
+        undo.classList.add("hidden");
     });
 }
 
