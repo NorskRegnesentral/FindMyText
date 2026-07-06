@@ -32,7 +32,6 @@ document.addEventListener("DOMContentLoaded", () => {
     setupPassword();
     setupCaptcha();
     setupCharCount();
-    setupShuffle();
     document.getElementById("detect-form").addEventListener("submit", onSubmit);
     document.getElementById("hl-btn").addEventListener("click", onHighlight);
 });

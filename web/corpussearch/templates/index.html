@@ -55,25 +55,6 @@
                 <textarea id="text" name="text" rows="9"
                     placeholder="Paste the text you want to check here…"></textarea>
                 <p class="hint"><span id="char-count">0</span> characters</p>
-                <div class="shuffle-row" id="shuffle-row">
-                    <span class="shuffle-label">Scramble test:</span>
-                    <span class="shuffle-controls">
-                        keep every
-                        <input type="number" id="shuffle-size" class="shuffle-size" min="1" max="200" value="20" />
-                        <select id="shuffle-mode" class="shuffle-mode">
-                            <option value="word_blocks" selected>words</option>
-                            <option value="sentence_blocks">sentences</option>
-                        </select>
-                        together, scramble their ordering
-                        <button type="button" id="shuffle-btn" class="btn small">Scramble</button>
-                        <button type="button" id="shuffle-undo" class="btn small ghost hidden">Undo</button>
-                    </span>
-                    <p class="hint shuffle-hint">
-                        Splits your text into consecutive groups of the chosen size and
-                        shuffles the order of those groups; each group stays intact
-                        internally. The material is still all there, just out of order.
-                    </p>
-                </div>
             </div>
 
             <div class="field">
