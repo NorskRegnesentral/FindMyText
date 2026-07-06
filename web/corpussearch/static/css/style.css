@@ -119,6 +119,15 @@ body {
     text-decoration: underline;
 }
 
+/* Corpus-specific source caveat (e.g. web-crawl corpora) */
+.source-caveat {
+    border-left: 3px solid var(--accent);
+    background: #f2f7f3;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin: 4px 0 16px;
+}
+
 /* Position-aware method hyperparameters */
 .method-params {
     margin-top: 12px;

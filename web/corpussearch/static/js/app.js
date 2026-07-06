@@ -689,12 +689,29 @@ function renderResult(res) {
         + `${res.elapsed.toFixed(1)}s`;
     summary.append(meta);
 
+    renderSourceCaveat(res.corpus);
     renderHighlightControls(res);
     card.classList.remove("hidden");
     card.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function escapeText(s) { return s == null ? "" : String(s); }
+
+// Show a corpus-specific caveat (e.g. for web-crawl corpora whose indexed text
+// may differ from the live/archived page) once results are in.
+function renderSourceCaveat(corpusId) {
+    const el = document.getElementById("source-caveat");
+    if (!el) return;
+    const c = CONFIG.corpora.find((x) => x.id === corpusId);
+    const note = c && c.source_caveat;
+    if (note) {
+        el.textContent = note;
+        el.classList.remove("hidden");
+    } else {
+        el.textContent = "";
+        el.classList.add("hidden");
+    }
+}
 
 // Prepare the on-demand highlight controls once results are in. The user can
 // pick which matched document to compare against; the default is the

@@ -49,7 +49,8 @@
             "doc_url_template": "",
             "title_map": "",
             "url_map": "hplt/urls.sqlite",
-            "dataset_url": ""
+            "dataset_url": "",
+            "source_caveat": "This is a web-crawl corpus: the index stores fingerprints of the text extracted at crawl time, not the page itself. Matches are compared against that crawl-time text, which can include page boilerplate and may differ from the current live page or a later web.archive.org snapshot — so a highlighted passage may not appear verbatim on the linked source."
         }
     ]
 }

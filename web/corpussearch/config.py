@@ -57,6 +57,10 @@ class CorpusConfig:
     # Optional note shown next to the dataset link, e.g. to warn that the linked
     # dataset is a *superset* (not every document in it is actually indexed here).
     dataset_note: str = ""
+    # Optional caveat shown in the highlighting area, e.g. for web-crawl corpora
+    # whose index stores fingerprints of crawl-time extracted text that may
+    # differ from the live or archived page. Empty = none.
+    source_caveat: str = ""
     # Per-corpus example texts (one known to match, one known not to).
     samples: list[SampleText] = field(default_factory=list)
     # Corpus-specific generic "filler" boilerplate the user can append to their
@@ -232,6 +236,7 @@ def _build_corpus(
         url_map_path=_resolve_path(spec.get("url_map", ""), index_root),
         dataset_url=spec.get("dataset_url", ""),
         dataset_note=spec.get("dataset_note", ""),
+        source_caveat=spec.get("source_caveat", ""),
         samples=samples,
         filler=fillers.get(cid, ""),
         # Only offer a corpus whose index is actually present on this machine.
@@ -284,6 +289,7 @@ def config_public_dict(cfg: AppConfig) -> dict[str, Any]:
                 "description": c.description,
                 "dataset_url": c.dataset_url,
                 "dataset_note": c.dataset_note,
+                "source_caveat": c.source_caveat,
                 "searchable": bool(c.search_kind),
                 "search_kind": c.search_kind,
                 "samples": [asdict(s) for s in c.samples],
