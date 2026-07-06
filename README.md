@@ -40,7 +40,11 @@ The resulting index is stored on disk and memory-mapped at query time, so it sca
 
 The `index_builder` can also be used directly from the command line:
 ```bash
-python -m findmytext.index_builder index --input my_corpus.jsonl --output my_index
+# Step 1: extract fingerprints from a corpus file into intermediate shards
+python -m findmytext.index_builder index corpus.jsonl my_fingerprints --nb_workers 4
+
+# Step 2: merge shards into a final disk-based index
+python -m findmytext.index_builder merge my_fingerprints my_index
 ```
 
 

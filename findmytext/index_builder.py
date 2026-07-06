@@ -74,6 +74,9 @@ def index_file(
 
     """
 
+    if not os.path.isfile(corpus_file):
+        raise ValueError(f"Provided file {corpus_file} does not exist or is not a file")
+
     if corpus_file.endswith(".jsonl"):
         stream = utils.stream_jsonl(corpus_file)
     elif corpus_file.endswith(".jsonl.gz"):
@@ -614,10 +617,10 @@ if __name__ == "__main__":
         help="Path to the output directory in which to save the index files",
     )
     index_parser.add_argument(
-        "nb_workers",
+        "--nb_workers",
         type=int,
         default=1,
-        help="Number of worker processes to use for indexing",
+        help="Number of worker processes to use for indexing (default: 1)",
     )
     index_parser.add_argument(
         "--length", type=int, default=5, help="k-gram length (default: 5)"
@@ -634,14 +637,14 @@ if __name__ == "__main__":
         "merge", help="Merge intermediate index files into a DiskBasedIndex"
     )
     merge_parser.add_argument(
-        "index_prefix", type=str, help="Prefix of the intermediate index files to merge"
+        "temp_index_dir",
+        type=str,
+        help="Directory containing the intermediate index files to merge",
     )
     merge_parser.add_argument(
         "output_dir",
         type=str,
-        nargs="?",
-        help="Directory where the merged index will be saved. If left empty, will be set to "
-        + "[index_prefix] in the same directory as the index files",
+        help="Directory where the merged index will be saved.",
     )
 
     args = parser.parse_args()
@@ -657,4 +660,4 @@ if __name__ == "__main__":
         )
 
     elif args.task == "merge":
-        merge_indexes_from_dir(args.index_prefix, args.output_dir)
+        merge_indexes_from_dir(args.temp_index_dir, args.output_dir)

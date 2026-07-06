@@ -30,6 +30,8 @@ class MemoryBasedIndex:
     def __init__(
         self, length: int = 5, window_size: int = 6, base: int = 256, punctuation=False
     ):
+        """Initialize the MemoryBasedIndex with specified winnowing parameters."""
+
         # We use two winnowers: one for indexing and one for runtime queries
         # (the latter with a window size of 1, since we want to get as many
         # fingerprints as possible for matching).
