@@ -42,23 +42,16 @@
         <section class="card help">
             <h2>How it works</h2>
             <ol>
-                <li>Pick a <strong>corpus</strong> to search against. You can
-                    <strong>search inside the corpus</strong> to see which sources it
-                    actually contains, open one, and copy a real passage from it into
-                    the box below.</li>
-                <li><strong>Paste or type</strong> the text you want to check — load one
-                    of our premade examples, or paste your own passage (e.g. one you
-                    just found via the corpus search).</li>
-                <li>Optionally add the corpus-specific <strong>generic filler</strong>
-                    with the <em>“+ Add generic filler”</em> button: use it on its own as
-                    a stand-alone negative sample, or append it to whatever is already in
-                    the box (a premade example or your own text) to see how padding
-                    fools the baseline but not our method.</li>
+                <li>Pick a <strong>corpus</strong> to check against.</li>
+                <li>Add <strong>your text</strong> — type or paste it, load a premade
+                    example, or add the corpus-specific generic filler.</li>
                 <li>Choose one or more <strong>detection algorithms</strong> and run the check.</li>
+                <li><em>Optional:</em> once you have results, <strong>highlight</strong>
+                    the matching passages to see exactly which parts overlap.</li>
             </ol>
             <p class="muted">
                 We extract a compact set of fingerprints from your text and look for the
-                same fingerprints in the corpus. Matching passages are highlighted below.
+                same fingerprints in the corpus.
             </p>
         </section>
 
@@ -69,6 +62,9 @@
                 <p class="hint" id="corpus-desc"></p>
                 <p class="hint dataset-line" id="dataset-line"></p>
                 <div class="corpus-search hidden" id="corpus-search">
+                    <p class="hint">Search to see which sources this corpus actually
+                        contains, then open one and copy a real passage into the text
+                        box below to try it.</p>
                     <input type="search" id="corpus-search-input" class="corpus-search-input"
                         placeholder="Search which articles are in this corpus…" autocomplete="off" />
                     <ul class="corpus-search-results" id="corpus-search-results"></ul>
@@ -83,6 +79,13 @@
                 <textarea id="text" name="text" rows="9"
                     placeholder="Paste the text you want to check here…"></textarea>
                 <p class="hint"><span id="char-count">0</span> characters</p>
+                <p class="hint">
+                    Load one of our premade examples above, or add the corpus-specific
+                    <strong>generic filler</strong> — use it on its own as a stand-alone
+                    negative sample, or append it to whatever is already in the box (a
+                    premade example or your own text) to see how padding fools the
+                    baseline but not our method.
+                </p>
             </div>
 
             <div class="field">
