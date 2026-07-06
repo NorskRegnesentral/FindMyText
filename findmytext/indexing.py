@@ -1,6 +1,7 @@
 """Module for in-memory and disk-based indexing of documents using winnowed
 fingerprints."""
 
+import gzip
 import heapq
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -9,16 +10,15 @@ import orjson  # 3-5x faster JSON parsing
 import tqdm
 
 try:
-    import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
+    import isal.igzip as igzip  # 2-4x faster gzip decompression (Intel ISA-L)
 except ImportError:
-    import gzip
+    igzip = gzip  # type: ignore[assignment]
 
 from typing import Dict, List, Union
 
 import numpy as np
-from numpy import ndarray
 
-import winnower
+from . import winnower
 
 
 class MemoryBasedIndex:
@@ -159,7 +159,7 @@ class MemoryBasedIndex:
     def from_jsonl(cls, input_file: str, only_meta_data=False) -> "MemoryBasedIndex":
         """Deserialize an in-memory index from a gzipped JSONL file at the specified
         input path, and create a MemoryBasedIndex instance with the loaded data."""
-        with gzip.open(input_file, "rt", encoding="utf-8") as f:
+        with igzip.open(input_file, "rt", encoding="utf-8") as f:
             first_line = f.readline()
             if not first_line:
                 raise ValueError("Input file is empty")

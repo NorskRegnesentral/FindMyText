@@ -11,7 +11,7 @@ import re
 from typing import List, Set, Tuple
 
 import numpy as np
-from numba import jit, njit
+from numba import njit
 
 # Modulus for the rolling hash. 2^31 - 1 is the largest Mersenne prime that
 # guarantees all intermediate multiplications (token * b_pow_k and H * base)

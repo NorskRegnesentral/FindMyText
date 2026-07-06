@@ -19,12 +19,10 @@ and lengths, and a JSON file containing index metadata.
 
 import argparse
 import concurrent.futures
-import glob
 import heapq
-import io
 import multiprocessing as mp
 import os
-import random
+import shutil
 import sys
 from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
 
@@ -32,8 +30,7 @@ import datasets
 import numpy as np
 import orjson
 
-import indexing
-import utils
+from . import indexing, utils
 
 try:
     import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
@@ -48,11 +45,13 @@ except ImportError:
 
 def index_file(
     corpus_file: str,
+    output_dir: str,
     length=4,
     window_size=6,
-    output_file: Optional[str] = None,
     intermediate_save_freq: int = 300_000,
     stop_after: Optional[int] = None,
+    delete_existing: bool = False,
+    nb_workers: int = 1,
 ) -> List[str]:
     """Index documents from a data file (currently supported formats: .jsonl,
     .jsonl.zst) and save intermediate indexes (every intermediate_save_freq documents).
@@ -61,29 +60,19 @@ def index_file(
         corpus_file (str): Path to the input data file.  The corpus file should be in .jsonl format
          (optionally gzipped or zst-compressed), where each line is a JSON object with at least two fields:
         "id" (a unique document identifier) and "text" (the document content to be indexed).
+        output_dir (str): Directory where the index files will be saved.
         length (int): Length of k-grams to use for indexing.
         window_size (int): Window size for winnowing.
-        output_file (Optional[str]): Path to the output file where the final index will be saved.
-         If left empty, will be set to index([length],[window_size])_[corpus_file_without_suffix].jsonl.gz,
-         in the same directory as the corpus file
         intermediate_save_freq (int): Frequency (in number of documents) at which to save intermediate indexes.
         stop_after (Optional[int]): If provided, stop indexing after this many documents (for testing purposes).
+        delete_existing (bool): whether to delete the output_dir if it already exists
+        nb_workers (int): Number of parallel worker processes to use for indexing. If set to 1, indexing will
+         be done in a single process.
 
     Returns:
         List of paths to the saved intermediate index files.
 
     """
-
-    if output_file is None:
-        filename_without_suffix = os.path.basename(corpus_file).split(".", maxsplit=1)[
-            0
-        ]
-        dirname = os.path.dirname(corpus_file)
-        output_file = os.path.join(
-            dirname,
-            f"index({length},{window_size})_{filename_without_suffix}.jsonl.gz",
-        )
-    print("Indexing documents from", corpus_file)
 
     if corpus_file.endswith(".jsonl"):
         stream = utils.stream_jsonl(corpus_file)
@@ -95,46 +84,72 @@ def index_file(
         raise ValueError(
             "Unsupported file format. Please provide a .jsonl, .jsonl.gz, or .jsonl.zst file."
         )
+    print("Indexing documents from", corpus_file)
 
-    index_files = index_data(
-        stream,
-        output_file,
-        length=length,
-        window_size=window_size,
-        intermediate_save_freq=intermediate_save_freq,
-        stop_after=stop_after,
-    )
+    if nb_workers == 1:
+        index_files = index_data(
+            data_stream=stream,
+            output_dir=output_dir,
+            length=length,
+            window_size=window_size,
+            intermediate_save_freq=intermediate_save_freq,
+            stop_after=stop_after,
+            delete_existing=delete_existing,
+        )
+    else:
+        if stop_after is not None:
+            raise ValueError(
+                "stop_after is not supported when using multiple workers. Please set nb_workers=1 to use stop_after."
+            )
+
+        index_files = index_data_parallel(
+            data=stream,
+            output_dir=output_dir,
+            n_workers=nb_workers,
+            length=length,
+            window_size=window_size,
+            intermediate_save_freq=intermediate_save_freq,
+            delete_existing=delete_existing,
+        )
     return index_files
 
 
 def index_data(
     data_stream: Any,
-    output_file: str,
+    output_dir: str,
     length=4,
     window_size=6,
     intermediate_save_freq: int = 300_000,
     stop_after: Optional[int] = None,
+    delete_existing: bool = False,
+    file_suffix: str = "",
 ) -> List[str]:
     """Index documents from a corpus and save intermediate indexes (every intermediate_save_freq documents).
 
     Args:
         data_stream (Iterator[Dict[str, Any]]): An iterator over the input data. Each item should be a dictionary
          with at least two fields: "id" (a unique document identifier) and "text" (the document content to be indexed).
-        output_file (str): Path to the output file where the final index will be saved.
+        output_dir (str): Directory where the index files will be saved.
         length (int): Length of k-grams to use for indexing.
         window_size (int): Window size for winnowing.
         intermediate_save_freq (int): Frequency (in number of documents) at which to save intermediate indexes.
         stop_after (Optional[int]): If provided, stop indexing after this many documents (for testing purposes).
+        delete_existing (bool): whether to delete the output_dir if it already exists
+        file_suffix (str): A suffix to add to the index files. Default is no suffix
 
     Returns:
         List of paths to the saved intermediate index files.
 
     """
 
-    if not output_file.endswith(".jsonl.gz"):
-        raise ValueError("Output file must end with .jsonl.gz")
-
-    output_template = output_file.replace(".jsonl.gz", "-{}.jsonl.gz")
+    if os.path.exists(output_dir):
+        if delete_existing:
+            print(f"Deleting existing output directory: {output_dir}")
+            shutil.rmtree(output_dir)
+        elif not os.path.isdir(output_dir):
+            raise ValueError(f"Output path {output_dir} exists and is not a directory")
+    os.makedirs(output_dir, exist_ok=True)
+    print("Saving index files to", output_dir)
 
     index = indexing.MemoryBasedIndex(length=length, window_size=window_size)
     index_files = []
@@ -145,20 +160,27 @@ def index_data(
         if stop_after is not None and i + 1 >= stop_after:
             break
         if (i + 1) % intermediate_save_freq == 0:
-            incr_human_readable = str(i + 1)[:-3] + "K"
-            output_jsonl_path = output_template.format(incr_human_readable)
-            print(
-                "Saving intermediate index to", output_jsonl_path, end="...", flush=True
-            )
-            index.to_jsonl(output_jsonl_path)
-            index_files.append(output_jsonl_path)
+            increment_str = str(i + 1)[:-3] + "K"
+            if file_suffix:
+                index_filename = "intermediate-%s-%s.jsonl.gz" % (
+                    file_suffix,
+                    increment_str,
+                )
+            else:
+                index_filename = "intermediate-%s.jsonl.gz" % (increment_str)
+            output_file = os.path.join(output_dir, index_filename)
+            print("Saving intermediate index to", output_file, end="...", flush=True)
+            index.to_jsonl(output_file)
+            index_files.append(output_file)
             print("Done.")
             del index
             index = indexing.MemoryBasedIndex(length=length, window_size=window_size)
 
-    final_file = (
-        output_file if len(index_files) == 0 else output_template.format("final")
-    )
+    if file_suffix:
+        index_filename = "final-%s.jsonl.gz" % (file_suffix)
+    else:
+        index_filename = "final.jsonl.gz"
+    final_file = os.path.join(output_dir, index_filename)
     print("Saving final index to", final_file, end="...", flush=True)
     index.to_jsonl(final_file)
     index_files.append(final_file)
@@ -169,32 +191,40 @@ def index_data(
 
 def index_data_parallel(
     data: Any,
-    output_base: str,
+    output_dir: str,
     n_workers: int,
     length=4,
     window_size=6,
     intermediate_save_freq: int = 300_000,
+    delete_existing: bool = False,
 ) -> List[str]:
     """Index documents in parallel by splitting data across n_workers processes.
 
     Args:
         data (List[Dict[str, Any]]): The full dataset to index. Each item must have "id" and "text" fields.
-        output_base (str): Base name for worker output files (e.g. "my_index" produces
-            "my_index_worker00.jsonl.gz", "my_index_worker01.jsonl.gz", ...).
+        output_dir (str): Directory where the index files will be saved.
         n_workers (int): Number of parallel worker processes.
         length (int): Length of k-grams to use for indexing.
         window_size (int): Window size for winnowing.
         intermediate_save_freq (int): Frequency at which to save intermediate indexes per worker.
+        delete_existing (bool): whether to delete the output_dir if it already exists
 
     Returns:
         Flat list of all intermediate index file paths produced by all workers.
 
     """
 
+    if os.path.exists(output_dir):
+        if delete_existing:
+            print(f"Deleting existing output directory: {output_dir}")
+            shutil.rmtree(output_dir)
+        elif not os.path.isdir(output_dir):
+            raise ValueError(f"Output path {output_dir} exists and is not a directory")
+    os.makedirs(output_dir, exist_ok=True)
+    print("And saving index files to", output_dir)
+
     if isinstance(data, datasets.Dataset):
         data = list(data)
-
-    output_base = output_base.replace(".gz", "").replace(".jsonl", "")
 
     split_size = (len(data) + n_workers - 1) // n_workers
     print(
@@ -203,9 +233,9 @@ def index_data_parallel(
     )
     worker_args = [
         (
-            i,
+            i + 1,
             data[i * split_size : (i + 1) * split_size],
-            output_base,
+            output_dir,
             length,
             window_size,
             intermediate_save_freq,
@@ -224,15 +254,15 @@ def index_data_parallel(
 
 def _parallel_worker(args: Tuple) -> List[str]:
     """Module-level worker for index_data_parallel (must be picklable)."""
-    worker_idx, split, worker_base, length, window_size, intermediate_save_freq = args
+    worker_idx, split, output_dir, length, window_size, intermediate_save_freq = args
     sys.stdout = open(os.devnull, "w")
-    output_file = f"{worker_base}_worker{worker_idx:02d}.jsonl.gz"
     return index_data(
         iter(split),
-        output_file,
+        output_dir,
         length=length,
         window_size=window_size,
         intermediate_save_freq=intermediate_save_freq,
+        file_suffix=f"worker{worker_idx:02d}",
     )
 
 
@@ -241,19 +271,18 @@ def _parallel_worker(args: Tuple) -> List[str]:
 #####################################################
 
 
-def merge_indexes_from_prefix(index_prefix: str, output_dir: Optional[str] = None):
-    """Wrap the merge_indexes function, where the input index files are automatically selected
-    based on the provided index_prefix in the WORK_PATH. The output directory is set by
-    default to {index_prefix}."""
+def merge_indexes_from_dir(temp_index_dir: str, output_dir: str):
+    """Merge the index files in the specified directory and store the result
+    in output_dir. The index files in temp_index_dir must be in .jsonl.gz format."""
 
-    search_pattern = f"{index_prefix}*"
-    index_files = glob.glob(search_pattern)
-    index_files = [f for f in index_files if not os.path.isdir(f)]
-    index_files = sorted(index_files)
-    if output_dir is None:
-        dirname = os.path.dirname(index_prefix)
-        output_dir = os.path.join(dirname, os.path.basename(index_prefix))
-
+    if not os.path.isdir(temp_index_dir):
+        raise ValueError(f"Provided path {temp_index_dir} is not a directory")
+    index_files = []
+    for f in os.listdir(temp_index_dir):
+        if f.endswith(".jsonl.gz"):
+            index_files.append(os.path.join(temp_index_dir, f))
+    if not index_files:
+        raise ValueError(f"No .jsonl.gz index files found in {temp_index_dir}")
     merge_indexes(index_files, output_dir)
 
 
@@ -580,12 +609,15 @@ if __name__ == "__main__":
         help="Path to the corpus file (.jsonl, .jsonl.gz, or .jsonl.zst)",
     )
     index_parser.add_argument(
-        "output_file",
-        nargs="?",
+        "output_dir",
         type=str,
-        help="Path to the output file (.jsonl.gz). If left empty, will be set to "
-        + "index([length],[window_size])_[corpus_file_without_suffix].jsonl.gz, "
-        + "in the same directory as the corpus file",
+        help="Path to the output directory in which to save the index files",
+    )
+    index_parser.add_argument(
+        "nb_workers",
+        type=int,
+        default=1,
+        help="Number of worker processes to use for indexing",
     )
     index_parser.add_argument(
         "--length", type=int, default=5, help="k-gram length (default: 5)"
@@ -619,9 +651,10 @@ if __name__ == "__main__":
             args.corpus_file,
             length=args.length,
             window_size=args.window_size,
-            output_file=args.output_file,
+            output_dir=args.output_dir,
             stop_after=args.stop_after,
+            nb_workers=args.nb_workers,
         )
 
     elif args.task == "merge":
-        merge_indexes_from_prefix(args.index_prefix, args.output_dir)
+        merge_indexes_from_dir(args.index_prefix, args.output_dir)

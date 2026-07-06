@@ -30,7 +30,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.stats import norm
 
-import indexing
+from . import indexing
 
 # Average number of characters per word (including trailing space) for typical
 # English text.  This is the size of one k-gram sliding step and is used to

@@ -7,7 +7,6 @@ for performance and includes options for verbose output and handling long sequen
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Dict, Tuple, Union
 
 import numpy as np

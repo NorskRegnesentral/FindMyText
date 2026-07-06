@@ -33,9 +33,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import filelock
 import numpy as np
-import oracle
 import orjson
 import pyphen
+
+from findmytext import oracle
 
 BOILERPLATE_SEGMENTS = [
     "This article is part of our ongoing coverage of [Topic].",
