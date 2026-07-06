@@ -2,9 +2,9 @@
   <img src="assets/findmytext_logo.png" alt="FindMyText logo" width="320"/>
 </p>
 
-# <font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font>
+# FindMyText
 
-<font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font> is an open-source Python package for efficiently detecting whether a given text appears, in part or in full, within a large text corpus. It is particularly suited for verifying the presence of copyrighted or licensed material in large, web-crawled corpora. This can notably provide important insights into which texts have been used to pre-train LLMs. 
+**FindMyText** is an open-source Python package for efficiently detecting whether a given text appears, in part or in full, within a large text corpus. It is particularly suited for verifying the presence of copyrighted or licensed material in large, web-crawled corpora. This can notably provide important insights into which texts have been used to pre-train LLMs. 
 
 The tool builds on standard document fingerprinting techniques, and extends them with a novel mechanism that explicitly captures *sequences* (chains) of matching fingerprints. This makes it robust to near-verbatim copies — texts that share the same content but with minor differences due to OCR errors, formatting variants, text normalisation, or added boilerplate. Leveraging a distributed, disk-based indexing framework, FindMyText scales to large corpora that cannot be held in memory.
 
@@ -34,8 +34,8 @@ The first step is to index your corpus. Fingerprints are extracted in parallel a
 import index_builder
 
 # `corpus` is any iterable of dicts with "text" and "id" fields
-files = index_builder.index_data_parallel(corpus, "data/my_fingerprints", n_workers=4)
-index_builder.merge_indexes_from_prefix("data/my_fingerprints", "my_index")
+files = index_builder.index_data_parallel(corpus, "temp_data/my_fingerprints", n_workers=4)
+index_builder.merge_indexes_from_prefix("temp_data/my_fingerprints", "my_index")
 ```
 
 See `index_builder` for more details on possible options to specify the input corpus. 
@@ -59,7 +59,7 @@ best_match_id = max(scores, key=scores.get)
 print(f"Best match: {best_match_id}  (score: {scores[best_match_id]:.3f})")
 ```
 
-The text in `query_text` does not need to be exactly identical to the one found in the corpus. <font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font> is designed to be robust to small differences between the documents. 
+The text in `query_text` does not need to be exactly identical to the one found in the corpus. **FindMyText** is designed to be robust to small differences between the documents. 
 
 ### 3. Verifying a match with local alignment
 
@@ -78,7 +78,7 @@ alignment.show()
 
 1. **Fingerprinting**: each document is tokenised and converted to a set of $k$-gram hashes using the *winnowing* algorithm, which selects a representative subset of hashes from each sliding window.
 2. **Inverted index**: fingerprints are stored in a disk-based inverted index mapping each hash to the list of `(doc_id, position)` pairs where it was observed.
-3. **Chain detection**: at query time, the fingerprints of the query are looked up in the index. Rather than simply counting matches, <font face="Century Gothic, sans-serif"><b>Find<span style="color:#4A7A4A;">My</span>Text</span></b></font> clusters matching fingerprints by their relative positions to identify *chains* — contiguous sequences of matches — and uses the total length of those chains as the containment score.
+3. **Chain detection**: at query time, the fingerprints of the query are looked up in the index. Rather than simply counting matches, **FindMyText** clusters matching fingerprints by their relative positions to identify *chains* — contiguous sequences of matches — and uses the total length of those chains as the containment score.
 
 ---
 
@@ -88,7 +88,7 @@ If you use FindMyText in your research, please cite our paper:
 
 ```
 @article{findmytext2026,
-  authors= {Lars Henry Berge Olsen and Pierre Lison and Martin Jullum\ and Mark Anderson},
+  authors= {Lars Henry Berge Olsen and Pierre Lison and Martin Jullum and Mark Anderson},
   title   = {FindMyText: Robust, Scalable Detection of Text Containment in Large Web-Crawled Corpora},
   year    = {2026}
 }
