@@ -260,6 +260,26 @@ function buildSamples(corpus) {
         }
     });
     wrap.append(select, source, archive);
+
+    // Corpus-specific generic "filler" boilerplate. Appending it after a
+    // genuine excerpt dilutes the position-aware signal (our score drops)
+    // while the baseline keeps matching on the shared fingerprints — a live
+    // decoy demo the user can trigger on top of any text they like.
+    if (corpus && corpus.filler) {
+        const fillerBtn = el("button", {
+            type: "button", id: "filler-btn", class: "btn small ghost filler-btn",
+            title: "Append corpus-specific generic boilerplate to whatever is in the box.",
+        });
+        fillerBtn.textContent = "+ Add generic filler";
+        fillerBtn.addEventListener("click", () => {
+            const ta = document.getElementById("text");
+            const current = ta.value.replace(/\s+$/, "");
+            ta.value = current ? `${current}\n\n${corpus.filler}` : corpus.filler;
+            ta.dispatchEvent(new Event("input"));
+            ta.focus();
+        });
+        wrap.append(fillerBtn);
+    }
 }
 
 function setupPassword() {

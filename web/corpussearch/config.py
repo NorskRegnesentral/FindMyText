@@ -59,6 +59,9 @@ class CorpusConfig:
     dataset_note: str = ""
     # Per-corpus example texts (one known to match, one known not to).
     samples: list[SampleText] = field(default_factory=list)
+    # Corpus-specific generic "filler" boilerplate the user can append to their
+    # text to dilute a genuine excerpt (a live decoy demo). Empty = none.
+    filler: str = ""
     enabled: bool = True
 
     def doc_url(self, doc_id: str) -> Optional[str]:
@@ -189,19 +192,22 @@ def _resolve_path(path: str, root: str) -> str:
     return os.path.join(root, path)
 
 
-def _load_samples(path: str) -> tuple[dict[str, list[SampleText]], Optional[SampleText]]:
+def _load_samples(
+    path: str,
+) -> tuple[dict[str, list[SampleText]], Optional[SampleText], dict[str, str]]:
     """Load curated examples from ``samples_data.json``.
 
-    Returns ``(samples_by_corpus_id, shared_no_match_sample)``. The examples are
-    kept as data (rather than in code) to avoid escaping issues with LaTeX-heavy
-    abstracts and to make them trivial to regenerate.
+    Returns ``(samples_by_corpus_id, shared_no_match_sample, fillers_by_id)``.
+    The examples are kept as data (rather than in code) to avoid escaping issues
+    with LaTeX-heavy abstracts and to make them trivial to regenerate.
     """
     with open(path, "r", encoding="utf-8") as fh:
         raw = json.load(fh)
     no_match_raw = raw.pop("no_match", None)
+    fillers = raw.pop("fillers", {}) or {}
     by_id = {cid: [SampleText(**s) for s in items] for cid, items in raw.items()}
     no_match = SampleText(**no_match_raw) if no_match_raw else None
-    return by_id, no_match
+    return by_id, no_match, fillers
 
 
 def _build_corpus(
@@ -209,6 +215,7 @@ def _build_corpus(
     index_root: str,
     samples_by_id: dict[str, list[SampleText]],
     no_match: Optional[SampleText],
+    fillers: dict[str, str],
 ) -> CorpusConfig:
     cid = spec["id"]
     index_dir = _resolve_path(spec.get("index_dir", ""), index_root)
@@ -226,6 +233,7 @@ def _build_corpus(
         dataset_url=spec.get("dataset_url", ""),
         dataset_note=spec.get("dataset_note", ""),
         samples=samples,
+        filler=fillers.get(cid, ""),
         # Only offer a corpus whose index is actually present on this machine.
         enabled=bool(index_dir) and os.path.isdir(index_dir),
     )
@@ -243,14 +251,14 @@ def load_config() -> AppConfig:
         samples_file if os.path.isabs(samples_file)
         else os.path.join(config_dir, samples_file)
     )
-    samples_by_id, no_match = _load_samples(samples_path)
+    samples_by_id, no_match, fillers = _load_samples(samples_path)
 
     # ``index_root`` may be overridden by the environment so a deployment can
     # relocate the indexes without editing the tracked config.json (e.g. the
     # systemd unit sets FINDMYTEXT_INDEX_ROOT).
     index_root = os.environ.get("FINDMYTEXT_INDEX_ROOT") or raw.get("index_root", "")
     corpora = [
-        _build_corpus(spec, index_root, samples_by_id, no_match)
+        _build_corpus(spec, index_root, samples_by_id, no_match, fillers)
         for spec in raw.get("corpora", [])
     ]
 
@@ -279,6 +287,7 @@ def config_public_dict(cfg: AppConfig) -> dict[str, Any]:
                 "searchable": bool(c.search_kind),
                 "search_kind": c.search_kind,
                 "samples": [asdict(s) for s in c.samples],
+                "filler": c.filler,
             }
             for c in cfg.corpora
             if c.enabled
