@@ -7,6 +7,7 @@ the general detector modules. It intentionally exposes the small API expected by
 
 from __future__ import annotations
 
+import re
 from typing import Dict
 
 import numpy as np
@@ -25,6 +26,34 @@ DEFAULT_CLUSTERING_PARAMS: Dict[str, object] = {
     "distance_threshold": 30,
     "min_cluster_size": 5,
 }
+
+_WORD_RE = re.compile(r"\w", re.UNICODE)
+
+
+def tokenize_with_offsets(document: str, punctuation: bool = False) -> list[tuple[int, int]]:
+    """Tokenize like ``Winnower.tokenize``, but return character offsets."""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(document)
+    while i < n:
+        if document[i].isspace():
+            i += 1
+            continue
+        start = i
+        while i < n and not document[i].isspace():
+            i += 1
+        end = i
+        if punctuation:
+            spans.append((start, end))
+            continue
+        wstart = wend = None
+        for j in range(start, end):
+            if _WORD_RE.match(document[j]):
+                if wstart is None:
+                    wstart = j
+                wend = j + 1
+        if wstart is not None and wend is not None:
+            spans.append((wstart, wend))
+    return spans
 
 
 def _validate_score(score: str) -> None:

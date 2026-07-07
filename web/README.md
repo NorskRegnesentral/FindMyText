@@ -17,9 +17,9 @@ step) and a thin Flask layer that **reuses the project's own detection code**.
 3. **Pick algorithm(s)** and run:
    - **Position-aware match (our method)** — the clustering score (largest
      geometrically-coherent cluster of shared fingerprints), via
-     [`detector.TextContainmentDetector.find_matches_clustering`](../detector.py).
+   [`findmytext.web.TextContainmentDetector.find_matches_clustering`](../findmytext/web.py).
    - **Shared fingerprints (baseline)** — number of shared winnowed fingerprints,
-     via [`detector.TextContainmentDetector.find_matches_jaccard`](../detector.py).
+   via [`findmytext.web.TextContainmentDetector.find_matches_jaccard`](../findmytext/web.py).
 4. **See results** — a score + best match per algorithm, a short ranking, and your
    text with the **matching passages highlighted**. Where possible each match
    shows the document's **title as a clickable link**.
@@ -179,7 +179,7 @@ combine this with the rate limit above so one visitor can't tie up the box.
 
 The matched-passage highlighting maps shared-fingerprint **token positions** back
 to character offsets in your text using the winnower's exact tokenisation
-(`tokenize_with_offsets` in [`winnower.py`](../winnower.py)) and the query
+(`tokenize_with_offsets` in [`findmytext/web.py`](../findmytext/web.py)) and the query
 positions from `TextContainmentDetector.get_match_highlight_positions`. For "our
 method" the highlighted positions are those in the largest cluster; for the
 baseline they are all shared fingerprints of the top match. No corpus document

@@ -22,7 +22,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from findmytext.web import TextContainmentDetector  # noqa: E402
+from findmytext.web import TextContainmentDetector, tokenize_with_offsets  # noqa: E402
 
 from .config import AppConfig, CorpusConfig, AlgoParams  # noqa: E402
 
@@ -301,7 +301,7 @@ def run_highlight(
 
     # Character offsets for the query tokens (the tool-specific tokenizer). This
     # is what lets us turn the core's matched query token positions into spans.
-    token_spans = winnower.tokenize_with_offsets(text)
+    token_spans = tokenize_with_offsets(text, punctuation=winnower.punctuation)
 
     layers = []
     for mode in modes:
