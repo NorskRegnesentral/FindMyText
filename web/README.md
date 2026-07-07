@@ -180,6 +180,6 @@ The matched-passage highlighting maps shared-fingerprint **token positions** bac
 to character offsets in your text using the winnower's exact tokenisation
 (`tokenize_with_offsets` in [`findmytext/web.py`](../findmytext/web.py)) and the query
 positions from `TextContainmentDetector.get_match_highlight_clusters`. The UI can
-show either the largest aligned passage or all aligned passages from the
-position-aware method. No corpus document text is needed, which keeps the server
-lightweight.
+show the largest aligned passage, all aligned passages from the position-aware
+method, or all shared fingerprints from the Jaccard baseline. No corpus document
+text is needed, which keeps the server lightweight.

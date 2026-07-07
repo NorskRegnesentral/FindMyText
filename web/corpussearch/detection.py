@@ -269,14 +269,11 @@ HIGHLIGHT_MODES = {
         "method": "clustering",
         "which": "all",
     },
-}
-
-# Keep the old baseline mode close to HIGHLIGHT_MODES so it can be restored by
-# adding ``"jaccard": SHARED_FINGERPRINT_HIGHLIGHT_MODE`` above.
-SHARED_FINGERPRINT_HIGHLIGHT_MODE = {
-    "label": "Shared fingerprints (baseline) — all overlapping passages",
-    "method": "jaccard",
-    "which": "largest",
+    "jaccard": {
+        "label": "Shared fingerprints (baseline) — all overlapping passages",
+        "method": "jaccard",
+        "which": "largest",
+    },
 }
 
 
