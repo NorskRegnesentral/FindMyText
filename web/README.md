@@ -179,7 +179,7 @@ combine this with the rate limit above so one visitor can't tie up the box.
 The matched-passage highlighting maps shared-fingerprint **token positions** back
 to character offsets in your text using the winnower's exact tokenisation
 (`tokenize_with_offsets` in [`findmytext/web.py`](../findmytext/web.py)) and the query
-positions from `TextContainmentDetector.get_match_highlight_positions`. For "our
-method" the highlighted positions are those in the largest cluster; for the
-baseline they are all shared fingerprints of the top match. No corpus document
-text is needed, which keeps the server lightweight.
+positions from `TextContainmentDetector.get_match_highlight_clusters`. The UI can
+show either the largest aligned passage or all aligned passages from the
+position-aware method. No corpus document text is needed, which keeps the server
+lightweight.

@@ -259,11 +259,6 @@ def run_detection(
 # already-scored document, in one or more highlight modes that can be overlaid.
 # ---------------------------------------------------------------------------
 HIGHLIGHT_MODES = {
-    "jaccard": {
-        "label": "Shared fingerprints (baseline) — all overlapping passages",
-        "method": "jaccard",
-        "which": "largest",
-    },
     "cc_largest": {
         "label": "Position-aware — largest aligned passage",
         "method": "clustering",
@@ -274,6 +269,14 @@ HIGHLIGHT_MODES = {
         "method": "clustering",
         "which": "all",
     },
+}
+
+# Keep the old baseline mode close to HIGHLIGHT_MODES so it can be restored by
+# adding ``"jaccard": SHARED_FINGERPRINT_HIGHLIGHT_MODE`` above.
+SHARED_FINGERPRINT_HIGHLIGHT_MODE = {
+    "label": "Shared fingerprints (baseline) — all overlapping passages",
+    "method": "jaccard",
+    "which": "largest",
 }
 
 
