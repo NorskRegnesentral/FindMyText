@@ -41,19 +41,32 @@ import numpy as np
 import pyarrow.parquet as pq
 
 # --- paths -----------------------------------------------------------------
-SRC_JSONL = (
-    "/nr/samba/user/jullum/Local_work/Projects/COPY.AI/"
-    "data/wiki/wikipedia.jsonl/wikipedia.jsonl"
+INDEX_ROOT = os.environ.get("FINDMYTEXT_INDEX_ROOT", "/path/to/prebuilt-indexes")
+SRC_JSONL = os.environ.get(
+    "FINDMYTEXT_WIKI_SRC_JSONL",
+    "/path/to/wiki/wikipedia.jsonl",
 )
-INDEX_DIR = "/home/jullum/copyai_local/wiki/index(4,6)_wikipedia"
-DUMP_DIR = "/home/jullum/copyai_local/wiki/_wikidump_20231101_en"
-TITLES_OUT = "/home/jullum/copyai_local/wiki/titles.json.gz"
-URLS_OUT = "/home/jullum/copyai_local/wiki/urls.json.gz"
+INDEX_DIR = os.environ.get(
+    "FINDMYTEXT_WIKI_INDEX_DIR",
+    os.path.join(INDEX_ROOT, "wiki", "index(4,6)_wikipedia"),
+)
+DUMP_DIR = os.environ.get(
+    "FINDMYTEXT_WIKI_DUMP_DIR",
+    os.path.join(INDEX_ROOT, "wiki", "_wikidump_20231101_en"),
+)
+TITLES_OUT = os.environ.get(
+    "FINDMYTEXT_WIKI_TITLES_OUT",
+    os.path.join(INDEX_ROOT, "wiki", "titles.json.gz"),
+)
+URLS_OUT = os.environ.get(
+    "FINDMYTEXT_WIKI_URLS_OUT",
+    os.path.join(INDEX_ROOT, "wiki", "urls.json.gz"),
+)
 
 DATASET = "wikimedia/wikipedia"
 CONFIG = "20231101.en"
 PREFIX = 2000  # chars of normalised text used as the join key (well under ~10k)
-UA = {"User-Agent": "FindMyTextDemo/1.0 (research; contact jullum@nr.no)"}
+UA = {"User-Agent": os.environ.get("FINDMYTEXT_USER_AGENT", "FindMyTextDemo/1.0")}
 
 _WS = re.compile(r"\s+")
 

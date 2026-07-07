@@ -1,4 +1,5 @@
 {
+    "index_root": "/path/to/prebuilt-indexes",
     "github_url": "https://github.com/NorskRegnesentral/FindMyText",
     "paper_url": "",
     "max_loaded_indexes": 1,
@@ -8,69 +9,36 @@
             "id": "arxiv",
             "label": "arXiv papers",
             "description": "Scientific papers from arXiv (open-licensed subset). Try pasting an abstract, or load one of the examples.",
-            "index_dir": "/home/jullum/copyai_local/arxiv/index(4,6)",
+            "index_dir": "arxiv/index(4,6)",
             "doc_url_template": "https://arxiv.org/abs/{doc_id}",
-            "title_map_path": "/home/jullum/copyai_local/arxiv/titles.json.gz",
-            "dataset_url": "https://huggingface.co/datasets/common-pile/arxiv_papers/viewer/default/",
-            "samples": [
-                {
-                    "label": "Named Entity Recognition without Labelled Data",
-                    "url": "https://arxiv.org/abs/2004.14723",
-                    "text": "Named Entity Recognition (NER) performance often degrades rapidly when applied to target domains that differ from the texts observed during training."
-                },
-                {
-                    "label": "Unrelated text (should not match)",
-                    "text": "Last Tuesday, Mirabel Quincy-Tannenbaum repotted her seventeen miniature kumquat trees while humming an invented lullaby about a forgetful walrus named Pemberton."
-                }
-            ]
+            "title_map": "arxiv/titles.json.gz",
+            "dataset_url": "https://huggingface.co/datasets/common-pile/arxiv_papers/viewer/default/"
         },
         {
             "id": "wiki",
             "label": "English Wikipedia",
             "description": "English Wikipedia articles. Try pasting a sentence from an article, or load one of the examples.",
-            "index_dir": "/home/jullum/copyai_local/wiki/index(4,6)_wikipedia",
+            "index_dir": "wiki/index(4,6)_wikipedia",
             "doc_url_template": "",
-            "title_map_path": "/home/jullum/copyai_local/wiki/titles.json.gz",
-            "url_map_path": "/home/jullum/copyai_local/wiki/urls.json.gz",
+            "title_map": "wiki/titles.json.gz",
+            "url_map": "wiki/urls.json.gz",
             "dataset_url": "https://huggingface.co/datasets/wikimedia/wikipedia/viewer/20231101.en",
-            "dataset_note": "This is the full upstream dataset (a superset) — only a subset of its articles is indexed here. Use the search box below to see exactly what's included.",
-            "samples": [
-                {
-                    "label": "Nova Scotia",
-                    "url": "https://en.wikipedia.org/wiki/Nova_Scotia",
-                    "text": "Nova Scotia is a province located in Eastern Canada. It is one of the three Maritime provinces and one of the four Atlantic provinces."
-                },
-                {
-                    "label": "Unrelated text (should not match)",
-                    "text": "Last Tuesday, Mirabel Quincy-Tannenbaum repotted her seventeen miniature kumquat trees while humming an invented lullaby about a forgetful walrus named Pemberton."
-                }
-            ]
+            "dataset_note": "This is the full upstream dataset (a superset) — only a subset of its articles is indexed here. Use the search box below to see exactly what's included."
         },
         {
             "id": "hplt",
             "label": "HPLT web crawl",
-            "description": "A large multilingual web-crawl corpus (HPLT). Try pasting text from a web page.",
-            "index_dir": "/home/jullum/copyai_local/hplt/index(4,6)",
+            "description": "A large multilingual web-crawl corpus (HPLT). Examples link to the original page and a web.archive.org snapshot, as many originals have since changed or gone offline.",
+            "index_dir": "hplt/index(4,6)",
             "doc_url_template": "",
-            "url_map_path": "/home/jullum/copyai_local/hplt/urls.sqlite",
-            "samples": [
-                {
-                    "label": "Travel diary \u2014 safari in Kenya",
-                    "url": "https://thedreamingtraveller.com/2015/09/06/kenya/",
-                    "archive_url": "https://web.archive.org/web/20170416222030/https://thedreamingtraveller.com/2015/09/06/kenya/",
-                    "text": "We flew into Nairobi, as it was our starting point for our overland trip. Nairobi is hustling and bustling with people everywhere, a real high-rise city."
-                },
-                {
-                    "label": "Unrelated text (should not match)",
-                    "text": "Last Tuesday, Mirabel Quincy-Tannenbaum repotted her seventeen miniature kumquat trees while humming an invented lullaby about a forgetful walrus named Pemberton."
-                }
-            ]
+            "url_map": "hplt/urls.sqlite",
+            "source_caveat": "This is a web-crawl corpus: the index stores fingerprints of the text extracted at crawl time, not the page itself."
         }
     ],
     "params": {
         "top_k": 10,
         "min_fingerprints": 5,
-        "cc_doc1_position_threshold": 10,
+        "cc_doc1_position_threshold": 30,
         "cc_offset_threshold": 10,
         "cc_min_cluster_size": 5,
         "normalizing_constant": 8.0

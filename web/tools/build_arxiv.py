@@ -23,8 +23,15 @@ import urllib.request
 
 import numpy as np
 
-INDEX_DIR = "/home/jullum/copyai_local/arxiv/index(4,6)"
-OUT = "/home/jullum/copyai_local/arxiv/titles.json.gz"
+INDEX_ROOT = os.environ.get("FINDMYTEXT_INDEX_ROOT", "/path/to/prebuilt-indexes")
+INDEX_DIR = os.environ.get(
+    "FINDMYTEXT_ARXIV_INDEX_DIR",
+    os.path.join(INDEX_ROOT, "arxiv", "index(4,6)"),
+)
+OUT = os.environ.get(
+    "FINDMYTEXT_ARXIV_TITLES_OUT",
+    os.path.join(INDEX_ROOT, "arxiv", "titles.json.gz"),
+)
 CAND_OUT = os.path.join(os.path.dirname(__file__), "_arxiv_candidates.json")
 BASE = "https://huggingface.co/datasets/common-pile/arxiv_papers/resolve/main"
 N_SHARDS = 22

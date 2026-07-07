@@ -1,5 +1,5 @@
 {
-    "index_root": "/home/jullum/copyai_local",
+    "index_root": "/path/to/prebuilt-indexes",
     "github_url": "https://github.com/NorskRegnesentral/FindMyText",
     "paper_url": "",
     "max_loaded_indexes": 1,

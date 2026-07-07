@@ -34,9 +34,16 @@ import orjson
 import zstandard as zstd
 
 # --- Paths -----------------------------------------------------------------
-SHARD_GLOB = "/nr/samba/user/jullum/Local_work/Projects/COPY.AI/data/hplt/*.jsonl.zst"
-SAMPLES_SRC = "/home/jullum/copyai_local/hplt/indexed_samples_hplt.jsonl"
-OUT_DIR = "/home/jullum/copyai_local/hplt"
+INDEX_ROOT = os.environ.get("FINDMYTEXT_INDEX_ROOT", "/path/to/prebuilt-indexes")
+SHARD_GLOB = os.environ.get(
+    "FINDMYTEXT_HPLT_SHARD_GLOB",
+    "/path/to/hplt/*.jsonl.zst",
+)
+SAMPLES_SRC = os.environ.get(
+    "FINDMYTEXT_HPLT_SAMPLES_SRC",
+    os.path.join(INDEX_ROOT, "hplt", "indexed_samples_hplt.jsonl"),
+)
+OUT_DIR = os.environ.get("FINDMYTEXT_HPLT_OUT_DIR", os.path.join(INDEX_ROOT, "hplt"))
 FINAL_DB = os.path.join(OUT_DIR, "urls.sqlite")
 SHARD_DIR = os.path.join(OUT_DIR, "_url_shards")
 
