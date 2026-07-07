@@ -11,7 +11,7 @@ import re
 from typing import List, Set, Tuple
 
 import numpy as np
-from numba import jit, njit
+from numba import njit
 
 # Matches a single word character (letters, digits, underscore) with Unicode
 # semantics. Used by :meth:`Winnower.tokenize_with_offsets` to locate the word

@@ -25,7 +25,6 @@ TODO: Need to add a thresholding mechanism to decide whether a score is high eno
 
 from __future__ import annotations
 
-import indexing
 import polars as pl
 
 from typing import Dict
@@ -34,6 +33,7 @@ from detector_utils import (
     compute_fingerprint_rarity,
     get_df_hash_cluster,
 )
+from findmytext import indexing
 
 # Default clustering configuration. Override individual keys via the ``clustering_params``
 # argument of :meth:`TextContainmentDetector.find_matches_clustering`.

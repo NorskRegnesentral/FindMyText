@@ -1,22 +1,24 @@
 """Module for in-memory and disk-based indexing of documents using winnowed
 fingerprints."""
 
+import gzip
 import heapq
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import orjson  # 3-5x faster JSON parsing
 import tqdm
 
 try:
-    import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
+    import isal.igzip as igzip  # 2-4x faster gzip decompression (Intel ISA-L)
 except ImportError:
-    import gzip
+    igzip = gzip  # type: ignore[assignment]
 
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import numpy as np
-import winnower
-from numpy import ndarray
+
+from . import winnower
 
 
 class MemoryBasedIndex:
@@ -28,9 +30,16 @@ class MemoryBasedIndex:
     def __init__(
         self, length: int = 5, window_size: int = 6, base: int = 256, punctuation=False
     ):
-        """Initialize the inverted index and the winnower."""
-        self.winnower = winnower.Winnower(
+        """Initialize the MemoryBasedIndex with specified winnowing parameters."""
+
+        # We use two winnowers: one for indexing and one for runtime queries
+        # (the latter with a window size of 1, since we want to get as many
+        # fingerprints as possible for matching).
+        self.indexing_winnower = winnower.Winnower(
             length=length, window_size=window_size, base=base, punctuation=punctuation
+        )
+        self.runtime_winnower = winnower.Winnower(
+            length=length, window_size=1, base=base, punctuation=punctuation
         )
 
         self.index = {}
@@ -38,7 +47,7 @@ class MemoryBasedIndex:
     def add_doc(self, text: str, unique_id: str):
         """Add a document to the inverted index with a unique identifier."""
         # Get the winnowed fingerprints and their positions for the document text
-        fingerprints, positions = self.winnower.get_winnowed_fingerprints(text)
+        fingerprints, positions = self.indexing_winnower.get_winnowed_fingerprints(text)
 
         # Add each fingerprint and its position to the index
         for fp, pos in zip(fingerprints, positions):
@@ -68,7 +77,7 @@ class MemoryBasedIndex:
 
         """
         # Compute the winnowed fingerprints for the query text
-        query_fps, _ = self.winnower.get_winnowed_fingerprints(query_text)
+        query_fps, _ = self.runtime_winnower.get_winnowed_fingerprints(query_text)
 
         # Retrieve the counts of shared fingerprints for each document in the index, and return the top-k
         # matches that have at least the minimum number of shared fingerprints
@@ -128,10 +137,10 @@ class MemoryBasedIndex:
             # The first line of the JSONL file contains metadata about the index parameters and statistics,
             metadata_line = orjson.dumps(
                 {
-                    "length": self.winnower.length,
-                    "window_size": self.winnower.window_size,
-                    "base": self.winnower.base,
-                    "punctuation": self.winnower.punctuation,
+                    "length": self.indexing_winnower.length,
+                    "window_size": self.indexing_winnower.window_size,
+                    "base": self.indexing_winnower.base,
+                    "punctuation": self.indexing_winnower.punctuation,
                     "num_fingerprints": len(self.index),
                 }
             ).decode("utf-8")
@@ -152,7 +161,7 @@ class MemoryBasedIndex:
     def from_jsonl(cls, input_file: str, only_meta_data=False) -> "MemoryBasedIndex":
         """Deserialize an in-memory index from a gzipped JSONL file at the specified
         input path, and create a MemoryBasedIndex instance with the loaded data."""
-        with gzip.open(input_file, "rt", encoding="utf-8") as f:
+        with igzip.open(input_file, "rt", encoding="utf-8") as f:
             first_line = f.readline()
             if not first_line:
                 raise ValueError("Input file is empty")
@@ -198,9 +207,15 @@ class DiskBasedIndex:
         files from the specified index directory."""
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
-            self.winnower = winnower.Winnower(
+            self.indexing_winnower = winnower.Winnower(
                 length=meta["length"],
                 window_size=meta["window_size"],
+                base=meta["base"],
+                punctuation=meta["punctuation"],
+            )
+            self.runtime_winnower = winnower.Winnower(
+                length=meta["length"],
+                window_size=1,
                 base=meta["base"],
                 punctuation=meta["punctuation"],
             )
@@ -221,7 +236,10 @@ class DiskBasedIndex:
         )
         self.to_external_doc_id = _DocIdMap(doc_name_offsets, doc_name_bytes)
 
-        self._posting_file = open(os.path.join(index_dir, "postings.dat"), "rb")
+        # Raw fd (not a file object) so os.pread can be called concurrently from
+        # multiple threads without a shared seek position.
+        self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
+        self._io_pool = ThreadPoolExecutor(max_workers=8)
 
     def get_closest_matches(
         self, query_text: str, min_fingerprints=5, top_k: int = 5
@@ -241,7 +259,7 @@ class DiskBasedIndex:
 
         """
         # Compute the winnowed fingerprints for the query text
-        query_fps, _ = self.winnower.get_winnowed_fingerprints(query_text)
+        query_fps, _ = self.runtime_winnower.get_winnowed_fingerprints(query_text)
 
         # Retrieve the counts of shared fingerprints for each document in the index, and return the top-k
         # matches that have at least the minimum number of shared fingerprints
@@ -258,7 +276,7 @@ class DiskBasedIndex:
         fingerprints for each document in the index, and return the top-k matches that
         have at least the minimum number of shared fingerprints."""
         if (
-            self.winnower is None
+            self.runtime_winnower is None
             or self.to_external_doc_id is None
             or self.fingerprints is None
         ):
@@ -271,25 +289,33 @@ class DiskBasedIndex:
         if not postings:
             return {}  # Return an empty dictionary if no postings are found
 
-        # Count the number of shared fingerprints for each document ID across all matching postings
+        # Sparse counting: work only over doc_ids that actually appeared in postings.
+        # Avoids allocating a full n_docs-length array (400 MB for 50M docs) on every query.
         all_doc_ids = np.concatenate(
             [np.unique(posting_arr) for posting_arr in postings.values()]
         )
-        n_docs = len(self.to_external_doc_id)
-        counts = np.bincount(all_doc_ids, minlength=n_docs)
+        unique_docs, doc_counts = np.unique(all_doc_ids, return_counts=True)
 
         # Filter documents that have at least the minimum number of shared fingerprints
         # and return the top-k matches
-        candidates = np.where(counts >= min_fingerprints)[0]
-        top_docs = heapq.nlargest(top_k, candidates, key=lambda x: counts[x])
-
+        mask = doc_counts >= min_fingerprints
+        candidates = unique_docs[mask]
+        if len(candidates) == 0:
+            return {}
+        candidate_counts = doc_counts[mask]
+        top_idx = heapq.nlargest(
+            min(top_k, len(candidates)),
+            range(len(candidates)),
+            key=lambda i: candidate_counts[i],
+        )
         return {
-            self.to_external_doc_id[doc_id]: int(counts[doc_id]) for doc_id in top_docs
+            self.to_external_doc_id[int(candidates[i])]: int(candidate_counts[i])
+            for i in top_idx
         }
 
     def get_closest_matches_with_positions(
         self,
-        query_text: str,
+        query: Union[str, np.ndarray],
         min_fingerprints=5,
         top_k: int = 5,
         verbose: bool = True,
@@ -300,7 +326,8 @@ class DiskBasedIndex:
         document.
 
         Args:
-            query_text: The text of the query document to find matches for.
+            query: The text of the query document to find matches for, or an array of precomputed
+             fingerprints for that text.
             min_fingerprints: The minimum number of shared fingerprints required for a document to be
             considered a match (default: 5).
             top_k: The number of top matching documents to return based on shared fingerprint counts
@@ -314,14 +341,21 @@ class DiskBasedIndex:
 
         """
         if (
-            self.winnower is None
+            self.runtime_winnower is None
             or self.to_external_doc_id is None
             or self.fingerprints is None
         ):
             raise ValueError("Index not initialized")
 
         # Compute the winnowed fingerprints for the query text
-        query_fps, _ = self.winnower.get_winnowed_fingerprints(query_text)
+        if isinstance(query, str):
+            query_fps, _ = self.runtime_winnower.get_winnowed_fingerprints(query)
+        elif isinstance(query, np.ndarray):
+            query_fps = query
+        elif hasattr(query, "to_numpy"):
+            query_fps = query.to_numpy()
+        else:
+            raise ValueError("query must be a string or an array of fingerprints")
 
         # Retrieve the postings lists for each fingerprint in the query
         # (NB: we ignore the positions in the postings here)
@@ -330,17 +364,25 @@ class DiskBasedIndex:
         if not postings:
             return {}  # Return an empty dictionary if no postings are found
 
-        # Count the number of shared fingerprints for each document ID across all matching postings
+        # Sparse counting: work only over doc_ids that actually appeared in postings.
         all_doc_ids = np.concatenate(
             [np.unique(posting_arr["doc_id"]) for posting_arr in postings.values()]
         )
-        n_docs = len(self.to_external_doc_id)
-        counts = np.bincount(all_doc_ids, minlength=n_docs)
+        unique_docs, doc_counts = np.unique(all_doc_ids, return_counts=True)
 
         # Filter documents that have at least the minimum number of shared fingerprints
         # and return the top-k matches
-        candidates = np.where(counts >= min_fingerprints)[0]
-        top_docs = heapq.nlargest(top_k, candidates, key=lambda x: counts[x])
+        mask = doc_counts >= min_fingerprints
+        candidates = unique_docs[mask]
+        if len(candidates) == 0:
+            return {}
+        candidate_counts = doc_counts[mask]
+        top_idx = heapq.nlargest(
+            min(top_k, len(candidates)),
+            range(len(candidates)),
+            key=lambda i: candidate_counts[i],
+        )
+        top_docs = [int(candidates[i]) for i in top_idx]
 
         # For each of the top matching documents, retrieve the positions of the shared fingerprints in the index
         top_docs_external = {}
@@ -389,21 +431,28 @@ class DiskBasedIndex:
 
         found_fingerprints = queries[mask]
 
-        # 4. extract results (small loop, unavoidable)
+        # 4. sort by file offset to favour sequential I/O and reduce random seeks
+        order = np.argsort(offsets)
+        found_fingerprints = found_fingerprints[order]
+        offsets = offsets[order]
+        lengths = lengths[order]
+
+        # 5. parallel reads: os.pread releases the GIL so threads overlap I/O;
+        #    no shared seek position means reads are safe to issue concurrently.
+        def _read_one(args):
+            fp, offset, length = args
+            data = os.pread(self._posting_fd, int(length) * 8, int(offset))
+            return fp, data
+
         results = {}
-        iterator = zip(found_fingerprints, offsets, lengths)
-        loop = (
-            tqdm.tqdm(
-                iterator, total=len(found_fingerprints), desc="Retrieving postings"
-            )
-            if verbose
-            else iterator
+        read_iter = self._io_pool.map(
+            _read_one, zip(found_fingerprints, offsets, lengths)
         )
-        for fp, offset, length in loop:
-            self._posting_file.seek(offset)
-            data = self._posting_file.read(
-                length * 8
-            )  # each posting is 8 bytes (2 uint32)
+        if verbose:
+            read_iter = tqdm.tqdm(
+                read_iter, total=len(found_fingerprints), desc="Retrieving postings"
+            )
+        for fp, data in read_iter:
             postings_array = np.frombuffer(
                 data, dtype=[("doc_id", np.uint32), ("position", np.uint32)]
             )
@@ -417,12 +466,11 @@ class DiskBasedIndex:
     def __del__(self):
         """Close the posting file when the DiskBasedIndex instance is deleted to free
         up system resources."""
-        if (
-            hasattr(self, "_posting_file")
-            and self._posting_file
-            and not self._posting_file.closed
-        ):
-            self._posting_file.close()
+        if hasattr(self, "_posting_fd") and self._posting_fd >= 0:
+            os.close(self._posting_fd)
+            self._posting_fd = -1
+        if hasattr(self, "_io_pool"):
+            self._io_pool.shutdown(wait=False)
 
 
 class _DocIdMap:

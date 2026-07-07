@@ -4,10 +4,14 @@ import gzip
 import io
 import json
 import random
+import uuid
 from typing import Dict, Generator, Optional
 
 import orjson
-import zstandard as zstd
+
+# Common field names for text and ID in JSON objects
+COMMON_TEXT_FIELDS = ["text", "content", "document", "report"]
+COMMON_ID_FIELDS = ["id", "doc_id", "document_id", "report_id", "text_id", "title"]
 
 
 def stream_json_zst(
@@ -19,6 +23,9 @@ def stream_json_zst(
 ):
     """Stream JSON objects from a .jsonl.zst file, yielding one JSON object at a
     time."""
+
+    import zstandard as zstd
+
     # Open the file in binary read mode
     with open(file_path, "rb") as f:
         # Create a decompression context
@@ -77,6 +84,7 @@ def json_line_reader(
     certain probability."""
     nb_read = 0
     nb_skipped = 0
+    processed_ids = set()
     for line in line_iterator:
         if line.strip():  # Skip empty lines
             # Parse each line as a JSON object
@@ -84,6 +92,12 @@ def json_line_reader(
                 nb_skipped += 1
                 continue
             data = json.loads(line)
+            data = normalise_json(data)
+
+            if data["id"] in processed_ids:
+                raise ValueError(f"Duplicate document ID found: {data['id']}")
+            processed_ids.add(data["id"])
+
             if len(data["text"]) < min_length or len(data["text"]) > max_length:
                 nb_skipped += 1
                 continue
@@ -92,16 +106,58 @@ def json_line_reader(
             ):  # Avoiding a certain type of websites ...
                 nb_skipped += 1
                 continue
-            data = {
-                k: v
-                for k, v in data.items()
-                if k not in {"seg_langs", "web-register", "doc_scores"}
-            }
+
             yield data
             nb_read += 1
             if max_nb is not None and nb_read >= max_nb:
                 break
     print("Nb documents: %i kept, %i skipped" % (nb_read, nb_skipped))
+
+
+def normalise_json(
+    data: dict, text_field: Optional[str] = None, id_field: Optional[str] = None
+):
+    """Normalise a JSON object to ensure it has the required fields and remove any
+    unnecessary fields. The function checks for the presence of specified text and ID
+    fields, and if they are not provided, it attempts to find common alternatives. It also
+    removes any fields that are not relevant for further processing."""
+
+    if text_field is not None and text_field not in data:
+        raise ValueError(f"Missing required field '{text_field}' in JSON object")
+    if id_field is not None and id_field not in data:
+        raise ValueError(f"Missing required field '{id_field}' in JSON object")
+    if text_field is None:
+        for field in COMMON_TEXT_FIELDS:
+            if field in data:
+                text_field = field
+                break
+        else:
+            raise ValueError(
+                "JSON object does not contain a recognized text field. Please specify the text_field parameter."
+            )
+    if id_field is None:
+        for field in COMMON_ID_FIELDS:
+            if field in data:
+                id_field = field
+                break
+        else:
+            print("No id or doc_id field found in JSON object; creating a random ID")
+            data["id"] = str(uuid.uuid4())
+
+    if text_field != "text":
+        data["text"] = data[text_field]
+        del data[text_field]
+    if id_field != "id":
+        data["id"] = data[id_field]
+        del data[id_field]
+
+    data = {
+        k: v
+        for k, v in data.items()
+        if k not in {"seg_langs", "web-register", "doc_scores"}
+    }
+
+    return data
 
 
 def stream_to_file(

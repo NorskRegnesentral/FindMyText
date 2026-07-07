@@ -12,7 +12,6 @@ Self-contained utility functions for :mod:`detector`.
 
 from __future__ import annotations
 
-import indexing
 import itertools
 import json
 import time
@@ -24,6 +23,8 @@ from collections import Counter
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.cluster.hierarchy import linkage, fcluster
+
+from findmytext import indexing
 
 
 def convert_closest_matches_with_positions_to_df(closest_with_positions):
