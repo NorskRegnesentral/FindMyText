@@ -45,9 +45,6 @@
     },
     "protection": {
         "password": "",
-        "rate_limits": [],
-        "captcha_provider": "",
-        "captcha_secret": "",
-        "captcha_sitekey": ""
+        "rate_limits": []
     }
 }

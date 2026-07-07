@@ -39,13 +39,18 @@ def create_app() -> Flask:
     def api_config():
         return jsonify(config_public_dict(cfg))
 
-    @app.get("/api/corpus/<corpus_id>/titles")
+    @app.post("/api/corpus/<corpus_id>/titles")
     @rate_limited
     def api_titles(corpus_id):
+        data = request.get_json(silent=True) or {}
+        ok, message = guard_request(cfg, data.get("password"))
+        if not ok:
+            return jsonify({"error": message}), 403
+
         corpus = cfg.corpus(corpus_id)
         if corpus is None or not corpus.search_kind:
             return jsonify({"results": []})
-        query = request.args.get("q", "")
+        query = data.get("q", "")
         results = corpus.search(query, limit=20)
         return jsonify({"results": results})
 
@@ -57,10 +62,9 @@ def create_app() -> Flask:
         corpus_id = data.get("corpus")
         algorithms = data.get("algorithms") or []
         password = data.get("password")
-        captcha_token = data.get("captcha_token")
 
         # --- Abuse protection (no-ops unless configured) -------------------
-        ok, message = guard_request(cfg, password, captcha_token, request.remote_addr)
+        ok, message = guard_request(cfg, password)
         if not ok:
             return jsonify({"error": message}), 403
 
@@ -100,10 +104,9 @@ def create_app() -> Flask:
         doc_id = data.get("doc_id")
         modes = data.get("modes") or []
         password = data.get("password")
-        captcha_token = data.get("captcha_token")
 
         # --- Abuse protection (no-ops unless configured) -------------------
-        ok, message = guard_request(cfg, password, captcha_token, request.remote_addr)
+        ok, message = guard_request(cfg, password)
         if not ok:
             return jsonify({"error": message}), 403
 

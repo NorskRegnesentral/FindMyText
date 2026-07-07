@@ -30,7 +30,6 @@ document.addEventListener("DOMContentLoaded", () => {
     buildLinks();
     buildCorpora();
     setupPassword();
-    setupCaptcha();
     setupCharCount();
     setupMethodParams();
     document.getElementById("detect-form").addEventListener("submit", onSubmit);
@@ -165,8 +164,16 @@ function renderCorpusSearch(corpus) {
             return;
         }
         const seq = ++corpusSearchSeq;
-        fetch(`/api/corpus/${encodeURIComponent(corpus.id)}/titles?q=${encodeURIComponent(q)}`)
-            .then((r) => r.json())
+        fetch(`/api/corpus/${encodeURIComponent(corpus.id)}/titles`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ q, password: getAccessPassword() }),
+        })
+            .then(async (r) => {
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(data.error || `Search failed (${r.status}).`);
+                return data;
+            })
             .then((data) => {
                 if (seq !== corpusSearchSeq) return; // stale response
                 results.innerHTML = "";
@@ -201,6 +208,8 @@ function renderCorpusSearch(corpus) {
             .catch(() => {
                 if (seq !== corpusSearchSeq) return;
                 results.innerHTML = "";
+                results.append(el("li", { class: "corpus-search-empty" },
+                    CONFIG.password_required ? "Enter the access password to search." : "Search failed."));
             });
     };
 
@@ -289,32 +298,8 @@ function setupPassword() {
     }
 }
 
-function setupCaptcha() {
-    const cap = CONFIG.captcha || {};
-    if (!cap.provider || !cap.sitekey) return;
-    const container = document.getElementById("captcha-container");
-    const src = cap.provider === "recaptcha"
-        ? "https://www.google.com/recaptcha/api.js"
-        : "https://js.hcaptcha.com/1/api.js";
-    const cls = cap.provider === "recaptcha" ? "g-recaptcha" : "h-captcha";
-    container.append(el("div", { class: cls, "data-sitekey": cap.sitekey }));
-    const script = el("script", { src, async: "", defer: "" });
-    document.body.append(script);
-}
-
-function getCaptchaToken() {
-    const cap = CONFIG.captcha || {};
-    if (!cap.provider) return null;
-    try {
-        if (cap.provider === "recaptcha" && window.grecaptcha) {
-            return window.grecaptcha.getResponse() || null;
-        }
-        if (cap.provider === "hcaptcha" && window.hcaptcha) {
-            return window.hcaptcha.getResponse() || null;
-        }
-    } catch (e) { /* ignore */ }
-    const field = document.querySelector("[name='h-captcha-response'], [name='g-recaptcha-response']");
-    return field ? field.value || null : null;
+function getAccessPassword() {
+    return document.getElementById("password")?.value || null;
 }
 
 function setupCharCount() {
@@ -520,8 +505,7 @@ async function onSubmit(ev) {
     const payload = {
         text, corpus, algorithms,
         method_params: getMethodParams(),
-        password: document.getElementById("password")?.value || null,
-        captcha_token: getCaptchaToken(),
+        password: getAccessPassword(),
     };
 
     const runBtn = document.getElementById("run-btn");
@@ -813,8 +797,7 @@ async function onHighlight() {
                 doc_id: highlightDoc,
                 modes,
                 method_params: getMethodParams(),
-                password: document.getElementById("password")?.value || null,
-                captcha_token: getCaptchaToken(),
+                password: getAccessPassword(),
             }),
         });
         const data = await resp.json().catch(() => ({}));

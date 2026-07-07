@@ -56,6 +56,12 @@
         </section>
 
         <form id="detect-form" class="card form">
+            <div class="field hidden" id="password-field">
+                <label for="password">Access password</label>
+                <input type="password" id="password" name="password" autocomplete="off" />
+                <p class="hint">Required for corpus search, detection, and highlighting.</p>
+            </div>
+
             <div class="field">
                 <label for="corpus">1 · Corpus</label>
                 <select id="corpus" name="corpus"></select>
@@ -111,13 +117,6 @@
                     </p>
                 </div>
             </div>
-
-            <div class="field hidden" id="password-field">
-                <label for="password">Access password</label>
-                <input type="password" id="password" name="password" autocomplete="off" />
-            </div>
-
-            <div id="captcha-container" class="field"></div>
 
             <div class="actions">
                 <button type="submit" id="run-btn" class="btn primary">Run detection</button>

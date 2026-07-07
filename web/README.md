@@ -128,9 +128,8 @@ Nothing is enabled by default. Turn on any combination in the config
 
 | Mechanism | How to enable | Notes |
 |---|---|---|
-| **Shared password** | `"password": "change-me"` | A password box appears on the page; the value is checked server-side. Simplest option. |
+| **Shared password** | `"password": "change-me"` | A password box appears on the page; the value is checked server-side for corpus search, detection, and highlighting. |
 | **Per-IP rate limit** | `"rate_limits": ["20 per hour", "5 per minute"]` | Requires `pip install Flask-Limiter`. Good default protection. |
-| **CAPTCHA** | `"captcha_provider": "hcaptcha"` (or `"recaptcha"`) + `captcha_secret` + `captcha_sitekey` | Widget injected and verified server-side. |
 
 **Recommendation for launch:** a per-IP rate limit is usually enough and
 invisible to honest users; add a shared password to keep the demo semi-private.

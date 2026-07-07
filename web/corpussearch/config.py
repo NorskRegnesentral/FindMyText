@@ -144,10 +144,6 @@ class ProtectionConfig:
     # Per-IP rate limiting. Needs Flask-Limiter installed. Empty list = disabled.
     # Example: ["20 per hour", "5 per minute"].
     rate_limits: list[str] = field(default_factory=list)
-    # hCaptcha / reCAPTCHA secret. Empty = disabled (no captcha verification).
-    captcha_provider: str = ""  # "hcaptcha" | "recaptcha" | ""
-    captcha_secret: str = ""
-    captcha_sitekey: str = ""  # public site key, injected into the page
 
 
 @dataclass
@@ -315,10 +311,6 @@ def config_public_dict(cfg: AppConfig) -> dict[str, Any]:
                 "default": cfg.params.cc_min_cluster_size,
                 "min": 1, "max": 50,
             },
-        },
-        "captcha": {
-            "provider": cfg.protection.captcha_provider,
-            "sitekey": cfg.protection.captcha_sitekey,
         },
         "password_required": bool(cfg.protection.password),
     }
