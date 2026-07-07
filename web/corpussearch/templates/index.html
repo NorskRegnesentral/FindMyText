@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>findmytext.nr.no — corpus inclusion checker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <script id="public-config" type="application/json">{{ public_config | safe }}</script>
+</head>
+
+<body>
+    <main class="container">
+        <header class="hero">
+            <h1>findmytext<span class="dot">.</span>nr.no</h1>
+            <p class="tagline">
+                Check whether a piece of text — or a substantial part of it — appears in a
+                large document corpus, using document fingerprinting.
+            </p>
+            <nav class="links" id="top-links"></nav>
+        </header>
+
+        <section class="card paper">
+            <a class="paper-logo" href="https://nr.no/" target="_blank" rel="noopener">
+                <img src="{{ url_for('static', filename='img/nr-logo.png') }}"
+                    alt="Norwegian Computing Center (Norsk Regnesentral)" />
+            </a>
+            <h2 class="paper-title">
+                FindMyText: Robust, Scalable Detection of Text Containment in
+                Large Web-Crawled Corpora
+            </h2>
+            <p class="paper-authors">
+                Lars Henry Berge Olsen, Pierre Lison, Martin Jullum and Mark Anderson
+            </p>
+            <p class="paper-affil">
+                Norwegian Computing Center, Oslo, Norway<br />
+                <a href="mailto:lhbolsen@nr.no">{lhbolsen, plison, jullum, anderson}@nr.no</a>
+            </p>
+        </section>
+
+        <section class="card help">
+            <h2>How it works</h2>
+            <ol>
+                <li>Pick a <strong>corpus</strong> to check against.</li>
+                <li>Add <strong>your text</strong> — type or paste it, load a premade
+                    example, or add the corpus-specific generic filler.</li>
+                <li>Choose one or more <strong>detection algorithms</strong> and run the check.</li>
+                <li><em>Optional:</em> once you have results, <strong>highlight</strong>
+                    the matching passages to see exactly which parts overlap.</li>
+            </ol>
+            <p class="muted">
+                We extract a compact set of fingerprints from your text and look for the
+                same fingerprints in the corpus.
+            </p>
+        </section>
+
+        <form id="detect-form" class="card form">
+            <div class="field hidden" id="password-field">
+                <label for="password">Access password</label>
+                <input type="password" id="password" name="password" autocomplete="off" />
+                <p class="hint">Required for corpus search, detection, and highlighting.</p>
+            </div>
+
+            <div class="field">
+                <label for="corpus">1 · Corpus</label>
+                <select id="corpus" name="corpus"></select>
+                <p class="hint" id="corpus-desc"></p>
+                <p class="hint dataset-line" id="dataset-line"></p>
+                <div class="corpus-search hidden" id="corpus-search">
+                    <input type="search" id="corpus-search-input" class="corpus-search-input"
+                        placeholder="Search which articles are in this corpus…" autocomplete="off" />
+                    <ul class="corpus-search-results" id="corpus-search-results"></ul>
+                </div>
+            </div>
+
+            <div class="field">
+                <div class="label-row">
+                    <label for="text">2 · Your text</label>
+                    <span class="samples" id="samples"></span>
+                </div>
+                <p class="hint">
+                    Three ways to fill the box: <strong>search the corpus above</strong>
+                    to find a source it contains, then open it and copy a real passage
+                    in; <strong>load one of our premade examples</strong>; or
+                    <strong>add the corpus-specific generic filler</strong> — on its own
+                    as a neutral, unrelated passage, or appended to text already in the
+                    box (a premade example or your own).
+                </p>
+                <textarea id="text" name="text" rows="9"
+                    placeholder="Paste the text you want to check here…"></textarea>
+                <p class="hint"><span id="char-count">0</span> characters</p>
+            </div>
+
+            <div class="field">
+                <label>3 · Detection algorithm(s)</label>
+                <div class="algos" id="algos">
+                    <label class="algo">
+                        <input type="checkbox" name="algorithm" value="connected_components" checked />
+                        <span><strong>Position-aware match</strong> — our method (recommended)</span>
+                    </label>
+                    <label class="algo">
+                        <input type="checkbox" name="algorithm" value="jaccard" />
+                        <span><strong>Shared fingerprints</strong> — baseline</span>
+                    </label>
+                </div>
+                <div class="method-params hidden" id="method-params">
+                    <div class="method-params-head">
+                        <span class="method-params-title">Position-aware method settings</span>
+                        <button type="button" id="mp-reset" class="btn small ghost">Reset to defaults</button>
+                    </div>
+                    <div class="method-params-grid" id="method-params-grid"></div>
+                    <p class="hint">
+                        Advanced: these control how matched fingerprints are clustered
+                        into aligned passages. Leave at the defaults unless you want to
+                        explore the method's sensitivity.
+                    </p>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button type="submit" id="run-btn" class="btn primary">Run detection</button>
+                <span class="error" id="form-error"></span>
+            </div>
+        </form>
+
+        <section class="card progress hidden" id="progress-card">
+            <div class="progress-head">
+                <span id="progress-stage">Working…</span>
+                <span id="progress-elapsed" class="muted"></span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p class="hint" id="progress-note"></p>
+        </section>
+
+        <section class="card results hidden" id="results-card">
+            <h2>Result</h2>
+            <div id="summary"></div>
+            <p class="hint source-caveat hidden" id="source-caveat"></p>
+            <div id="highlight-wrap" class="hidden">
+                <h3>Matching passages in your text</h3>
+                <p class="hint" id="highlight-intro">
+                    Highlight which parts of your text overlap the selected match.
+                    Pick one or more styles — they can be shown together.
+                </p>
+                <div class="hl-doc-picker">
+                    <label for="highlight-doc-select">Compare against:</label>
+                    <select id="highlight-doc-select" class="hl-doc-select"></select>
+                </div>
+                <div class="hl-modes" id="hl-modes">
+                    <label class="hl-mode">
+                        <input type="checkbox" name="hl-mode" value="cc_largest" checked />
+                        <span class="hl-swatch hl-swatch-cc-largest"></span>
+                        <span><strong>Largest aligned passage</strong> — position-aware method's
+                            top cluster (what its score rewards).</span>
+                    </label>
+                    <label class="hl-mode">
+                        <input type="checkbox" name="hl-mode" value="cc_all" />
+                        <span class="hl-swatch hl-swatch-cc-all"></span>
+                        <span><strong>All aligned passages</strong> — every position-aware cluster,
+                            one colour each (catches reordered passages).</span>
+                    </label>
+                </div>
+                <div class="actions">
+                    <button type="button" id="hl-btn" class="btn">Show highlighting</button>
+                    <span class="error" id="hl-error"></span>
+                </div>
+                <p class="hint" id="highlight-meta"></p>
+                <div class="doc-text" id="highlight"></div>
+            </div>
+        </section>
+
+        <footer class="foot">
+            <span id="foot-links"></span>
+        </footer>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>
