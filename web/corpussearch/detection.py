@@ -1,9 +1,9 @@
-"""Detection engine: load corpus indexes on demand and run the two detection
-algorithms (shared-fingerprint "Jaccard" baseline and the position-aware
-"clustering" method) by delegating all scoring to the FindMyText core
-(``detector.TextContainmentDetector``). This module owns only the web-layer
-glue: an LRU of loaded detectors, streaming progress events, and turning the
-core's highlight positions into character spans for the browser.
+"""Detection engine for the corpus inclusion checker.
+
+This module owns only the Flask-facing glue: an LRU of loaded detectors,
+streaming progress events, and turning source-level highlight positions into
+character spans for the browser. Website-specific count scoring lives in
+``findmytext.web.TextContainmentDetector``.
 """
 
 from __future__ import annotations
@@ -15,15 +15,14 @@ import time
 from collections import OrderedDict
 from typing import Iterator
 
-# The FindMyText core modules (detector, indexing, winnower) live at the repo
-# root, two levels up from this file (web/corpussearch/detection.py). Ensure the
-# repo root is importable regardless of the working directory the app is
-# launched from.
+# The FindMyText source package lives at the repo root, two levels up from this
+# file (web/corpussearch/detection.py). Ensure it is importable regardless of
+# the working directory the app is launched from.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from detector import TextContainmentDetector  # noqa: E402  (FindMyText core)
+from findmytext.web import TextContainmentDetector  # noqa: E402
 
 from .config import AppConfig, CorpusConfig, AlgoParams  # noqa: E402
 
@@ -214,7 +213,7 @@ def run_detection(
         yield {"type": "error", "message": f"Could not load corpus: {exc}"}
         return
 
-    winnower = detector.index.winnower
+    winnower = detector.index.runtime_winnower
 
     # 2. Tokenise the query with the plain core tokenizer (no position tracking)
     #    purely to report a fingerprint count and to bail out early on text that
@@ -297,7 +296,7 @@ def run_highlight(
     params = cfg.params
     cparams = _clustering_params(params, cc_overrides)
     detector, _ = manager.get(corpus, params)
-    winnower = detector.index.winnower
+    winnower = detector.index.runtime_winnower
     length = winnower.length
 
     # Character offsets for the query tokens (the tool-specific tokenizer). This
