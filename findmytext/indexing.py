@@ -226,6 +226,17 @@ class DiskBasedIndex:
         )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+        postings_size = os.path.getsize(os.path.join(index_dir, "postings.dat"))
+        lengths_sum = int(self.lengths.sum())
+        if lengths_sum == postings_size:
+            self._posting_length_bytes_multiplier = 1
+        elif lengths_sum * 8 == postings_size:
+            self._posting_length_bytes_multiplier = 8
+        else:
+            raise ValueError(
+                "Index lengths are inconsistent with postings.dat size: "
+                f"sum(lengths)={lengths_sum}, postings.dat size={postings_size}"
+            )
 
         # Load doc-ID mapping as memory-mapped arrays wrapped in a lazy accessor
         doc_name_offsets = np.load(
@@ -441,7 +452,11 @@ class DiskBasedIndex:
         #    no shared seek position means reads are safe to issue concurrently.
         def _read_one(args):
             fp, offset, length = args
-            data = os.pread(self._posting_fd, int(length) * 8, int(offset))
+            data = os.pread(
+                self._posting_fd,
+                int(length) * self._posting_length_bytes_multiplier,
+                int(offset),
+            )
             return fp, data
 
         results = {}
