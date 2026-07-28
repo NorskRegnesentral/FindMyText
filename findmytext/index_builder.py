@@ -1,36 +1,44 @@
-"""Scripts for building indexes from .jsonl or .jsonl.zst files containing documents,
-and for merging intermediate indexes into a final disk-based index.
+"""Scripts for building and merging document fingerprint indexes.
 
-The indexing process consists of two main steps:
+Indexing pipeline
+-----------------
+Building a queryable index from a raw corpus is a two-step process:
 
-1. Building memory-based indexes from the corpus: The `do_indexing` function reads
-documents from the input data file (which can be in .jsonl or .jsonl.zst format),
-processes them to create an index based on k-grams and winnowing, and saves intermediate
-indexes to gzipped JSONL files after processing a specified number of documents. Each
-intermediate index file contains a mapping from fingerprints to postings lists,
-where each postings list includes document IDs and positions.
+Step 1 — Build intermediate indexes  (index_file)
+    Each document is tokenised and run through the winnowing algorithm to produce a
+    set of (fingerprint, position) pairs.  The pairs are accumulated in a
+    MemoryBasedIndex (an in-memory dict) in the main process and periodically flushed
+    to a gzipped JSONL file to keep peak memory bounded.  With nb_workers > 1, a
+    dedicated producer process dispatches fingerprinting to a pool of worker processes
+    and forwards results to the main process via a bounded queue.
 
-2. Merging intermediate indexes into a single disk-based index: The `merge_indexes` function
-takes the intermediate index files generated in the first step, reads and merges their contents,
-and saves the final merged index to a specified output directory. The merged index consists
-of several files, including a binary postings file, NumPy arrays for fingerprints, offsets,
-and lengths, and a JSON file containing index metadata.
+Step 2 — Merge into a disk-based index  (merge_indexes)
+    The intermediate .jsonl.gz files from Step 1 are read back, sorted by fingerprint,
+    and merged into a compact binary index that can be memory-mapped at query time.  The
+    merge itself is parallelised: each file is parsed in a dedicated worker process and
+    the sorted streams are heap-merged in the main process.
+
 """
 
 import argparse
-import concurrent.futures
+import array
+import collections
 import heapq
 import multiprocessing as mp
 import os
+import queue
 import shutil
 import sys
+import threading
 from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
 
-import datasets
+import msgpack
 import numpy as np
 import orjson
+import tqdm
 
-from . import indexing, utils
+from . import utils, winnower
+from .indexing import MemoryBasedIndex
 
 try:
     import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
@@ -48,26 +56,31 @@ def index_file(
     output_dir: str,
     length=4,
     window_size=6,
-    intermediate_save_freq: int = 300_000,
     stop_after: Optional[int] = None,
     delete_existing: bool = False,
     nb_workers: int = 1,
+    max_nb_documents_before_flush=1_000_000,
 ) -> List[str]:
-    """Index documents from a data file (currently supported formats: .jsonl,
-    .jsonl.zst) and save intermediate indexes (every intermediate_save_freq documents).
+    """Index documents from a corpus file and save intermediate index files to output_dir.
+
+    Reads the corpus, computes winnowed fingerprints for every document, and
+    periodically flushes the accumulated in-memory index to a gzipped JSONL file.
+    The resulting intermediate files can then be merged into a final disk-based index
+    with merge_indexes().
 
     Args:
-        corpus_file (str): Path to the input data file.  The corpus file should be in .jsonl format
-         (optionally gzipped or zst-compressed), where each line is a JSON object with at least two fields:
-        "id" (a unique document identifier) and "text" (the document content to be indexed).
-        output_dir (str): Directory where the index files will be saved.
-        length (int): Length of k-grams to use for indexing.
-        window_size (int): Window size for winnowing.
-        intermediate_save_freq (int): Frequency (in number of documents) at which to save intermediate indexes.
-        stop_after (Optional[int]): If provided, stop indexing after this many documents (for testing purposes).
-        delete_existing (bool): whether to delete the output_dir if it already exists
-        nb_workers (int): Number of parallel worker processes to use for indexing. If set to 1, indexing will
-         be done in a single process.
+        corpus_file: Path to the corpus (.jsonl, .jsonl.gz, or .jsonl.zst).  Each line
+            must be a JSON object with at least an "id" field (unique document
+            identifier) and a "text" field (document content).
+        output_dir: Directory where the intermediate index files will be saved.
+        length: k-gram length for fingerprinting (default 4).
+        window_size: Winnowing window size (default 6).
+        stop_after: If set, stop after this many documents (useful for testing).
+        delete_existing: If True, delete output_dir before starting.
+        nb_workers: Total number of processes.  One is used as the producer (stream
+            reading + dispatch); the rest are fingerprint workers.  nb_workers=1 runs
+            a single worker with no separate producer process.
+        max_nb_documents_before_flush: Maximum number of documents to hold in memory before flushing to disk. Default is 1M.
 
     Returns:
         List of paths to the saved intermediate index files.
@@ -89,184 +102,151 @@ def index_file(
         )
     print("Indexing documents from", corpus_file)
 
-    if nb_workers == 1:
-        index_files = index_data(
-            data_stream=stream,
-            output_dir=output_dir,
-            length=length,
-            window_size=window_size,
-            intermediate_save_freq=intermediate_save_freq,
-            stop_after=stop_after,
-            delete_existing=delete_existing,
-        )
-    else:
-        if stop_after is not None:
-            raise ValueError(
-                "stop_after is not supported when using multiple workers. Please set nb_workers=1 to use stop_after."
-            )
+    if os.path.exists(output_dir):
+        if delete_existing:
+            print(f"Deleting existing output directory: {output_dir}")
+            shutil.rmtree(output_dir)
+        elif not os.path.isdir(output_dir):
+            raise ValueError(f"Output path {output_dir} exists and is not a directory")
+    os.makedirs(output_dir, exist_ok=True)
+    print("Index files will be saved to", output_dir)
+    print(f"Indexing stream with {nb_workers} fingerprint workers...", flush=True)
 
-        index_files = index_data_parallel(
-            data=stream,
-            output_dir=output_dir,
-            n_workers=nb_workers,
-            length=length,
-            window_size=window_size,
-            intermediate_save_freq=intermediate_save_freq,
-            delete_existing=delete_existing,
-        )
+    meta = {
+        "length": length,
+        "window_size": window_size,
+        "base": 256,
+        "punctuation": False,
+    }
+
+    index = MemoryBasedIndex(meta=meta)
+
+    index_files: List[str] = []
+
+    # Get batched fingerprints from the stream using a producer-consumer pattern.
+    batch_results = get_batched_fingerprints(
+        stream, stop_after, nb_workers, length, window_size
+    )
+
+    total_count = 0
+    for batch_result in batch_results:
+        for doc_id, fp_pos_list in batch_result.items():
+            index.add_fingerprints(doc_id, fp_pos_list)
+            total_count += 1
+
+            if total_count % 100_000 == 0:
+                print(f"Processed {total_count:,} documents...", flush=True)
+
+            if index.doc_count >= max_nb_documents_before_flush:
+                increment_str = str((total_count + 1) // 1000) + "K"
+                path = os.path.join(output_dir, f"intermediate-{increment_str}.mpk.gz")
+                index.to_msgpack(path)
+                index_files.append(path)
+                index = MemoryBasedIndex(meta=meta)
+
+    if index.doc_count > 0:
+        path = os.path.join(output_dir, "final.mpk.gz")
+        index.to_msgpack(path)
+        index_files.append(path)
+
     return index_files
 
 
-def index_data(
+def get_batched_fingerprints(
+    stream: Any,
+    stop_after: Optional[int],
+    nb_workers: int,
+    length: int,
+    window_size: int,
+) -> Iterator[Dict[str, List[Tuple[int, int]]]]:
+    """Get batched fingerprints from the stream using a producer-consumer pattern.
+    The fingerprinting is extracted with winnowing in parallel using multiple
+    worker processes, and the results are yielded in batches.
+
+    Args:
+        stream: An iterable stream of documents to be processed.
+        stop_after: If set, stop after this many documents (useful for testing).
+        nb_workers: Total number of processes. One is used as the producer (stream
+        reading + dispatch); the rest are fingerprint workers. nb_workers=1 runs a
+        single worker with no separate producer process.
+        length: k-gram length for fingerprinting.
+        window_size: Winnowing window size.
+
+    Returns:
+        Iterator[Dict[str, List[Tuple[int, int]]]]: An iterator over batched
+        fingerprint results, where each item is a dictionary mapping document IDs
+        to lists of (fingerprint, position) tuples.
+
+    """
+
+    n_workers = max(1, nb_workers - 1)  # reserve one core for the producer process
+
+    # Queue for results from the producer to the main process.
+    result_queue: mp.Queue = mp.Queue(maxsize=n_workers * 4)
+
+    producer = mp.Process(
+        target=_produce,
+        args=(stream, stop_after, n_workers, result_queue, length, window_size),
+    )
+    producer.start()
+    try:
+        while True:
+            try:
+                item = result_queue.get(timeout=2)
+            except queue.Empty:
+                if not producer.is_alive():
+                    raise RuntimeError(
+                        f"Producer process died unexpectedly (exitcode={producer.exitcode})"
+                    )
+                continue
+            if item is None:
+                return
+            yield item
+    finally:
+        producer.join()
+
+
+def _produce(
     data_stream: Any,
-    output_dir: str,
-    length=4,
-    window_size=6,
-    intermediate_save_freq: int = 300_000,
-    stop_after: Optional[int] = None,
-    delete_existing: bool = False,
-    file_suffix: str = "",
-) -> List[str]:
-    """Index documents from a corpus and save intermediate indexes (every intermediate_save_freq documents).
-
-    Args:
-        data_stream (Iterator[Dict[str, Any]]): An iterator over the input data. Each item should be a dictionary
-         with at least two fields: "id" (a unique document identifier) and "text" (the document content to be indexed).
-        output_dir (str): Directory where the index files will be saved.
-        length (int): Length of k-grams to use for indexing.
-        window_size (int): Window size for winnowing.
-        intermediate_save_freq (int): Frequency (in number of documents) at which to save intermediate indexes.
-        stop_after (Optional[int]): If provided, stop indexing after this many documents (for testing purposes).
-        delete_existing (bool): whether to delete the output_dir if it already exists
-        file_suffix (str): A suffix to add to the index files. Default is no suffix
-
-    Returns:
-        List of paths to the saved intermediate index files.
-
-    """
-
-    if os.path.exists(output_dir):
-        if delete_existing:
-            print(f"Deleting existing output directory: {output_dir}")
-            shutil.rmtree(output_dir)
-        elif not os.path.isdir(output_dir):
-            raise ValueError(f"Output path {output_dir} exists and is not a directory")
-    os.makedirs(output_dir, exist_ok=True)
-    print("Saving index files to", output_dir)
-
-    index = indexing.MemoryBasedIndex(length=length, window_size=window_size)
-    index_files = []
-    for i, result in enumerate(data_stream):
-        result = utils.normalise_json(result)
-
-        index.add_doc(result["text"], result["id"])
-        if stop_after is not None and i + 1 >= stop_after:
-            break
-        if (i + 1) % intermediate_save_freq == 0:
-            increment_str = str(i + 1)[:-3] + "K"
-            if file_suffix:
-                index_filename = "intermediate-%s-%s.jsonl.gz" % (
-                    file_suffix,
-                    increment_str,
-                )
-            else:
-                index_filename = "intermediate-%s.jsonl.gz" % (increment_str)
-            output_file = os.path.join(output_dir, index_filename)
-            print("Saving intermediate index to", output_file, end="...", flush=True)
-            index.to_jsonl(output_file)
-            index_files.append(output_file)
-            print("Done.")
-            del index
-            index = indexing.MemoryBasedIndex(length=length, window_size=window_size)
-
-    if file_suffix:
-        index_filename = "final-%s.jsonl.gz" % (file_suffix)
-    else:
-        index_filename = "final.jsonl.gz"
-    final_file = os.path.join(output_dir, index_filename)
-    print("Saving final index to", final_file, end="...", flush=True)
-    index.to_jsonl(final_file)
-    index_files.append(final_file)
-    print("Done.")
-
-    return index_files
-
-
-def index_data_parallel(
-    data: Any,
-    output_dir: str,
+    stop_after: Optional[int],
     n_workers: int,
-    length=4,
-    window_size=6,
-    intermediate_save_freq: int = 300_000,
-    delete_existing: bool = False,
-) -> List[str]:
-    """Index documents in parallel by splitting data across n_workers processes.
+    result_queue: mp.Queue,
+    length: int,
+    window_size: int,
+) -> None:
+    """Read batches of documents from the stream, dispatch to workers that will run
+    the winnowing algorithm, and forward the resulting fingerprints.
 
-    Args:
-        data (List[Dict[str, Any]]): The full dataset to index. Each item must have "id" and "text" fields.
-        output_dir (str): Directory where the index files will be saved.
-        n_workers (int): Number of parallel worker processes.
-        length (int): Length of k-grams to use for indexing.
-        window_size (int): Window size for winnowing.
-        intermediate_save_freq (int): Frequency at which to save intermediate indexes per worker.
-        delete_existing (bool): whether to delete the output_dir if it already exists
-
-    Returns:
-        Flat list of all intermediate index file paths produced by all workers.
-
+    Uses apply_async with a bounded pending list (at most n_workers tasks in flight at
+    once) so that when result_queue.put() blocks (consumer busy flushing to disk), task
+    submission also stalls and memory usage stays bounded.  A None sentinel signals the
+    main process that the stream is exhausted.
     """
+    batch_winnower = winnower.Winnower(
+        length=length, window_size=window_size
+    ).get_winnowed_fingerprints_batch
 
-    if os.path.exists(output_dir):
-        if delete_existing:
-            print(f"Deleting existing output directory: {output_dir}")
-            shutil.rmtree(output_dir)
-        elif not os.path.isdir(output_dir):
-            raise ValueError(f"Output path {output_dir} exists and is not a directory")
-    os.makedirs(output_dir, exist_ok=True)
-    print("And saving index files to", output_dir)
-
-    if isinstance(data, datasets.Dataset):
-        data = list(data)
-
-    split_size = (len(data) + n_workers - 1) // n_workers
-    print(
-        "Indexing %d documents across %d workers..." % (len(data), n_workers),
-        flush=True,
-    )
-    worker_args = [
-        (
-            i + 1,
-            data[i * split_size : (i + 1) * split_size],
-            output_dir,
-            length,
-            window_size,
-            intermediate_save_freq,
-        )
-        for i in range(n_workers)
-    ]
-
-    all_files = []
-    ctx = mp.get_context("fork")
-    with ctx.Pool(processes=n_workers) as pool:
-        for files in pool.imap_unordered(_parallel_worker, worker_args):
-            all_files.extend(files)
-            print("  indexed -> %s" % files[-1], flush=True)
-    return all_files
-
-
-def _parallel_worker(args: Tuple) -> List[str]:
-    """Module-level worker for index_data_parallel (must be picklable)."""
-    worker_idx, split, output_dir, length, window_size, intermediate_save_freq = args
-    sys.stdout = open(os.devnull, "w")
-    return index_data(
-        iter(split),
-        output_dir,
-        length=length,
-        window_size=window_size,
-        intermediate_save_freq=intermediate_save_freq,
-        file_suffix=f"worker{worker_idx:02d}",
-    )
+    batches_gen = utils.generate_batches(data_stream, stop_after)
+    try:
+        with mp.Pool(processes=n_workers) as pool:
+            pending: List[Any] = []
+            for batch in batches_gen:
+                if len(pending) >= n_workers:
+                    # Wait for the oldest task and forward the result before submitting
+                    # a new one.  This caps in-flight tasks at n_workers, preventing
+                    # unbounded accumulation in the Pool's internal result buffer while
+                    # the consumer is busy flushing.
+                    result_queue.put(pending.pop(0).get())
+                pending.append(pool.apply_async(batch_winnower, (batch,)))
+            for async_result in pending:
+                result_queue.put(async_result.get())
+    finally:
+        try:
+            result_queue.put(
+                None, timeout=1200
+            )  # wait up to 20 min; consumer may be busy flushing to disk
+        except queue.Full:
+            pass
 
 
 #####################################################
@@ -276,16 +256,16 @@ def _parallel_worker(args: Tuple) -> List[str]:
 
 def merge_indexes_from_dir(temp_index_dir: str, output_dir: str):
     """Merge the index files in the specified directory and store the result
-    in output_dir. The index files in temp_index_dir must be in .jsonl.gz format."""
+    in output_dir. The index files in temp_index_dir must be in .mpk.gz format."""
 
     if not os.path.isdir(temp_index_dir):
         raise ValueError(f"Provided path {temp_index_dir} is not a directory")
     index_files = []
     for f in os.listdir(temp_index_dir):
-        if f.endswith(".jsonl.gz"):
+        if f.endswith(".mpk.gz"):
             index_files.append(os.path.join(temp_index_dir, f))
     if not index_files:
-        raise ValueError(f"No .jsonl.gz index files found in {temp_index_dir}")
+        raise ValueError(f"No .mpk.gz index files found in {temp_index_dir}")
     merge_indexes(index_files, output_dir)
 
 
@@ -321,18 +301,17 @@ def merge_indexes(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Peek at the first line of the first JSONL file to read the index parameters,
-    # and save them to the output directory in a meta.json file.
-    with gzip.open(index_files[0], "rt", encoding="utf-8") as f:
-        meta = orjson.loads(f.readline())
+    # Read the metadata record from the first msgpack file and save to meta.json.
+    with gzip.open(index_files[0], "rb") as f:
+        meta_raw = next(msgpack.Unpacker(f, raw=False))
         meta = {
-            k: meta[k]
+            k: meta_raw[k]
             for k in ["length", "window_size", "base", "punctuation"]
-            if k in meta
+            if k in meta_raw
         }
-        with open(os.path.join(output_dir, "meta.json"), "w", encoding="utf-8") as f:
-            f.write(orjson.dumps(meta).decode("utf-8"))
-        print("Meta parameters:", meta)
+    with open(os.path.join(output_dir, "meta.json"), "w", encoding="utf-8") as f:
+        f.write(orjson.dumps(meta).decode("utf-8"))
+    print("Meta parameters:", meta)
 
     # Create mappings between external document IDs and internal integer IDs
     # and save the mapping to the output directory as two NumPy arrays: doc_name_offsets.npy and doc_name_bytes.npy
@@ -442,24 +421,25 @@ class ExpandingBuffer:
 
 
 def _create_doc_id_mappings(index_files: List[str]) -> Dict[str, int]:
-    """Scan all JSONL files in parallel and assign a stable internal integer ID to every
-    unique external document ID."""
-    n_workers = min(len(index_files), os.cpu_count() or 1)
-    print(
-        f"Collecting document IDs from {len(index_files)} files ({n_workers} workers)...",
-        flush=True,
-    )
-    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as pool:
-        per_file = list(pool.map(_collect_doc_ids_from_jsonl, index_files))
+    """Assign a stable internal integer ID to every unique external document ID.
 
+    Doc IDs are stored in a compact header block at the start of each file, so
+    this scan is fast enough to run sequentially — no worker pool needed.
+    """
+    print(f"Collecting document IDs from {len(index_files)} files...", flush=True)
     to_internal: Dict[str, int] = {}
-    for doc_ids in per_file:
-        for doc_id in doc_ids:
-            if doc_id not in to_internal:
-                internal_id = len(to_internal)
-                to_internal[doc_id] = internal_id
+    for file_path in tqdm.tqdm(
+        index_files, total=len(index_files), desc="Scanning doc IDs"
+    ):
+        with gzip.open(file_path, "rb") as f:
+            unpacker = msgpack.Unpacker(f, raw=False, max_buffer_size=0)
+            next(unpacker)  # skip metadata
+            n_docs = next(unpacker)
+            for _ in range(n_docs):
+                doc_id = next(unpacker)
+                if doc_id not in to_internal:
+                    to_internal[doc_id] = len(to_internal)
     print(f"  Found {len(to_internal)} unique documents.", flush=True)
-
     return to_internal
 
 
@@ -479,44 +459,29 @@ def _write_doc_id_mapping(to_internal: Dict[str, int], output_dir: str):
     print(f"Saved document ID mapping for {n_docs} documents.")
 
 
-def _collect_doc_ids_from_jsonl(file_path: str) -> List[str]:
-    """Return all unique document IDs found in a gzipped JSONL index file.
-
-    Module-level so it can be pickled for ProcessPoolExecutor.
-    """
-    seen: dict = {}
-    with gzip.open(file_path, "rt", encoding="utf-8") as f:
-        f.readline()  # skip metadata line
-        for line in f:
-            try:
-                for posting in orjson.loads(line)["postings"]:
-                    seen.setdefault(posting["doc_id"], None)
-            except (orjson.JSONDecodeError, KeyError):
-                continue
-    return list(seen)
-
-
 def _stream_file_to_queue(file_path: str, q: mp.Queue, batch_size: int = 200):
-    """Worker process: parse one gzipped JSONL index file and push (fingerprint,
+    """Worker process: parse one gzipped msgpack index file and push (fingerprint,
     postings_list) items in batches to a queue.
 
     Batching reduces IPC overhead; a None sentinel signals end of stream. Module-level
     so it can be pickled by multiprocessing.
     """
     batch = []
-    with gzip.open(file_path, "rt", encoding="utf-8") as f:
-        f.readline()  # skip metadata line
-        for line in f:
+    with gzip.open(file_path, "rb") as f:
+        unpacker = msgpack.Unpacker(f, raw=False, max_buffer_size=0)
+        next(unpacker)  # skip metadata
+        # Load the doc-ID table from the file header.
+        n_docs = next(unpacker)
+        to_external = [next(unpacker) for _ in range(n_docs)]
+        while True:
             try:
-                data = orjson.loads(line)
-                fp = int(data["fingerprint"])
-                postings_list = [
-                    (posting["doc_id"], int(posting["position"]))
-                    for posting in data["postings"]
-                ]
-            except (orjson.JSONDecodeError, KeyError, ValueError):
-                print("Corrupted line in JSONL file, skipping:", line)
-                continue
+                fp = next(unpacker)
+                n = next(unpacker)
+                docs = np.frombuffer(next(unpacker), dtype=np.uint32).tolist()
+                poss = np.frombuffer(next(unpacker), dtype=np.uint32).tolist()
+                postings_list = [(to_external[d], p) for d, p in zip(docs, poss)]
+            except StopIteration:
+                break
             batch.append((fp, postings_list))
             if len(batch) == batch_size:
                 q.put(batch)

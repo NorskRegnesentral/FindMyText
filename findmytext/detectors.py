@@ -30,7 +30,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.stats import norm
 
-from . import indexing
+from . import indexing, winnower
 
 # Average number of characters per word (including trailing space) for typical
 # English text.  This is the size of one k-gram sliding step and is used to
@@ -70,6 +70,12 @@ class _BaseDetector(ABC):
         self.rarity_weighted = rarity_weighted
         self.index = indexing.DiskBasedIndex(index_dir)
         self.num_documents = len(self.index.to_external_doc_id)
+        self.runtime_winnower = winnower.Winnower(
+            length=self.index.winnower.length,
+            window_size=1,
+            base=self.index.winnower.base,
+            punctuation=self.index.winnower.punctuation,
+        )
 
         # Mean fingerprint weight across the whole index, used to normalise rarity
         # weights so that scores remain on the same scale as the raw fingerprint count.
@@ -111,7 +117,7 @@ class _BaseDetector(ABC):
         The returned DataFrame has columns ``hash`` and ``position``.
         """
         fingerprints, fingerprints_pos = (
-            self.index.runtime_winnower.get_winnowed_fingerprints(text)
+            self.runtime_winnower.get_winnowed_fingerprints(text)
         )
         return pl.DataFrame({"hash": fingerprints, "position": fingerprints_pos})
 
@@ -192,7 +198,7 @@ class _BaseDetector(ABC):
 
         """
         N0 = min_fragment_length / (
-            self.index.indexing_winnower.window_size * _AVG_CHARS_PER_WORD
+            self.index.winnower.window_size * _AVG_CHARS_PER_WORD
         )
         probs = norm.cdf((np.array(list(raw_scores.values())) - N0) / N0**0.5)
         return dict(zip(raw_scores.keys(), probs.tolist()))

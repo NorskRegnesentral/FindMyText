@@ -13,7 +13,7 @@ from typing import Dict
 import numpy as np
 import polars as pl
 
-from . import indexing
+from . import indexing, winnower
 from .detectors import (
     FingerprintChainDetector,
     convert_closest_matches_with_positions_to_df,
@@ -87,6 +87,12 @@ class TextContainmentDetector:
         self.min_fingerprints = min_fingerprints
         self.index = indexing.DiskBasedIndex(index_dir)
         self.num_documents = len(self.index.to_external_doc_id)
+        self.runtime_winnower = winnower.Winnower(
+            length=self.index.indexing_winnower.length,
+            window_size=1,
+            base=self.index.indexing_winnower.base,
+            punctuation=self.index.indexing_winnower.punctuation,
+        )
 
     def find_matches_jaccard(self, text: str, score: str = "count") -> Dict[str, float]:
         _validate_score(score)
@@ -220,7 +226,7 @@ class TextContainmentDetector:
         return groups
 
     def _prepare(self, text: str) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-        fingerprints, positions = self.index.runtime_winnower.get_winnowed_fingerprints(text)
+        fingerprints, positions = self.runtime_winnower.get_winnowed_fingerprints(text)
         df_query = pl.DataFrame({"hash": fingerprints, "position": positions})
         fingerprints_rarity = _compute_fingerprint_rarity(
             index=self.index,

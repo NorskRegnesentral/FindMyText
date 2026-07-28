@@ -8,7 +8,7 @@ efficient array operations.
 """
 
 import re
-from typing import List, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import numpy as np
 from numba import njit
@@ -67,6 +67,24 @@ class Winnower:
         )
 
         return winnowed_fingerprints, winnowed_positions
+
+    def get_winnowed_fingerprints_batch(
+        self, batch: Dict[str, str]
+    ) -> Dict[str, List[Tuple[int, int]]]:
+        """Compute winnowed fingerprints for a batch of {doc_id: text} documents.
+
+        Arguments:
+            batch: A dictionary mapping doc IDs to their corresponding text strings.
+
+        Returns:
+            A dictionary mapping doc IDs to lists of (fingerprint, position) tuples for each document in the batch.
+
+        """
+        results = {}
+        for doc_id, text in batch.items():
+            fps, positions = self.get_winnowed_fingerprints(text)
+            results[doc_id] = list(zip(fps.tolist(), positions.tolist()))
+        return results
 
     def tokenize(self, document: str) -> List[str]:
         """Split the document into tokens.

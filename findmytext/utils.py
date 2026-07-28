@@ -4,8 +4,14 @@ import gzip
 import io
 import json
 import random
+import sys
 import uuid
-from typing import Dict, Generator, Optional
+
+try:
+    import resource  # not available on Windows
+except ImportError:
+    resource = None  # type: ignore[assignment]
+from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
 
 import orjson
 
@@ -14,11 +20,29 @@ COMMON_TEXT_FIELDS = ["text", "content", "document", "report"]
 COMMON_ID_FIELDS = ["id", "doc_id", "document_id", "report_id", "text_id", "title"]
 
 
+def generate_batches(
+    data_stream: Any, stop_after: Optional[int], batch_size: int = 256
+) -> Iterator[List[Tuple[str, str]]]:
+    """Yield batches of (doc_id, text) tuples from the data_stream."""
+
+    batch: Dict[str, str] = {}
+    for i, item in enumerate(data_stream):
+        if stop_after is not None and i >= stop_after:
+            break
+        item = normalise_json(item)
+        batch[item["id"]] = item["text"]
+        if len(batch) >= batch_size:
+            yield batch
+            batch = {}
+    if batch:
+        yield batch
+
+
 def stream_json_zst(
     file_path: str,
-    min_length: int = 2000,
+    min_length: int = 100,
     skip_prob: float = 0.0,
-    max_length: int = 100000,
+    max_length: int = 500_000,
     max_nb: Optional[int] = None,
 ):
     """Stream JSON objects from a .jsonl.zst file, yielding one JSON object at a
@@ -47,7 +71,7 @@ def stream_json_zst(
 
 def stream_jsonl(
     file_path: str,
-    min_length: int = 2000,
+    min_length: int = 100,
     skip_prob: float = 0.0,
     max_length: int = 100000,
     max_nb: Optional[int] = None,
@@ -74,7 +98,7 @@ def stream_jsonl(
 
 def json_line_reader(
     line_iterator,
-    min_length: int = 2000,
+    min_length: int = 100,
     skip_prob: float = 0.0,
     max_length: int = 100000,
     max_nb: Optional[int] = None,
@@ -164,8 +188,8 @@ def stream_to_file(
     input_data_file: str,
     output_file: str,
     skip_prob: float = 0.0,
-    min_length: int = 2000,
-    max_length: int = 1000000,
+    min_length: int = 100,
+    max_length: int = 500_000,
     cutoff: Optional[int] = None,
 ):
     """Stream JSON objects from an input file and write them to an output file,
@@ -177,8 +201,8 @@ def stream_to_file(
         output_file (str): Path to the output .jsonl file to write the streamed JSON objects to.
         skip_prob (float, optional): Probability of skipping a JSON object while streaming.
         Defaults to 0.0 (no skipping).
-        min_length (int, optional): Minimum text lengths to include. Defaults to 2000.
-        max_length (int, optional): Maximum text lengths to include. Defaults to 1000000.
+        min_length (int, optional): Minimum text lengths to include. Defaults to 100.
+        max_length (int, optional): Maximum text lengths to include. Defaults to 500000.
         cutoff (Optional[int], optional): Maximum number of JSON objects to write to the output file.
         If None, all objects will be written. Defaults to None.
 
@@ -209,3 +233,45 @@ def stream_to_file(
             count += 1
             if cutoff is not None and count >= cutoff:
                 break
+
+
+def get_process_memory_gb() -> float:
+    """Return current RSS of the current process in GB (Linux, macOS, and Windows)."""
+    if sys.platform == "linux":
+        try:
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / (1024 * 1024)  # kB → GB
+        except (OSError, ValueError):
+            pass
+    if sys.platform == "win32":
+        import ctypes
+        import ctypes.wintypes
+
+        class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        pmc = _PROCESS_MEMORY_COUNTERS()
+        pmc.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
+        ctypes.windll.kernel32.K32GetProcessMemoryInfo(
+            ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb
+        )
+        return pmc.WorkingSetSize / (1024**3)
+    else:
+        import resource
+
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux: KiB → GB; macOS: bytes → GB
+        return rss / (1024**2) if sys.platform != "darwin" else rss / (1024**3)
