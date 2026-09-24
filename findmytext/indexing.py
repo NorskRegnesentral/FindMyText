@@ -217,7 +217,9 @@ class DiskBasedIndex:
 
     The index data (fingerprints, offsets, lengths, and document ID mapping) is stored
     on disk as memory-mapped files, and postings lists are stored in a separate binary
-    file that is accessed on demand.
+    file that is accessed on demand. If the index was merged with
+    ``include_similarities=True``, ``similarities.npy`` is also memory-mapped as
+    ``similarities``; otherwise that attribute is ``None``.
     """
 
     def __init__(self, index_dir: str):
@@ -238,6 +240,12 @@ class DiskBasedIndex:
         )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+        similarities_path = os.path.join(index_dir, "similarities.npy")
+        self.similarities = (
+            np.load(similarities_path, mmap_mode="r")
+            if os.path.exists(similarities_path)
+            else None
+        )
 
         # Load doc-ID mapping as memory-mapped arrays wrapped in a lazy accessor
         doc_name_offsets = np.load(
@@ -252,6 +260,39 @@ class DiskBasedIndex:
         # multiple threads without a shared seek position.
         self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
         self._io_pool = ThreadPoolExecutor(max_workers=8)
+
+    def get_document_similarities(
+        self, doc_id: str, min_shared_fingerprints: int = 1
+    ) -> Dict[str, int]:
+        """Return stored exact fingerprint overlaps for one document.
+
+        Similarities are available only when the index was merged with
+        ``include_similarities=True``. The persisted pairs use internal integer
+        document IDs and are memory-mapped on demand.
+        """
+        if self.similarities is None:
+            raise ValueError("This index was built without document similarities")
+
+        internal_id = None
+        for candidate in range(len(self.to_external_doc_id)):
+            if self.to_external_doc_id[candidate] == doc_id:
+                internal_id = candidate
+                break
+        if internal_id is None:
+            return {}
+
+        matches: Dict[str, int] = {}
+        for pair in self.similarities:
+            first = int(pair["doc_i"])
+            second = int(pair["doc_j"])
+            count = int(pair["count"])
+            if count < min_shared_fingerprints:
+                continue
+            if first == internal_id:
+                matches[self.to_external_doc_id[second]] = count
+            elif second == internal_id:
+                matches[self.to_external_doc_id[first]] = count
+        return matches
 
     def get_closest_matches(
         self, fingerprints: np.ndarray, min_fingerprints=5, top_k: int = 5

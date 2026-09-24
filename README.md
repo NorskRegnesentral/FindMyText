@@ -31,12 +31,41 @@ The first step is to index your corpus. Fingerprints are extracted in parallel a
 ```python
 from findmytext import index_builder
 
-# `corpus` is any iterable of dicts with "text" and "id" fields
-files = index_builder.index_data_parallel(corpus, "my_fingerprints", n_workers=4)
+# Write corpus records as JSONL objects with "text" and "id" fields first.
+index_builder.index_file("corpus.jsonl", "my_fingerprints", nb_workers=4)
 index_builder.merge_indexes_from_dir("my_fingerprints", "my_index")
+
+# Add exact sparse document-document fingerprint overlaps when needed.
+index_builder.merge_indexes_from_dir(
+    "my_fingerprints", "my_index_with_similarity", include_similarities=True
+)
 ```
 
-The resulting index is stored on disk and memory-mapped at query time, so it scales to corpora that are too large to fit in RAM.
+The resulting index is stored on disk and memory-mapped at query time. When
+similarities are enabled, the merged directory additionally contains
+`similarities.npy`, a structured NumPy array with `doc_i`, `doc_j`, and `count`
+fields. The document fields are internal integer IDs, and `count` is the exact
+number of unique fingerprints shared by the pair. Pairs sharing zero fingerprints
+are omitted.
+
+For large similarity builds, `min_similarity` can omit weak pairs from the final
+file after their complete counts have been aggregated, while
+`max_similarity_chunks_per_merge` bounds the number of temporary chunks opened in
+one merge pass:
+
+```python
+index_builder.merge_indexes_from_dir(
+    "my_fingerprints",
+    "my_index_with_similarity",
+    include_similarities=True,
+    min_similarity=5,
+    max_similarity_chunks_per_merge=64,
+)
+```
+
+The defaults (`min_similarity=1` and
+`max_similarity_chunks_per_merge=None`) preserve all non-zero pairs and merge all
+temporary chunks together as before.
 
 The `index_builder` can also be used directly from the command line:
 ```bash
@@ -45,6 +74,16 @@ python -m findmytext.index_builder index corpus.jsonl my_fingerprints --nb_worke
 
 # Step 2: merge shards into a final disk-based index
 python -m findmytext.index_builder merge my_fingerprints my_index
+
+# Optional sparse document similarity output.
+python -m findmytext.index_builder merge my_fingerprints my_index_with_similarity \
+  --include-similarities
+
+# Keep pairs sharing at least five fingerprints and merge at most 64 temporary
+# similarity chunks at a time.
+python -m findmytext.index_builder merge my_fingerprints my_index_with_similarity \
+  --include-similarities --min-similarity 5 \
+  --max-similarity-chunks-per-merge 64
 ```
 
 
