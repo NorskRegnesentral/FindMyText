@@ -21,7 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 fast-gzip = ["isal"]
-viz = ["networkx", "matplotlib"]
+viz = ["networkx", "matplotlib", "plotly", "pandas", "nbformat"]
 
 [tool.setuptools.packages.find]
 where = ["."]

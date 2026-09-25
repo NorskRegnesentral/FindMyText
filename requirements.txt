@@ -15,6 +15,9 @@ msgpack
 # Optional: document similarity graph visualization (findmytext.visualization)
 networkx
 matplotlib
+plotly
+pandas
+nbformat
 
 # Optional (heavy, GPU): used only in experiments/eval_sampler.py for LLM generation.
 # Install separately when needed:
