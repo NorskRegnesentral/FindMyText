@@ -153,8 +153,9 @@ def index_file(
                 print(f"Processed {total_count:,} documents...", flush=True)
 
             if index.doc_count >= max_nb_documents_before_flush:
-                increment_str = str((total_count + 1) // 1000) + "K"
-                path = os.path.join(output_dir, f"intermediate-{increment_str}.mpk.gz")
+                path = os.path.join(
+                    output_dir, f"intermediate-{len(index_files):06d}.mpk.gz"
+                )
                 index.to_msgpack(path)
                 index_files.append(path)
                 index = MemoryBasedIndex(meta=meta)
