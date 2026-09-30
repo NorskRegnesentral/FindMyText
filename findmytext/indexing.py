@@ -14,12 +14,65 @@ try:
 except ImportError:
     igzip = gzip  # type: ignore[assignment]
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import msgpack
 import numpy as np
 
 from . import winnower
+
+POSTING_DTYPE = np.dtype([("doc_id", np.uint32), ("position", np.uint32)])
+
+
+def similarity_file_name(method: str) -> str:
+    """Return the file name used to store the similarities computed by ``method``."""
+    return f"similarities_{method}.npy"
+
+
+def iter_unique_posting_batches(
+    fingerprints: np.ndarray,
+    offsets: np.ndarray,
+    lengths: np.ndarray,
+    postings: np.ndarray,
+    batch_entries: int = 10_000_000,
+) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Stream the inverted index sequentially as de-duplicated (fingerprint, doc) pairs.
+
+    Fingerprints are processed in consecutive batches holding roughly
+    ``batch_entries`` posting entries (a single fingerprint is never split).
+
+    Yields:
+        ``(batch_fingerprints, group, doc_ids)`` where ``group[i]`` indexes into
+        ``batch_fingerprints`` and ``doc_ids[i]`` is a document containing it.
+        Pairs are unique and sorted by ``(group, doc_id)``, so fingerprints appear
+        in increasing order and each fingerprint's documents are sorted.
+    """
+    n_fps = len(fingerprints)
+    if n_fps == 0:
+        return
+    lengths_all = np.asarray(lengths, dtype=np.int64)
+    entry_starts = np.asarray(offsets, dtype=np.int64) // POSTING_DTYPE.itemsize
+    ends = np.cumsum(lengths_all)
+
+    start = 0
+    while start < n_fps:
+        base = int(ends[start - 1]) if start > 0 else 0
+        stop = int(np.searchsorted(ends, base + batch_entries, side="right"))
+        stop = min(max(stop, start + 1), n_fps)
+
+        batch_lengths = lengths_all[start:stop]
+        first = int(entry_starts[start])
+        last = int(entry_starts[stop - 1] + batch_lengths[-1])
+        docs = np.asarray(postings["doc_id"][first:last], dtype=np.uint64)
+        group = np.repeat(np.arange(stop - start, dtype=np.uint64), batch_lengths)
+        keys = np.unique((group << np.uint64(32)) | docs)
+
+        yield (
+            np.asarray(fingerprints[start:stop]),
+            (keys >> np.uint64(32)).astype(np.int64),
+            (keys & np.uint64(0xFFFFFFFF)).astype(np.uint32),
+        )
+        start = stop
 
 
 class MemoryBasedIndex:
@@ -217,14 +270,17 @@ class DiskBasedIndex:
 
     The index data (fingerprints, offsets, lengths, and document ID mapping) is stored
     on disk as memory-mapped files, and postings lists are stored in a separate binary
-    file that is accessed on demand. If the index was merged with
-    ``include_similarities=True``, ``similarities.npy`` is also memory-mapped as
-    ``similarities``; otherwise that attribute is ``None``.
+    file that is accessed on demand. If present, the forward index
+    (``forward_offsets.npy`` / ``forward_fingerprints.npy``) is memory-mapped too;
+    otherwise ``forward_offsets`` and ``forward_fingerprints`` are ``None``.
+    Document similarities are computed as a separate step (see
+    :mod:`findmytext.similarity`) and loaded with :meth:`load_similarities`.
     """
 
     def __init__(self, index_dir: str):
         """Initialize the disk-based index by loading the metadata and memory-mapped
         files from the specified index directory."""
+        self.index_dir = index_dir
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
             self.winnower = winnower.Winnower(
@@ -240,12 +296,15 @@ class DiskBasedIndex:
         )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
-        similarities_path = os.path.join(index_dir, "similarities.npy")
-        self.similarities = (
-            np.load(similarities_path, mmap_mode="r")
-            if os.path.exists(similarities_path)
-            else None
-        )
+
+        forward_offsets_path = os.path.join(index_dir, "forward_offsets.npy")
+        forward_fps_path = os.path.join(index_dir, "forward_fingerprints.npy")
+        if os.path.exists(forward_offsets_path) and os.path.exists(forward_fps_path):
+            self.forward_offsets = np.load(forward_offsets_path, mmap_mode="r")
+            self.forward_fingerprints = np.load(forward_fps_path, mmap_mode="r")
+        else:
+            self.forward_offsets = None
+            self.forward_fingerprints = None
 
         # Load doc-ID mapping as memory-mapped arrays wrapped in a lazy accessor
         doc_name_offsets = np.load(
@@ -261,17 +320,99 @@ class DiskBasedIndex:
         self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
         self._io_pool = ThreadPoolExecutor(max_workers=8)
 
-    def get_document_similarities(
-        self, doc_id: str, min_shared_fingerprints: int = 1
-    ) -> Dict[str, int]:
-        """Return stored exact fingerprint overlaps for one document.
+    def load_similarities(self, method: str = "inverted") -> np.ndarray:
+        """Memory-map ``similarities_<method>.npy`` (rows of ``doc_i, doc_j, count``).
 
-        Similarities are available only when the index was merged with
-        ``include_similarities=True``. The persisted pairs use internal integer
-        document IDs and are memory-mapped on demand.
+        Raises:
+            FileNotFoundError: If similarities for ``method`` have not been computed.
         """
-        if self.similarities is None:
-            raise ValueError("This index was built without document similarities")
+        path = os.path.join(self.index_dir, similarity_file_name(method))
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"No similarities for method {method!r} in {self.index_dir}; run "
+                "findmytext.similarity.compute_similarities first."
+            )
+        return np.load(path, mmap_mode="r")
+
+    def iter_unique_posting_batches(
+        self, batch_entries: int = 10_000_000
+    ) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Sequentially stream the inverted index; see :func:`iter_unique_posting_batches`."""
+        if len(self.fingerprints) == 0:
+            return
+        postings = np.memmap(
+            os.path.join(self.index_dir, "postings.dat"),
+            dtype=POSTING_DTYPE,
+            mode="r",
+        )
+        yield from iter_unique_posting_batches(
+            self.fingerprints, self.offsets, self.lengths, postings, batch_entries
+        )
+
+    def get_document_fingerprints(self, internal_doc_id: int) -> np.ndarray:
+        """Return the sorted unique fingerprints of a document from the forward index."""
+        if self.forward_offsets is None or self.forward_fingerprints is None:
+            raise ValueError(
+                "This index has no forward index; build it with "
+                "index_builder.build_forward_index"
+            )
+        start = int(self.forward_offsets[internal_doc_id])
+        end = int(self.forward_offsets[internal_doc_id + 1])
+        return np.asarray(self.forward_fingerprints[start:end])
+
+    def get_top_candidate_counts(
+        self,
+        fingerprints: np.ndarray,
+        top_k: int = 50,
+        min_fingerprints: int = 5,
+        exclude_doc_id: Optional[int] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Return the top-k internal doc IDs by number of shared unique fingerprints.
+
+        Documents sharing fewer than ``min_fingerprints`` are dropped, as is
+        ``exclude_doc_id`` (before truncation, so it never takes a top-k slot).
+        Ties are broken by ascending internal doc ID.
+
+        Returns:
+            ``(doc_ids, counts)`` arrays sorted by descending count.
+        """
+        postings = self._get_postings(fingerprints, only_doc_ids=True)
+        if not postings:
+            return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.int64)
+
+        all_doc_ids = np.concatenate([np.unique(p) for p in postings.values()])
+        docs, counts = np.unique(all_doc_ids, return_counts=True)
+        mask = counts >= min_fingerprints
+        if exclude_doc_id is not None:
+            mask &= docs != exclude_doc_id
+        docs, counts = docs[mask], counts[mask]
+        order = np.lexsort((docs, -counts))[:top_k]
+        return docs[order], counts[order]
+
+    def get_document_candidates(
+        self, internal_doc_id: int, top_k: int = 50, min_fingerprints: int = 5
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Top-k most similar other documents of an indexed document.
+
+        Looks up the document's fingerprints in the forward index and queries the
+        inverted index with them; see :meth:`get_top_candidate_counts`.
+        """
+        return self.get_top_candidate_counts(
+            self.get_document_fingerprints(internal_doc_id),
+            top_k=top_k,
+            min_fingerprints=min_fingerprints,
+            exclude_doc_id=internal_doc_id,
+        )
+
+    def get_document_similarities(
+        self, doc_id: str, min_shared_fingerprints: int = 1, method: str = "inverted"
+    ) -> Dict[str, int]:
+        """Return stored fingerprint overlaps for one document.
+
+        Similarities must first be computed with
+        :func:`findmytext.similarity.compute_similarities` for ``method``.
+        """
+        similarities = self.load_similarities(method)
 
         internal_id = None
         for candidate in range(len(self.to_external_doc_id)):
@@ -282,7 +423,7 @@ class DiskBasedIndex:
             return {}
 
         matches: Dict[str, int] = {}
-        for pair in self.similarities:
+        for pair in similarities:
             first = int(pair["doc_i"])
             second = int(pair["doc_j"])
             count = int(pair["count"])

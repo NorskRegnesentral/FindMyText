@@ -1,4 +1,4 @@
-"""Force many index flushes and verify exact merged similarity counts."""
+"""Force many index flushes and verify exact post-merge similarity counts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import tempfile
 
 import orjson
 
-from findmytext import index_builder, indexing, synthetic, winnower
+from findmytext import index_builder, indexing, similarity, synthetic, winnower
 
 
 def _write_jsonl(path: str, documents: list[dict[str, str]]) -> None:
@@ -21,10 +21,8 @@ def _write_jsonl(path: str, documents: list[dict[str, str]]) -> None:
 
 
 def _stored_counts(index: indexing.DiskBasedIndex) -> dict[tuple[str, str], int]:
-    if index.similarities is None:
-        raise AssertionError("similarities.npy was not created")
     counts = {}
-    for row in index.similarities:
+    for row in index.load_similarities("inverted"):
         first = index.to_external_doc_id[int(row["doc_i"])]
         second = index.to_external_doc_id[int(row["doc_j"])]
         counts[tuple(sorted((first, second)))] = int(row["count"])
@@ -83,12 +81,13 @@ def run_verification(
             "The experiment did not create multiple intermediate indexes"
         )
 
-    index_builder.merge_indexes_from_dir(
-        temporary_dir,
+    index_builder.merge_indexes_from_dir(temporary_dir, merged_dir)
+    similarity.compute_similarities_inverted(
         merged_dir,
-        include_similarities=True,
-        similarity_chunk_size=similarity_chunk_size,
-        max_similarity_chunks_per_merge=2,
+        max_pairs_in_memory=similarity_chunk_size,
+        max_chunks_per_merge=2,
+        batch_entries=50,
+        verbose=False,
     )
     merged = indexing.DiskBasedIndex(merged_dir)
     stored = _stored_counts(merged)
@@ -103,6 +102,15 @@ def run_verification(
             f"Similarity counts differ for {len(mismatches)} pair(s): "
             f"{list(mismatches.items())[:5]}"
         )
+    generator = winnower.Winnower(length=4, window_size=6)
+    texts = {document["id"]: document["text"] for document in corpus.documents}
+    for internal_id in range(len(merged.to_external_doc_id)):
+        text = texts[merged.to_external_doc_id[internal_id]]
+        expected_fps = sorted(
+            set(map(int, generator.get_winnowed_fingerprints(text)[0]))
+        )
+        if merged.get_document_fingerprints(internal_id).tolist() != expected_fps:
+            raise AssertionError(f"Forward index differs for document {internal_id}")
     print(
         f"Verified {len(stored)} similarity pairs from {len(index_files)} "
         "intermediate indexes with forced two-pair chunks."

@@ -26,6 +26,7 @@ def build_similarity_graph(
     min_similarity: int = 1,
     max_documents: Optional[int] = None,
     doc_ids: Optional[List[str]] = None,
+    method: str = "inverted",
 ) -> "nx.Graph":
     """Build a weighted graph of documents connected by shared fingerprints.
 
@@ -49,32 +50,33 @@ def build_similarity_graph(
     (0 if no edge exists) is below ``min_similarity``.
 
     Args:
-        index: A DiskBasedIndex built with ``include_similarities=True``.
+        index: A DiskBasedIndex whose similarities were computed with
+            ``findmytext.similarity.compute_similarities``.
         min_similarity: Minimum shared fingerprints to keep an edge (normal
             mode), or the warning threshold for weak pairs (selection mode).
         max_documents: If set (normal mode only), restrict the graph to at most
             this many documents.
         doc_ids: If set, switch to selection mode and use exactly this set of
             documents instead of `min_similarity`/`max_documents` filtering.
+        method: Similarity method whose results to use.
 
     Returns:
         A networkx.Graph with a "weight" edge attribute holding the shared
         fingerprint count.
 
     Raises:
-        ValueError: If the index was built without similarities.
+        FileNotFoundError: If similarities for ``method`` were not computed.
     """
     import networkx as nx
 
-    if index.similarities is None:
-        raise ValueError("This index was built without document similarities")
+    similarities = index.load_similarities(method)
 
     if doc_ids is not None:
         doc_ids = list(dict.fromkeys(doc_ids))  # de-duplicate, preserve order
         doc_id_set = set(doc_ids)
         graph = nx.Graph()
         graph.add_nodes_from(doc_ids)
-        for row in index.similarities:
+        for row in similarities:
             doc_a = index.to_external_doc_id[int(row["doc_i"])]
             doc_b = index.to_external_doc_id[int(row["doc_j"])]
             if doc_a in doc_id_set and doc_b in doc_id_set:
@@ -91,7 +93,7 @@ def build_similarity_graph(
         return graph
 
     graph = nx.Graph()
-    for row in index.similarities:
+    for row in similarities:
         count = int(row["count"])
         if count < min_similarity:
             continue
@@ -222,6 +224,7 @@ def verify_similarity_counts(
     window_size: int = 6,
     verbose: bool = True,
     seed: Optional[int] = None,
+    method: str = "inverted",
 ) -> Dict[str, Any]:
     """Independently re-verify stored similarity counts for a random document sample.
 
@@ -234,13 +237,14 @@ def verify_similarity_counts(
     for every mismatch found.
 
     Args:
-        index: A DiskBasedIndex built with ``include_similarities=True``.
+        index: A DiskBasedIndex with exhaustive similarities for ``method``.
         id_to_text: Mapping from external document ID to its original text.
         check_n_documents: Number of documents to randomly sample and cross-check.
         length: k-gram length used for fingerprinting (must match the index).
         window_size: Winnowing window size (must match the index).
         verbose: If True, print progress approximately every 10% of pairs checked.
         seed: Optional seed for reproducible document sampling.
+        method: Similarity method whose results to verify.
 
     Returns:
         A dict with "n_documents_checked", "n_pairs_checked", "n_mismatches", and
@@ -269,7 +273,7 @@ def verify_similarity_counts(
             index.to_external_doc_id[int(row["doc_i"])],
             index.to_external_doc_id[int(row["doc_j"])],
         ): int(row["count"])
-        for row in index.similarities
+        for row in index.load_similarities(method)
     }
     fingerprinter = winnower.Winnower(length=length, window_size=window_size)
     fingerprint_sets = {
@@ -316,7 +320,7 @@ def verify_similarity_counts(
 
 
 def rank_documents_by_node_strength(
-    index: "DiskBasedIndex", min_similarity: int = 1
+    index: "DiskBasedIndex", min_similarity: int = 1, method: str = "inverted"
 ) -> "pl.DataFrame":
     """Rank documents by *node strength* (weighted degree).
 
@@ -325,18 +329,16 @@ def rank_documents_by_node_strength(
     shared fingerprints. Documents with no qualifying pairs are omitted.
 
     Args:
-        index: A DiskBasedIndex built with ``include_similarities=True``.
+        index: A DiskBasedIndex with similarities computed for ``method``.
         min_similarity: Only count pairs with at least this many shared fingerprints.
+        method: Similarity method whose results to use.
 
     Returns:
         A DataFrame with columns "doc_id" and "node_strength", sorted in
         descending order of node_strength.
     """
-    if index.similarities is None:
-        raise ValueError("This index was built without document similarities")
-
     strengths: Dict[str, int] = {}
-    for row in index.similarities:
+    for row in index.load_similarities(method):
         count = int(row["count"])
         if count < min_similarity:
             continue
@@ -359,6 +361,7 @@ def find_potential_source_clusters(
     min_similarity: int = 50,
     min_cluster_size: int = 3,
     hub_dominance_ratio: float = 1.3,
+    method: str = "inverted",
 ) -> List[Dict[str, Any]]:
     """Heuristically flag clusters of documents that may derive from a common source.
 
@@ -377,11 +380,12 @@ def find_potential_source_clusters(
     ``analyze_shared_passages`` and ``show_pairwise_alignment``).
 
     Args:
-        index: A DiskBasedIndex built with ``include_similarities=True``.
+        index: A DiskBasedIndex with similarities computed for ``method``.
         min_similarity: Minimum shared fingerprints for an edge to be considered.
         min_cluster_size: Minimum number of documents in a component to examine.
         hub_dominance_ratio: Minimum ratio of (hub's mean edge weight to members)
             over (mean edge weight among members) required to flag a component.
+        method: Similarity method whose results to use.
 
     Returns:
         A list of dicts (sorted by descending dominance ratio), each with keys
@@ -390,7 +394,7 @@ def find_potential_source_clusters(
     """
     import networkx as nx
 
-    graph = build_similarity_graph(index, min_similarity=min_similarity)
+    graph = build_similarity_graph(index, min_similarity=min_similarity, method=method)
 
     flagged = []
     for component in nx.connected_components(graph):
@@ -497,7 +501,10 @@ def locate_shared_passage(
         return None
 
     closest = index.get_closest_matches_with_positions(
-        query=fingerprints, top_k=top_k, min_fingerprints=min_fingerprints, verbose=False
+        query=fingerprints,
+        top_k=top_k,
+        min_fingerprints=min_fingerprints,
+        verbose=False,
     )
     df_closest = detectors.convert_closest_matches_with_positions_to_df(closest)
     df_match = df_closest.filter(pl.col("doc_match_id") == hub_doc_id).select(
@@ -529,7 +536,9 @@ def locate_shared_passage(
     hub_positions = cluster_rows["position_doc2"].to_list()
 
     hub_text = id_to_text[hub_doc_id]
-    hub_tokens = web.tokenize_with_offsets(hub_text, punctuation=index.winnower.punctuation)
+    hub_tokens = web.tokenize_with_offsets(
+        hub_text, punctuation=index.winnower.punctuation
+    )
     other_tokens = web.tokenize_with_offsets(
         other_text, punctuation=index.winnower.punctuation
     )
@@ -661,7 +670,6 @@ def analyze_shared_passages(
             }
         )
     return pl.DataFrame(rows)
-
 
 
 def plot_shared_passage_overlap(

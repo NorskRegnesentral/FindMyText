@@ -34,56 +34,57 @@ from findmytext import index_builder
 # Write corpus records as JSONL objects with "text" and "id" fields first.
 index_builder.index_file("corpus.jsonl", "my_fingerprints", nb_workers=4)
 index_builder.merge_indexes_from_dir("my_fingerprints", "my_index")
-
-# Add exact sparse document-document fingerprint overlaps when needed.
-index_builder.merge_indexes_from_dir(
-    "my_fingerprints", "my_index_with_similarity", include_similarities=True
-)
 ```
 
-The resulting index is stored on disk and memory-mapped at query time. When
-similarities are enabled, the merged directory additionally contains
-`similarities.npy`, a structured NumPy array with `doc_i`, `doc_j`, and `count`
-fields. The document fields are internal integer IDs, and `count` is the exact
-number of unique fingerprints shared by the pair. Pairs sharing zero fingerprints
-are omitted.
+The resulting index is stored on disk and memory-mapped at query time. Besides
+the inverted index (fingerprint → postings), the merge writes a forward index
+(`forward_offsets.npy`, `forward_fingerprints.npy`: each document's sorted unique
+fingerprints). For an index merged without it (`build_forward=False`), run
+`index_builder.build_forward_index("my_index")`.
 
-For large similarity builds, `min_similarity` can omit weak pairs from the final
-file after their complete counts have been aggregated, while
-`max_similarity_chunks_per_merge` bounds the number of temporary chunks opened in
-one merge pass:
+#### Document similarities (separate step)
+
+Document-document similarities are computed *after* the index is built, so
+several methods can be run and compared on the same index. Each method writes
+`similarities_<method>.npy` into the index directory: a structured NumPy array
+with `doc_i < doc_j` (internal integer IDs) and `count` (number of unique shared
+fingerprints), loaded with `DiskBasedIndex.load_similarities(method)`.
+
+| Method | Description |
+| --- | --- |
+| `inverted` | Exhaustive. One sequential pass over the inverted index; every fingerprint adds one count to each pair of documents in its posting list. |
+| `forward_topk` | For each document, its forward-index fingerprints are queried against the inverted index and its `top_k` neighbours sharing at least `min_similarity` fingerprints are kept (union over documents; exact counts). |
 
 ```python
-index_builder.merge_indexes_from_dir(
-    "my_fingerprints",
-    "my_index_with_similarity",
-    include_similarities=True,
-    min_similarity=5,
-    max_similarity_chunks_per_merge=64,
-)
+from findmytext import similarity
+
+similarity.compute_similarities_inverted("my_index", min_similarity=1)
+similarity.compute_similarities_forward_topk("my_index", top_k=50, min_similarity=5)
 ```
 
-The defaults (`min_similarity=1` and
-`max_similarity_chunks_per_merge=None`) preserve all non-zero pairs and merge all
-temporary chunks together as before.
+For large exhaustive builds, `max_pairs_in_memory` bounds the pair counts
+buffered before a sorted chunk is flushed to disk, `max_chunks_per_merge` bounds
+the chunks opened in one merge pass, and `max_posting_length` skips very common
+fingerprints (making counts approximate).
 
 The `index_builder` can also be used directly from the command line:
 ```bash
 # Step 1: extract fingerprints from a corpus file into intermediate shards
 python -m findmytext.index_builder index corpus.jsonl my_fingerprints --nb_workers 4
 
-# Step 2: merge shards into a final disk-based index
+# Step 2: merge shards into a final disk-based index (incl. forward index)
 python -m findmytext.index_builder merge my_fingerprints my_index
 
-# Optional sparse document similarity output.
-python -m findmytext.index_builder merge my_fingerprints my_index_with_similarity \
-  --include-similarities
+# Step 3 (optional): compute document similarities with one or more methods
+python -m findmytext.similarity my_index --method inverted
+python -m findmytext.similarity my_index --method forward_topk --top-k 50 --min-similarity 5
+```
 
-# Keep pairs sharing at least five fingerprints and merge at most 64 temporary
-# similarity chunks at a time.
-python -m findmytext.index_builder merge my_fingerprints my_index_with_similarity \
-  --include-similarities --min-similarity 5 \
-  --max-similarity-chunks-per-merge 64
+To compare the runtime of both methods and check that `forward_topk` equals the
+exhaustive result truncated to each document's top-k neighbours:
+
+```bash
+python -m experiments.compare_similarity_methods --index-dir my_index --top-k 50 --min-similarity 5
 ```
 
 
@@ -201,7 +202,8 @@ python -m experiments.verify_multifile_similarity
 ```
 
 The experiment independently re-winnows every generated document and requires
-the complete external-ID similarity map to equal `similarities.npy`.
+the complete external-ID similarity map to equal `similarities_inverted.npy`, and
+every forward-index entry to equal the document's winnowed fingerprint set.
 
 ---
 

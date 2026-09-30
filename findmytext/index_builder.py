@@ -16,7 +16,11 @@ Step 2 — Merge into a disk-based index  (merge_indexes)
     The intermediate .jsonl.gz files from Step 1 are read back, sorted by fingerprint,
     and merged into a compact binary index that can be memory-mapped at query time.  The
     merge itself is parallelised: each file is parsed in a dedicated worker process and
-    the sorted streams are heap-merged in the main process.
+    the sorted streams are heap-merged in the main process.  A forward index
+    (document -> fingerprints) is then derived from the inverted index.
+
+Document-document similarities are computed afterwards, as a separate step, with
+:mod:`findmytext.similarity`.
 
 """
 
@@ -24,7 +28,6 @@ import argparse
 import array
 import collections
 import heapq
-import itertools
 import multiprocessing as mp
 import os
 import queue
@@ -39,7 +42,7 @@ import orjson
 import tqdm
 
 from . import utils, winnower
-from .indexing import MemoryBasedIndex
+from .indexing import POSTING_DTYPE, MemoryBasedIndex, iter_unique_posting_batches
 
 try:
     import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
@@ -273,38 +276,16 @@ def _produce(
 def merge_indexes_from_dir(
     temp_index_dir: str,
     output_dir: str,
-    include_similarities: bool = False,
-    similarity_chunk_size: int = 1_000_000,
-    max_similarity_posting_length: Optional[int] = None,
-    min_similarity: int = 1,
-    max_similarity_chunks_per_merge: Optional[int] = None,
+    build_forward: bool = True,
 ):
     """Merge intermediate MsgPack indexes into a disk-based index.
     The intermediate indexes must be in gzipped MsgPack format with the extension ``.mpk.gz``.
 
-    When ``include_similarities`` is true, the output also contains
-    ``similarities.npy``. Each row stores ``(doc_i, doc_j, count)``, where the
-    document fields are internal uint32 IDs and ``count`` is the number of unique
-    fingerprints shared by the pair. Pairs below ``min_similarity`` are omitted.
-
     Args:
         temp_index_dir (str): Directory containing the intermediate index files to merge.
         output_dir (str): Directory where the merged index files will be saved.
-        include_similarities (bool): Whether to create ``similarities.npy``.
-        similarity_chunk_size (int): Maximum number of distinct document-pair
-            counts held in memory before flushing a sorted temporary chunk.
-        max_similarity_posting_length (Optional[int]): If set, exclude a
-            fingerprint from similarity counting when it occurs in more than this
-            many unique documents. This bounds quadratic pair generation but makes
-            the resulting counts approximate rather than exact.
-        min_similarity (int): Only persist document pairs sharing at least this
-            many counted fingerprints. The default of 1 preserves every non-zero
-            pair. Filtering happens after complete aggregation, so this reduces
-            final output size but not pair-generation or temporary-chunk work.
-        max_similarity_chunks_per_merge (Optional[int]): Maximum number of
-            temporary similarity chunks opened in one merge. If set, chunks are
-            compacted in multiple passes with this fan-in. The default of None
-            opens all chunks in the final merge, preserving the previous behavior.
+        build_forward (bool): Whether to also write the forward index
+            (see :func:`build_forward_index`).
 
     Raises:
         ValueError: If the provided temp_index_dir does not exist or contains no .mpk.gz files.
@@ -318,26 +299,14 @@ def merge_indexes_from_dir(
             index_files.append(os.path.join(temp_index_dir, f))
     if not index_files:
         raise ValueError(f"No .mpk.gz index files found in {temp_index_dir}")
-    merge_indexes(
-        index_files,
-        output_dir,
-        include_similarities=include_similarities,
-        similarity_chunk_size=similarity_chunk_size,
-        max_similarity_posting_length=max_similarity_posting_length,
-        min_similarity=min_similarity,
-        max_similarity_chunks_per_merge=max_similarity_chunks_per_merge,
-    )
+    merge_indexes(index_files, output_dir, build_forward=build_forward)
 
 
 def merge_indexes(
     index_files: List[str],
     output_dir: str,
     save_every_n: int = 10_000_000,
-    include_similarities: bool = False,
-    similarity_chunk_size: int = 1_000_000,
-    max_similarity_posting_length: Optional[int] = None,
-    min_similarity: int = 1,
-    max_similarity_chunks_per_merge: Optional[int] = None,
+    build_forward: bool = True,
 ):
     """Merge gzipped MsgPack intermediate indexes into one disk-based index.
 
@@ -349,30 +318,14 @@ def merge_indexes(
     - meta.json: a JSON file containing the index parameters (length, window_size, base, punctuation)
     - doc_name_offsets.npy: an array of uint64 containing the byte offsets for each doc name in the concatenated byte array
     - doc_name_bytes.npy: an array of uint8 containing the UTF-8 encoded doc names concatenated together.
-    - similarities.npy (optional): a structured array with uint32 fields
-        ``doc_i``, ``doc_j``, and ``count``. It contains one row per document pair
-            sharing at least ``min_similarity`` counted fingerprints. This file is
-            created only when ``include_similarities=True``.
+    - forward_offsets.npy / forward_fingerprints.npy (if ``build_forward``): the
+      forward index, see :func:`build_forward_index`.
 
     Args:
         index_files (List[str]): List of paths to the intermediate index files to merge.
         output_dir (str): Directory where the merged index files will be saved.
         save_every_n (int): Frequency (in number of fingerprints) at which to save intermediate merged index files during merging.
-        include_similarities (bool): Whether to create ``similarities.npy``.
-        similarity_chunk_size (int): Maximum number of distinct document-pair
-            counts held in memory before flushing a sorted temporary chunk.
-        max_similarity_posting_length (Optional[int]): If set, exclude a
-            fingerprint from similarity counting when it occurs in more than this
-            many unique documents. This bounds quadratic pair generation but makes
-            the resulting counts approximate rather than exact.
-        min_similarity (int): Only persist document pairs sharing at least this
-            many counted fingerprints. The default of 1 preserves every non-zero
-            pair. Filtering happens after complete aggregation, so this reduces
-            final output size but not pair-generation or temporary-chunk work.
-        max_similarity_chunks_per_merge (Optional[int]): Maximum number of
-            temporary similarity chunks opened in one merge. If set, chunks are
-            compacted in multiple passes with this fan-in. The default of None
-            opens all chunks in the final merge.
+        build_forward (bool): Whether to also write the forward index.
     Raises:
         ValueError: If no index files are provided or if the input files are not in the expected format.
 
@@ -409,17 +362,6 @@ def merge_indexes(
     # ExpandingBuffer to accumulate the sorted fingerprints and their corresponding offsets
     # and lengths using a structured NumPy array with a expandable buffer.
     buf = ExpandingBuffer()
-    similarity_accumulator = (
-        SimilarityAccumulator(
-            output_dir,
-            max_pairs_in_memory=similarity_chunk_size,
-            max_posting_length=max_similarity_posting_length,
-            min_similarity=min_similarity,
-            max_chunks_per_merge=max_similarity_chunks_per_merge,
-        )
-        if include_similarities
-        else None
-    )
 
     # Parse all files in parallel processes and merge the sorted streams
     merged_stream = merge_streams_parallel(index_files)
@@ -431,9 +373,6 @@ def merge_indexes(
             # Remap external doc IDs to internal integers (pure lookups)
             internal_postings = [(to_internal[eid], pos) for eid, pos in postings_list]
             data = np.array(internal_postings, dtype=np.uint32).tobytes()
-
-            if similarity_accumulator is not None:
-                similarity_accumulator.add_posting_list(internal_postings)
 
             # Add fingerprint with byte offset and postings entry count in postings.dat.
             buf.add(fp, current_offset, len(internal_postings))
@@ -457,167 +396,69 @@ def merge_indexes(
     buf.save(output_dir)
     print("Done")
 
-    if similarity_accumulator is not None:
-        similarity_accumulator.finish()
+    if build_forward:
+        build_forward_index(output_dir)
 
 
-class SimilarityAccumulator:
-    """Build an exact sparse document-similarity index in bounded memory.
+def build_forward_index(index_dir: str, batch_entries: int = 10_000_000) -> None:
+    """Derive the forward index (document -> fingerprints) from the inverted index.
 
-    Each fingerprint contributes one count to every pair of distinct documents in
-    its posting list. Sorted chunk files make the accumulator's memory use bounded;
-    the chunks are merged into a single memory-mappable ``similarities.npy`` file.
-    Low-count pairs are pruned only after all partial counts have been aggregated.
-    Optionally, temporary chunks are compacted through bounded-fan-in merge passes
-    before the final output is written.
+    Writes, in CSR layout:
+    - forward_offsets.npy: uint64 array of shape (n_docs + 1,); the fingerprints of
+      internal document ``d`` are ``forward_fingerprints[offsets[d]:offsets[d + 1]]``.
+    - forward_fingerprints.npy: uint64 array of each document's sorted, unique
+      fingerprints.
+
+    ``postings.dat`` is streamed twice (count, then scatter), so RAM usage is
+    bounded by ``batch_entries`` and one counter per document; the output is
+    written through a memory map.
     """
-
-    _DTYPE = np.dtype([("key", np.uint64), ("count", np.uint32)])
-    _OUTPUT_DTYPE = np.dtype(
-        [("doc_i", np.uint32), ("doc_j", np.uint32), ("count", np.uint32)]
+    print("Building forward index...", flush=True)
+    fingerprints = np.load(os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r")
+    offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
+    lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+    n_docs = len(np.load(os.path.join(index_dir, "doc_name_offsets.npy"))) - 1
+    postings_path = os.path.join(index_dir, "postings.dat")
+    postings = (
+        np.memmap(postings_path, dtype=POSTING_DTYPE, mode="r")
+        if os.path.getsize(postings_path) > 0
+        else np.empty(0, dtype=POSTING_DTYPE)
     )
 
-    def __init__(
-        self,
-        output_dir: str,
-        max_pairs_in_memory: int = 1_000_000,
-        max_posting_length: Optional[int] = None,
-        min_similarity: int = 1,
-        max_chunks_per_merge: Optional[int] = None,
-    ):
-        if max_pairs_in_memory <= 0:
-            raise ValueError("similarity_chunk_size must be positive")
-        if max_posting_length is not None and max_posting_length < 2:
-            raise ValueError("max_similarity_posting_length must be at least 2")
-        if min_similarity < 1:
-            raise ValueError("min_similarity must be at least 1")
-        if max_chunks_per_merge is not None and max_chunks_per_merge < 2:
-            raise ValueError("max_similarity_chunks_per_merge must be at least 2")
-        self.output_dir = output_dir
-        self.max_pairs_in_memory = max_pairs_in_memory
-        self.max_posting_length = max_posting_length
-        self.min_similarity = min_similarity
-        self.max_chunks_per_merge = max_chunks_per_merge
-        self.counts: Dict[int, int] = {}
-        self.chunk_paths: List[str] = []
-
-    def add_posting_list(self, postings: List[Tuple[int, int]]) -> None:
-        """Add one fingerprint's unique document set to the pair accumulator."""
-        document_ids = sorted({doc_id for doc_id, _ in postings})
-        if (
-            self.max_posting_length is not None
-            and len(document_ids) > self.max_posting_length
-        ):
-            return
-
-        for first, second in itertools.combinations(document_ids, 2):
-            key = (first << 32) | second
-            self.counts[key] = self.counts.get(key, 0) + 1
-            if len(self.counts) >= self.max_pairs_in_memory:
-                self._flush_chunk()
-
-    def _flush_chunk(self) -> None:
-        if not self.counts:
-            return
-        chunk = np.empty(len(self.counts), dtype=self._DTYPE)
-        for i, (key, count) in enumerate(sorted(self.counts.items())):
-            chunk[i] = (key, count)
-        path = os.path.join(
-            self.output_dir, f".similarity-chunk-{len(self.chunk_paths):06d}.npy"
+    def _batches():
+        return iter_unique_posting_batches(
+            fingerprints, offsets, lengths, postings, batch_entries
         )
-        np.save(path, chunk)
-        self.chunk_paths.append(path)
-        self.counts.clear()
 
-    def finish(self) -> None:
-        self._flush_chunk()
-        output_path = os.path.join(self.output_dir, "similarities.npy")
-        if not self.chunk_paths:
-            np.save(output_path, np.empty(0, dtype=self._OUTPUT_DTYPE))
-            return
+    counts = np.zeros(n_docs, dtype=np.uint64)
+    for _, _, docs in _batches():
+        counts += np.bincount(docs, minlength=n_docs).astype(np.uint64)
 
-        if self.max_chunks_per_merge is not None:
-            self.chunk_paths = self._compact_chunks(self.chunk_paths)
+    forward_offsets = np.zeros(n_docs + 1, dtype=np.uint64)
+    np.cumsum(counts, out=forward_offsets[1:])
+    np.save(os.path.join(index_dir, "forward_offsets.npy"), forward_offsets)
 
-        n_pairs = sum(
-            1
-            for _, count in self._merged_items(self.chunk_paths)
-            if count >= self.min_similarity
-        )
-        output = np.lib.format.open_memmap(
-            output_path, mode="w+", dtype=self._OUTPUT_DTYPE, shape=(n_pairs,)
-        )
-        output_index = 0
-        for key, count in self._merged_items(self.chunk_paths):
-            if count < self.min_similarity:
-                continue
-            output[output_index] = (key >> 32, key & 0xFFFFFFFF, count)
-            output_index += 1
-        output.flush()
-        del output
-        for path in self.chunk_paths:
-            os.remove(path)
-        print(f"Saved {n_pairs:,} document similarity pairs.")
-
-    def _compact_chunks(self, paths: List[str]) -> List[str]:
-        """Reduce chunk count through bounded-fan-in merge passes."""
-        fan_in = self.max_chunks_per_merge
-        if fan_in is None:
-            return paths
-
-        pass_index = 0
-        while len(paths) > fan_in:
-            compacted = []
-            for group_index, start in enumerate(range(0, len(paths), fan_in)):
-                group = paths[start : start + fan_in]
-                if len(group) == 1:
-                    compacted.append(group[0])
-                    continue
-                output_path = os.path.join(
-                    self.output_dir,
-                    f".similarity-merge-{pass_index:03d}-{group_index:06d}.npy",
-                )
-                self._write_merged_chunk(group, output_path)
-                for path in group:
-                    os.remove(path)
-                compacted.append(output_path)
-            paths = compacted
-            pass_index += 1
-        return paths
-
-    def _write_merged_chunk(self, paths: List[str], output_path: str) -> None:
-        n_pairs = sum(1 for _ in self._merged_items(paths))
-        output = np.lib.format.open_memmap(
-            output_path, mode="w+", dtype=self._DTYPE, shape=(n_pairs,)
-        )
-        for index, item in enumerate(self._merged_items(paths)):
-            output[index] = item
-        output.flush()
-        del output
-
-    def _merged_items(self, paths: List[str]) -> Iterator[Tuple[int, int]]:
-        arrays = [np.load(path, mmap_mode="r") for path in paths]
-        heap = []
-        for chunk_index, array_data in enumerate(arrays):
-            if len(array_data):
-                heapq.heappush(heap, (int(array_data[0]["key"]), chunk_index, 0))
-
-        while heap:
-            key, chunk_index, position = heapq.heappop(heap)
-            count = int(arrays[chunk_index][position]["count"])
-            next_position = position + 1
-            if next_position < len(arrays[chunk_index]):
-                next_key = int(arrays[chunk_index][next_position]["key"])
-                heapq.heappush(heap, (next_key, chunk_index, next_position))
-
-            while heap and heap[0][0] == key:
-                _, other_chunk, other_position = heapq.heappop(heap)
-                count += int(arrays[other_chunk][other_position]["count"])
-                next_position = other_position + 1
-                if next_position < len(arrays[other_chunk]):
-                    next_key = int(arrays[other_chunk][next_position]["key"])
-                    heapq.heappush(heap, (next_key, other_chunk, next_position))
-            yield key, count
+    forward_fps = np.lib.format.open_memmap(
+        os.path.join(index_dir, "forward_fingerprints.npy"),
+        mode="w+",
+        dtype=np.uint64,
+        shape=(int(forward_offsets[-1]),),
+    )
+    cursor = forward_offsets[:-1].copy()
+    for batch_fps, group, docs in _batches():
+        # Batches arrive in increasing fingerprint order, and a stable sort by doc
+        # keeps that order, so each document's fingerprints end up sorted.
+        order = np.argsort(docs, kind="stable")
+        sorted_docs = docs[order]
+        doc_starts = np.flatnonzero(np.r_[True, sorted_docs[1:] != sorted_docs[:-1]])
+        run_lengths = np.diff(np.r_[doc_starts, len(sorted_docs)])
+        rank = np.arange(len(sorted_docs)) - np.repeat(doc_starts, run_lengths)
+        targets = cursor[sorted_docs] + rank.astype(np.uint64)
+        forward_fps[targets] = batch_fps[group[order]]
+        cursor[sorted_docs[doc_starts]] += run_lengths.astype(np.uint64)
+    forward_fps.flush()
+    del forward_fps
+    print(f"Saved forward index for {n_docs:,} documents.")
 
 
 class ExpandingBuffer:
@@ -891,34 +732,16 @@ if __name__ == "__main__":
         help="Directory where the merged index will be saved.",
     )
     merge_parser.add_argument(
-        "--include-similarities",
+        "--no-forward-index",
         action="store_true",
-        help="Also write similarities.npy with sparse document-pair overlap counts.",
+        help="Do not build the forward index (document -> fingerprints).",
     )
-    merge_parser.add_argument(
-        "--similarity-chunk-size",
-        type=int,
-        default=1_000_000,
-        help="Maximum pair counts held in memory before a similarity chunk is flushed.",
+
+    # --- forward task ---
+    forward_parser = subparsers.add_parser(
+        "forward", help="Build the forward index of an existing merged index"
     )
-    merge_parser.add_argument(
-        "--max-similarity-posting-length",
-        type=int,
-        default=None,
-        help="Skip fingerprints occurring in more unique documents than this; bounds pair generation but makes similarity counts approximate.",
-    )
-    merge_parser.add_argument(
-        "--min-similarity",
-        type=int,
-        default=1,
-        help="Only store document pairs sharing at least this many counted fingerprints (default: 1).",
-    )
-    merge_parser.add_argument(
-        "--max-similarity-chunks-per-merge",
-        type=int,
-        default=None,
-        help="Maximum temporary similarity chunks opened per merge pass; default opens all chunks together.",
-    )
+    forward_parser.add_argument("index_dir", type=str, help="Merged index directory")
 
     args = parser.parse_args()
 
@@ -939,9 +762,8 @@ if __name__ == "__main__":
         merge_indexes_from_dir(
             args.temp_index_dir,
             args.output_dir,
-            include_similarities=args.include_similarities,
-            similarity_chunk_size=args.similarity_chunk_size,
-            max_similarity_posting_length=args.max_similarity_posting_length,
-            min_similarity=args.min_similarity,
-            max_similarity_chunks_per_merge=args.max_similarity_chunks_per_merge,
+            build_forward=not args.no_forward_index,
         )
+
+    elif args.task == "forward":
+        build_forward_index(args.index_dir)
