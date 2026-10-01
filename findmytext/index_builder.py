@@ -66,7 +66,6 @@ def index_file(
     max_nb_documents_before_flush=1_000_000,
     min_length: int = 100,
     max_length: int = 100_000,
-    skip_prob: float = 0.0,
 ) -> List[str]:
     """Index documents from a corpus file and save intermediate index files to output_dir.
 
@@ -90,7 +89,6 @@ def index_file(
         max_nb_documents_before_flush: Maximum number of documents to hold in memory before flushing to disk. Default is 1M.
         min_length: Minimum document text length to index; shorter documents are skipped (default 100).
         max_length: Maximum document text length to index; longer documents are skipped (default 100,000).
-        skip_prob: Probability of randomly skipping a document while streaming (default 0.0).
 
     Returns:
         List of paths to the saved intermediate index files.
@@ -105,14 +103,12 @@ def index_file(
             corpus_file,
             min_length=min_length,
             max_length=max_length,
-            skip_prob=skip_prob,
         )
     elif corpus_file.endswith(".jsonl.zst"):
         stream = utils.stream_json_zst(
             corpus_file,
             min_length=min_length,
             max_length=max_length,
-            skip_prob=skip_prob,
         )
     else:
         raise ValueError(
@@ -710,13 +706,6 @@ if __name__ == "__main__":
         default=100_000,
         help="Maximum document text length to index (default: 100,000)",
     )
-    index_parser.add_argument(
-        "--skip_prob",
-        type=float,
-        default=0.0,
-        help="Probability of randomly skipping a document (default: 0.0)",
-    )
-
     # --- merge task ---
     merge_parser = subparsers.add_parser(
         "merge", help="Merge intermediate index files into a DiskBasedIndex"
@@ -755,7 +744,6 @@ if __name__ == "__main__":
             nb_workers=args.nb_workers,
             min_length=args.min_length,
             max_length=args.max_length,
-            skip_prob=args.skip_prob,
         )
 
     elif args.task == "merge":
