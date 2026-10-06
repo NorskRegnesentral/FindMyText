@@ -16,7 +16,7 @@ Methods
 ``forward_topk``
     For every document, reads its fingerprints from the forward index, queries the
     inverted index with them and keeps the ``top_k`` most similar other documents
-    sharing at least ``min_similarity`` fingerprints.  The stored pairs are the
+    sharing at least ``min_shared_fingerprints`` fingerprints.  The stored pairs are the
     union of those per-document neighbour lists.
 """
 
@@ -47,28 +47,28 @@ class _PairAccumulator:
     ``pair_key = (doc_i << 32) | doc_j``.  Items are buffered, then aggregated
     (``reduce="sum"`` or ``"max"``) into sorted temporary chunks, which are finally
     heap-merged (optionally through bounded-fan-in compaction passes).  Pairs below
-    ``min_similarity`` are dropped only after complete aggregation.
+    ``min_shared_fingerprints`` are dropped only after complete aggregation.
     """
 
     def __init__(
         self,
         output_path: str,
         reduce: str = "sum",
-        max_pairs_in_memory: int = 20_000_000,
-        min_similarity: int = 1,
+        max_pair_updates_in_memory: int = 20_000_000,
+        min_shared_fingerprints: int = 1,
         max_chunks_per_merge: Optional[int] = None,
     ):
         if reduce not in {"sum", "max"}:
             raise ValueError("reduce must be 'sum' or 'max'")
-        if max_pairs_in_memory <= 0:
-            raise ValueError("max_pairs_in_memory must be positive")
-        if min_similarity < 1:
-            raise ValueError("min_similarity must be at least 1")
+        if max_pair_updates_in_memory <= 0:
+            raise ValueError("max_pair_updates_in_memory must be positive")
+        if min_shared_fingerprints < 1:
+            raise ValueError("min_shared_fingerprints must be at least 1")
         if max_chunks_per_merge is not None and max_chunks_per_merge < 2:
             raise ValueError("max_chunks_per_merge must be at least 2")
         self.output_path = output_path
-        self.max_pairs_in_memory = max_pairs_in_memory
-        self.min_similarity = min_similarity
+        self.max_pair_updates_in_memory = max_pair_updates_in_memory
+        self.min_shared_fingerprints = min_shared_fingerprints
         self.max_chunks_per_merge = max_chunks_per_merge
         self._np_reduce = np.add if reduce == "sum" else np.maximum
         self._py_reduce: Callable[[int, int], int] = (
@@ -89,7 +89,7 @@ class _PairAccumulator:
         self._keys.append(np.asarray(keys, dtype=np.uint64))
         self._counts.append(np.asarray(counts, dtype=np.uint32))
         self._buffered += len(keys)
-        if self._buffered >= self.max_pairs_in_memory:
+        if self._buffered >= self.max_pair_updates_in_memory:
             self._flush_chunk()
 
     def _aggregate(
@@ -122,7 +122,7 @@ class _PairAccumulator:
 
         if len(paths) <= 1:
             chunk = np.load(paths[0]) if paths else np.empty(0, dtype=_CHUNK_DTYPE)
-            chunk = chunk[chunk["count"] >= self.min_similarity]
+            chunk = chunk[chunk["count"] >= self.min_shared_fingerprints]
             output = np.empty(len(chunk), dtype=SIMILARITY_DTYPE)
             output["doc_i"] = chunk["key"] >> _SHIFT
             output["doc_j"] = chunk["key"] & _LOW_32
@@ -131,14 +131,16 @@ class _PairAccumulator:
             n_pairs = len(output)
         else:
             n_pairs = sum(
-                1 for _, c in self._merged_items(paths) if c >= self.min_similarity
+                1
+                for _, c in self._merged_items(paths)
+                if c >= self.min_shared_fingerprints
             )
             output = np.lib.format.open_memmap(
                 self.output_path, mode="w+", dtype=SIMILARITY_DTYPE, shape=(n_pairs,)
             )
             index = 0
             for key, count in self._merged_items(paths):
-                if count >= self.min_similarity:
+                if count >= self.min_shared_fingerprints:
                     output[index] = (key >> 32, key & 0xFFFFFFFF, count)
                     index += 1
             output.flush()
@@ -207,53 +209,65 @@ class _PairAccumulator:
 
 def compute_similarities_inverted(
     index_dir: str,
-    min_similarity: int = 1,
-    max_posting_length: Optional[int] = None,
-    max_pairs_in_memory: int = 20_000_000,
+    min_shared_fingerprints: int = 1,
+    max_fingerprint_document_frequency: Optional[int] = None,
+    max_pair_updates_in_memory: int = 20_000_000,
     max_chunks_per_merge: Optional[int] = None,
-    batch_entries: int = 10_000_000,
+    posting_batch_entries: int = 10_000_000,
     verbose: bool = True,
 ) -> str:
     """Exhaustive pair counts from one sequential pass over the inverted index.
 
     Args:
         index_dir: Merged index directory.
-        min_similarity: Only store pairs sharing at least this many fingerprints.
-        max_posting_length: If set, ignore fingerprints occurring in more unique
+        min_shared_fingerprints: Only store pairs sharing at least this many fingerprints.
+        max_fingerprint_document_frequency: If set, ignore fingerprints occurring in more unique
             documents than this (bounds quadratic pair generation; counts become
             approximate).
-        max_pairs_in_memory: Pair items buffered before a sorted chunk is flushed.
+        max_pair_updates_in_memory: Pair updates buffered before a sorted chunk is flushed.
         max_chunks_per_merge: Optional fan-in bound for merging temporary chunks.
-        batch_entries: Posting entries read per batch from ``postings.dat``.
+        posting_batch_entries: Posting entries read per batch from ``postings.dat``.
         verbose: Show a progress bar.
 
     Returns:
         Path to ``similarities_inverted.npy``.
     """
-    if max_posting_length is not None and max_posting_length < 2:
-        raise ValueError("max_posting_length must be at least 2")
+    if (
+        max_fingerprint_document_frequency is not None
+        and max_fingerprint_document_frequency < 2
+    ):
+        raise ValueError("max_fingerprint_document_frequency must be at least 2")
+
+    # Initialize the disk-based index and the pair accumulator.
     index = DiskBasedIndex(index_dir)
+
+    # Determine the output path for the inverted similarities file.
     output_path = os.path.join(index_dir, similarity_file_name("inverted"))
+
+    #
     accumulator = _PairAccumulator(
         output_path,
         reduce="sum",
-        max_pairs_in_memory=max_pairs_in_memory,
-        min_similarity=min_similarity,
+        max_pair_updates_in_memory=max_pair_updates_in_memory,
+        min_shared_fingerprints=min_shared_fingerprints,
         max_chunks_per_merge=max_chunks_per_merge,
     )
     triu_cache: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
 
+    # Iterate over batches of unique postings and accumulate pair counts.
     progress = tqdm.tqdm(
         total=len(index.fingerprints),
         desc="Inverted-index similarities",
         disable=not verbose,
     )
-    for batch_fps, group, docs in index.iter_unique_posting_batches(batch_entries):
+    for batch_fps, group, docs in index.iter_unique_posting_batches(
+        posting_batch_entries
+    ):
         sizes = np.bincount(group, minlength=len(batch_fps))
         starts = np.r_[0, np.cumsum(sizes)[:-1]]
         eligible = sizes >= 2
-        if max_posting_length is not None:
-            eligible &= sizes <= max_posting_length
+        if max_fingerprint_document_frequency is not None:
+            eligible &= sizes <= max_fingerprint_document_frequency
 
         batch_keys = []
         wide_docs = docs.astype(np.uint64)
@@ -278,8 +292,8 @@ def compute_similarities_inverted(
 def compute_similarities_forward_topk(
     index_dir: str,
     top_k: int = 50,
-    min_similarity: int = 5,
-    max_pairs_in_memory: int = 20_000_000,
+    min_shared_fingerprints: int = 5,
+    max_pair_updates_in_memory: int = 20_000_000,
     max_chunks_per_merge: Optional[int] = None,
     verbose: bool = True,
 ) -> str:
@@ -287,7 +301,7 @@ def compute_similarities_forward_topk(
 
     For every internal document ``d``, :meth:`DiskBasedIndex.get_document_candidates`
     returns the ``top_k`` other documents sharing the most unique fingerprints with
-    ``d`` (at least ``min_similarity``; ties broken by ascending doc ID).  The
+    ``d`` (at least ``min_shared_fingerprints``; ties broken by ascending doc ID).  The
     stored pairs are the union over all documents, so a pair is kept if either
     document is among the other's top-k.  Counts are exact.
 
@@ -300,8 +314,8 @@ def compute_similarities_forward_topk(
     accumulator = _PairAccumulator(
         output_path,
         reduce="max",
-        max_pairs_in_memory=max_pairs_in_memory,
-        min_similarity=min_similarity,
+        max_pair_updates_in_memory=max_pair_updates_in_memory,
+        min_shared_fingerprints=min_shared_fingerprints,
         max_chunks_per_merge=max_chunks_per_merge,
     )
 
@@ -309,7 +323,7 @@ def compute_similarities_forward_topk(
         n_docs, desc="Forward top-k similarities", disable=not verbose
     ):
         candidates, counts = index.get_document_candidates(
-            doc, top_k=top_k, min_fingerprints=min_similarity
+            doc, top_k=top_k, min_fingerprints=min_shared_fingerprints
         )
         if len(candidates) == 0:
             continue
@@ -352,18 +366,18 @@ def similarities_to_dict(similarities: np.ndarray) -> Dict[Tuple[int, int], int]
 
 
 def top_k_per_document(
-    similarities: np.ndarray, top_k: int, min_similarity: int = 1
+    similarities: np.ndarray, top_k: int, min_shared_fingerprints: int = 1
 ) -> Dict[Tuple[int, int], int]:
     """Truncate exhaustive similarities to the union of per-document top-k neighbours.
 
     Uses the same selection rule as ``forward_topk``: neighbours with at least
-    ``min_similarity`` shared fingerprints, ordered by descending count, then
+    ``min_shared_fingerprints`` shared fingerprints, ordered by descending count, then
     ascending doc ID.
     """
     doc_i = similarities["doc_i"].astype(np.int64)
     doc_j = similarities["doc_j"].astype(np.int64)
     count = similarities["count"].astype(np.int64)
-    keep = count >= min_similarity
+    keep = count >= min_shared_fingerprints
     source = np.concatenate([doc_i[keep], doc_j[keep]])
     target = np.concatenate([doc_j[keep], doc_i[keep]])
     weight = np.concatenate([count[keep], count[keep]])
@@ -383,7 +397,10 @@ def top_k_per_document(
 
 
 def compare_with_exhaustive(
-    exhaustive: np.ndarray, top_k_result: np.ndarray, top_k: int, min_similarity: int
+    exhaustive: np.ndarray,
+    top_k_result: np.ndarray,
+    top_k: int,
+    min_shared_fingerprints: int,
 ) -> Dict[str, object]:
     """Compare a top-k result against exhaustive similarities truncated to top-k.
 
@@ -393,7 +410,7 @@ def compare_with_exhaustive(
     result exactly.
     """
     exhaustive_all = similarities_to_dict(exhaustive)
-    expected = top_k_per_document(exhaustive, top_k, min_similarity)
+    expected = top_k_per_document(exhaustive, top_k, min_shared_fingerprints)
     actual = similarities_to_dict(top_k_result)
     count_mismatches = {
         pair: (exhaustive_all.get(pair, 0), count)
@@ -420,7 +437,7 @@ def main() -> None:
     parser.add_argument("index_dir", help="Merged index directory.")
     parser.add_argument("--method", choices=sorted(METHODS), default="inverted")
     parser.add_argument(
-        "--min-similarity",
+        "--min-shared-fingerprints",
         type=int,
         default=None,
         help="Minimum shared fingerprints per stored pair "
@@ -430,23 +447,29 @@ def main() -> None:
         "--top-k", type=int, default=50, help="forward_topk: neighbours per document."
     )
     parser.add_argument(
-        "--max-posting-length",
+        "--max-fingerprint-document-frequency",
         type=int,
         default=None,
-        help="inverted: skip fingerprints in more documents than this (approximate).",
+        help="inverted: skip fingerprints occurring in more documents than this (approximate).",
     )
-    parser.add_argument("--max-pairs-in-memory", type=int, default=20_000_000)
+    parser.add_argument(
+        "--max-pair-updates-in-memory", type=int, default=20_000_000
+    )
+    parser.add_argument("--posting-batch-entries", type=int, default=10_000_000)
     parser.add_argument("--max-chunks-per-merge", type=int, default=None)
     args = parser.parse_args()
 
     kwargs = {
-        "max_pairs_in_memory": args.max_pairs_in_memory,
+        "max_pair_updates_in_memory": args.max_pair_updates_in_memory,
         "max_chunks_per_merge": args.max_chunks_per_merge,
     }
-    if args.min_similarity is not None:
-        kwargs["min_similarity"] = args.min_similarity
+    if args.min_shared_fingerprints is not None:
+        kwargs["min_shared_fingerprints"] = args.min_shared_fingerprints
     if args.method == "inverted":
-        kwargs["max_posting_length"] = args.max_posting_length
+        kwargs["max_fingerprint_document_frequency"] = (
+            args.max_fingerprint_document_frequency
+        )
+        kwargs["posting_batch_entries"] = args.posting_batch_entries
     else:
         kwargs["top_k"] = args.top_k
     compute_similarities(args.index_dir, args.method, **kwargs)

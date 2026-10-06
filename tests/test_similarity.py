@@ -22,10 +22,15 @@ def index_dir(tmp_path_factory):
     return build_index(corpus_path, root)
 
 
-@pytest.mark.parametrize("top_k,min_similarity", [(50, 5), (3, 2), (1, 1)])
-def test_forward_topk_matches_truncated_exhaustive(index_dir, top_k, min_similarity):
+@pytest.mark.parametrize("top_k,min_shared_fingerprints", [(50, 5), (3, 2), (1, 1)])
+def test_forward_topk_matches_truncated_exhaustive(
+    index_dir, top_k, min_shared_fingerprints
+):
     report = compare_methods(
-        index_dir, top_k=top_k, min_similarity=min_similarity, verbose=False
+        index_dir,
+        top_k=top_k,
+        min_shared_fingerprints=min_shared_fingerprints,
+        verbose=False,
     )
     assert report["n_top_k_pairs"] > 0
     assert report["identical"], report
@@ -37,9 +42,9 @@ def test_inverted_chunked_merge_matches_single_chunk(index_dir):
 
     similarity.compute_similarities_inverted(
         index_dir,
-        max_pairs_in_memory=7,
+        max_pair_updates_in_memory=7,
         max_chunks_per_merge=2,
-        batch_entries=13,
+        posting_batch_entries=13,
         verbose=False,
     )
     chunked = indexing.DiskBasedIndex(index_dir).load_similarities("inverted")

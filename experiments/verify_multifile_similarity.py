@@ -86,7 +86,7 @@ def run_verification(
         merged_dir,
         max_pairs_in_memory=similarity_chunk_size,
         max_chunks_per_merge=2,
-        batch_entries=50,
+        posting_batch_entries=50,
         verbose=False,
     )
     merged = indexing.DiskBasedIndex(merged_dir)

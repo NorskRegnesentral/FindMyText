@@ -53,19 +53,23 @@ fingerprints), loaded with `DiskBasedIndex.load_similarities(method)`.
 | Method | Description |
 | --- | --- |
 | `inverted` | Exhaustive. One sequential pass over the inverted index; every fingerprint adds one count to each pair of documents in its posting list. |
-| `forward_topk` | For each document, its forward-index fingerprints are queried against the inverted index and its `top_k` neighbours sharing at least `min_similarity` fingerprints are kept (union over documents; exact counts). |
+| `forward_topk` | For each document, its forward-index fingerprints are queried against the inverted index and its `top_k` neighbours sharing at least `min_shared_fingerprints` fingerprints are kept (union over documents; exact counts). |
 
 ```python
 from findmytext import similarity
 
-similarity.compute_similarities_inverted("my_index", min_similarity=1)
-similarity.compute_similarities_forward_topk("my_index", top_k=50, min_similarity=5)
+similarity.compute_similarities_inverted("my_index", min_shared_fingerprints=1)
+similarity.compute_similarities_forward_topk(
+    "my_index", top_k=50, min_shared_fingerprints=5
+)
 ```
 
-For large exhaustive builds, `max_pairs_in_memory` bounds the pair counts
-buffered before a sorted chunk is flushed to disk, `max_chunks_per_merge` bounds
-the chunks opened in one merge pass, and `max_posting_length` skips very common
-fingerprints (making counts approximate).
+For large exhaustive builds, `max_pair_updates_in_memory` bounds the pair-count
+updates buffered before a sorted chunk is flushed to disk, `max_chunks_per_merge`
+bounds the chunks opened in one merge pass, and
+`max_fingerprint_document_frequency` skips very common fingerprints (making
+counts approximate). `posting_batch_entries` controls the posting entries read
+per batch.
 
 The `index_builder` can also be used directly from the command line:
 ```bash
@@ -77,14 +81,14 @@ python -m findmytext.index_builder merge my_fingerprints my_index
 
 # Step 3 (optional): compute document similarities with one or more methods
 python -m findmytext.similarity my_index --method inverted
-python -m findmytext.similarity my_index --method forward_topk --top-k 50 --min-similarity 5
+python -m findmytext.similarity my_index --method forward_topk --top-k 50 --min-shared-fingerprints 5
 ```
 
 To compare the runtime of both methods and check that `forward_topk` equals the
 exhaustive result truncated to each document's top-k neighbours:
 
 ```bash
-python -m experiments.compare_similarity_methods --index-dir my_index --top-k 50 --min-similarity 5
+python -m experiments.compare_similarity_methods --index-dir my_index --top-k 50 --min-shared-fingerprints 5
 ```
 
 

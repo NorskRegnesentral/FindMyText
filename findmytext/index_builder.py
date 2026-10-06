@@ -167,6 +167,19 @@ def index_file(
     return index_files
 
 
+def _get_fork_context() -> mp.context.BaseContext:
+    """Return the "fork" start-method context, falling back to the default.
+
+    The producer process receives the corpus stream (a generator), which only
+    survives process creation with "fork"; "forkserver" (the default on Linux from
+    Python 3.14) and "spawn" both try to pickle it and fail.
+    """
+    try:
+        return mp.get_context("fork")
+    except ValueError:  # platform without fork, e.g. Windows
+        return mp.get_context()
+
+
 def get_batched_fingerprints(
     stream: Any,
     stop_after: Optional[int],
@@ -196,10 +209,12 @@ def get_batched_fingerprints(
 
     n_workers = max(1, nb_workers - 1)  # reserve one core for the producer process
 
-    # Queue for results from the producer to the main process.
-    result_queue: mp.Queue = mp.Queue(maxsize=n_workers * 4)
+    ctx = _get_fork_context()
 
-    producer = mp.Process(
+    # Queue for results from the producer to the main process.
+    result_queue: mp.Queue = ctx.Queue(maxsize=n_workers * 4)
+
+    producer = ctx.Process(
         target=_produce,
         args=(stream, stop_after, n_workers, result_queue, length, window_size),
     )
@@ -243,7 +258,7 @@ def _produce(
 
     batches_gen = utils.generate_batches(data_stream, stop_after)
     try:
-        with mp.Pool(processes=n_workers) as pool:
+        with _get_fork_context().Pool(processes=n_workers) as pool:
             pending: List[Any] = []
             for batch in batches_gen:
                 if len(pending) >= n_workers:

@@ -2,7 +2,7 @@
 
 Runs the exhaustive ``inverted`` method and the ``forward_topk`` method, then checks
 that the top-k result equals the exhaustive result truncated to the union of
-per-document top-k neighbours (same ``min_similarity`` threshold and tie-breaking),
+per-document top-k neighbours (same ``min_shared_fingerprints`` threshold and tie-breaking),
 and that every top-k count equals the exhaustive count.
 
 Examples::
@@ -60,7 +60,10 @@ def write_synthetic_corpus(path: str, n_documents: int, seed: int = 0) -> None:
 
 
 def compare_methods(
-    index_dir: str, top_k: int = 50, min_similarity: int = 5, verbose: bool = True
+    index_dir: str,
+    top_k: int = 50,
+    min_shared_fingerprints: int = 5,
+    verbose: bool = True,
 ) -> dict:
     """Run both methods on ``index_dir`` and return timings plus the comparison report."""
     index = indexing.DiskBasedIndex(index_dir)
@@ -75,7 +78,10 @@ def compare_methods(
 
     started = time.perf_counter()
     similarity.compute_similarities_forward_topk(
-        index_dir, top_k=top_k, min_similarity=min_similarity, verbose=verbose
+        index_dir,
+        top_k=top_k,
+        min_shared_fingerprints=min_shared_fingerprints,
+        verbose=verbose,
     )
     timings["forward_topk"] = time.perf_counter() - started
 
@@ -84,7 +90,7 @@ def compare_methods(
         index.load_similarities("inverted"),
         index.load_similarities("forward_topk"),
         top_k=top_k,
-        min_similarity=min_similarity,
+        min_shared_fingerprints=min_shared_fingerprints,
     )
     report["timings"] = timings
     report["n_documents"] = len(index.to_external_doc_id)
@@ -107,7 +113,7 @@ def main() -> None:
     parser.add_argument("--output-dir", help="Keep built index files here.")
     parser.add_argument("--nb-workers", type=int, default=1)
     parser.add_argument("--top-k", type=int, default=50)
-    parser.add_argument("--min-similarity", type=int, default=5)
+    parser.add_argument("--min-shared-fingerprints", type=int, default=5)
     args = parser.parse_args()
 
     root = None
@@ -123,7 +129,7 @@ def main() -> None:
         index_dir = build_index(corpus_path, root, nb_workers=args.nb_workers)
 
     try:
-        report = compare_methods(index_dir, args.top_k, args.min_similarity)
+        report = compare_methods(index_dir, args.top_k, args.min_shared_fingerprints)
     finally:
         if root is not None and args.output_dir is None:
             shutil.rmtree(root)

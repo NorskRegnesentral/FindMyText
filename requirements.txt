@@ -7,6 +7,7 @@ orjson
 polars
 scipy
 tqdm
+zstandard
 
 # Optional: faster gzip decompression (Intel ISA-L). Falls back to stdlib gzip if absent.
 isal

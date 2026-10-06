@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 def build_similarity_graph(
     index: "DiskBasedIndex",
-    min_similarity: int = 1,
+    min_shared_fingerprints: int = 1,
     max_documents: Optional[int] = None,
     doc_ids: Optional[List[str]] = None,
     method: str = "inverted",
@@ -33,7 +33,7 @@ def build_similarity_graph(
     Nodes are external document IDs; each edge is weighted by the number of
     fingerprints shared between the two documents (``S(i, j)``).
 
-    Normal mode (``doc_ids=None``): edges with fewer than ``min_similarity``
+    Normal mode (``doc_ids=None``): edges with fewer than ``min_shared_fingerprints``
     shared fingerprints are dropped first. If more than ``max_documents`` nodes
     remain, only the ``max_documents`` with the highest *weighted degree* (i.e.
     the sum of the weights of their surviving edges) are kept, and edges outside
@@ -42,22 +42,22 @@ def build_similarity_graph(
     shared content per document, which is the most natural way to prioritise
     documents that overlap heavily with several others.
 
-    Selection mode (``doc_ids`` given): ``min_similarity`` and ``max_documents``
+    Selection mode (``doc_ids`` given): ``min_shared_fingerprints`` and ``max_documents``
     are bypassed entirely -- the graph contains exactly the requested documents
     (as nodes, even if isolated) and every edge between them, regardless of
     weight. Since a caller-selected set may include weakly related documents by
     mistake, a warning is issued for every pair whose shared-fingerprint count
-    (0 if no edge exists) is below ``min_similarity``.
+    (0 if no edge exists) is below ``min_shared_fingerprints``.
 
     Args:
         index: A DiskBasedIndex whose similarities were computed with
             ``findmytext.similarity.compute_similarities``.
-        min_similarity: Minimum shared fingerprints to keep an edge (normal
+        min_shared_fingerprints: Minimum shared fingerprints to keep an edge (normal
             mode), or the warning threshold for weak pairs (selection mode).
         max_documents: If set (normal mode only), restrict the graph to at most
             this many documents.
         doc_ids: If set, switch to selection mode and use exactly this set of
-            documents instead of `min_similarity`/`max_documents` filtering.
+            documents instead of `min_shared_fingerprints`/`max_documents` filtering.
         method: Similarity method whose results to use.
 
     Returns:
@@ -84,10 +84,10 @@ def build_similarity_graph(
 
         for doc_a, doc_b in itertools.combinations(doc_ids, 2):
             weight = graph.get_edge_data(doc_a, doc_b, default={}).get("weight", 0)
-            if weight < min_similarity:
+            if weight < min_shared_fingerprints:
                 warnings.warn(
                     f"Requested documents {doc_a!r} and {doc_b!r} share only "
-                    f"{weight} fingerprint(s) (< min_similarity={min_similarity}); "
+                    f"{weight} fingerprint(s) (< min_shared_fingerprints={min_shared_fingerprints}); "
                     "double-check they belong together."
                 )
         return graph
@@ -95,7 +95,7 @@ def build_similarity_graph(
     graph = nx.Graph()
     for row in similarities:
         count = int(row["count"])
-        if count < min_similarity:
+        if count < min_shared_fingerprints:
             continue
         doc_a = index.to_external_doc_id[int(row["doc_i"])]
         doc_b = index.to_external_doc_id[int(row["doc_j"])]
@@ -153,7 +153,9 @@ def plot_similarity_graph(
     import networkx as nx
 
     if graph.number_of_nodes() == 0:
-        raise ValueError("Graph has no nodes to plot (try lowering min_similarity)")
+        raise ValueError(
+            "Graph has no nodes to plot (try lowering min_shared_fingerprints)"
+        )
 
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -320,17 +322,17 @@ def verify_similarity_counts(
 
 
 def rank_documents_by_node_strength(
-    index: "DiskBasedIndex", min_similarity: int = 1, method: str = "inverted"
+    index: "DiskBasedIndex", min_shared_fingerprints: int = 1, method: str = "inverted"
 ) -> "pl.DataFrame":
     """Rank documents by *node strength* (weighted degree).
 
     Node strength is the sum of shared-fingerprint counts a document has with
-    every other document, restricted to pairs with at least ``min_similarity``
+    every other document, restricted to pairs with at least ``min_shared_fingerprints``
     shared fingerprints. Documents with no qualifying pairs are omitted.
 
     Args:
         index: A DiskBasedIndex with similarities computed for ``method``.
-        min_similarity: Only count pairs with at least this many shared fingerprints.
+        min_shared_fingerprints: Only count pairs with at least this many shared fingerprints.
         method: Similarity method whose results to use.
 
     Returns:
@@ -340,7 +342,7 @@ def rank_documents_by_node_strength(
     strengths: Dict[str, int] = {}
     for row in index.load_similarities(method):
         count = int(row["count"])
-        if count < min_similarity:
+        if count < min_shared_fingerprints:
             continue
         doc_a = index.to_external_doc_id[int(row["doc_i"])]
         doc_b = index.to_external_doc_id[int(row["doc_j"])]
@@ -358,14 +360,14 @@ def rank_documents_by_node_strength(
 
 def find_potential_source_clusters(
     index: "DiskBasedIndex",
-    min_similarity: int = 50,
+    min_shared_fingerprints: int = 50,
     min_cluster_size: int = 3,
     hub_dominance_ratio: float = 1.3,
     method: str = "inverted",
 ) -> List[Dict[str, Any]]:
     """Heuristically flag clusters of documents that may derive from a common source.
 
-    Builds a similarity graph restricted to edges with at least ``min_similarity``
+    Builds a similarity graph restricted to edges with at least ``min_shared_fingerprints``
     shared fingerprints, then examines each connected component with at least
     ``min_cluster_size`` documents. Within a component, the document with the
     highest node strength (see ``rank_documents_by_node_strength``) is treated as
@@ -381,7 +383,7 @@ def find_potential_source_clusters(
 
     Args:
         index: A DiskBasedIndex with similarities computed for ``method``.
-        min_similarity: Minimum shared fingerprints for an edge to be considered.
+        min_shared_fingerprints: Minimum shared fingerprints for an edge to be considered.
         min_cluster_size: Minimum number of documents in a component to examine.
         hub_dominance_ratio: Minimum ratio of (hub's mean edge weight to members)
             over (mean edge weight among members) required to flag a component.
@@ -394,7 +396,9 @@ def find_potential_source_clusters(
     """
     import networkx as nx
 
-    graph = build_similarity_graph(index, min_similarity=min_similarity, method=method)
+    graph = build_similarity_graph(
+        index, min_shared_fingerprints=min_shared_fingerprints, method=method
+    )
 
     flagged = []
     for component in nx.connected_components(graph):
