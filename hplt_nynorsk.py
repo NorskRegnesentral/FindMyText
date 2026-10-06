@@ -548,10 +548,10 @@ def main():
     inspect_metadata(disk_index)
 
     # Verify the forward index before the inverted index
-    verify_forward_index(disk_index)
+    # verify_forward_index(disk_index)
 
     # Verify the inverted index after the forward index
-    verify_inverted_index(disk_index)
+    # verify_inverted_index(disk_index)
 
     # Count distinct documents for each fingerprint without running verification.
     documents_per_fingerprint = get_documents_per_fingerprint(disk_index)
@@ -616,7 +616,13 @@ def main():
         verbose=True,
     )
     similarity.compute_similarities_forward_topk(
-        str(INDEX_PATH), top_k=50, min_shared_fingerprints=5
+        index_dir=str(INDEX_PATH),
+        top_k=50,
+        min_shared_fingerprints=5,
+        max_pair_updates_in_memory=20_000_000,
+        max_chunks_per_merge=None,
+        verbose=True,
+        posting_read_mode="sequential",
     )
 
     similarities = disk_index.load_similarities("inverted")

@@ -14,7 +14,7 @@ try:
 except ImportError:
     igzip = gzip  # type: ignore[assignment]
 
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 
 import msgpack
 import numpy as np
@@ -366,6 +366,7 @@ class DiskBasedIndex:
         top_k: int = 50,
         min_fingerprints: int = 5,
         exclude_doc_id: Optional[int] = None,
+        posting_read_mode: Literal["threaded", "sequential"] = "threaded",
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Return the top-k internal doc IDs by number of shared unique fingerprints.
 
@@ -376,7 +377,11 @@ class DiskBasedIndex:
         Returns:
             ``(doc_ids, counts)`` arrays sorted by descending count.
         """
-        postings = self._get_postings(fingerprints, only_doc_ids=True)
+        postings = self._get_postings(
+            fingerprints,
+            only_doc_ids=True,
+            posting_read_mode=posting_read_mode,
+        )
         if not postings:
             return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.int64)
 
@@ -390,7 +395,11 @@ class DiskBasedIndex:
         return docs[order], counts[order]
 
     def get_document_candidates(
-        self, internal_doc_id: int, top_k: int = 50, min_fingerprints: int = 5
+        self,
+        internal_doc_id: int,
+        top_k: int = 50,
+        min_fingerprints: int = 5,
+        posting_read_mode: Literal["threaded", "sequential"] = "threaded",
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Top-k most similar other documents of an indexed document.
 
@@ -402,6 +411,7 @@ class DiskBasedIndex:
             top_k=top_k,
             min_fingerprints=min_fingerprints,
             exclude_doc_id=internal_doc_id,
+            posting_read_mode=posting_read_mode,
         )
 
     def get_document_similarities(
@@ -580,6 +590,7 @@ class DiskBasedIndex:
         fingerprints: np.ndarray,
         only_doc_ids: bool = False,
         verbose: bool = False,
+        posting_read_mode: Literal["threaded", "sequential"] = "threaded",
     ) -> Dict[np.uint64, np.ndarray]:
         """Retrieve the postings lists for a given array of fingerprints from the index,
         returning a list of Numpy arrays containing document IDs and positions for each
@@ -589,6 +600,9 @@ class DiskBasedIndex:
         retrieves the corresponding offsets and lengths for the postings in the posting
         file, and extracts the relevant postings for each fingerprint.
         """
+        if posting_read_mode not in {"threaded", "sequential"}:
+            raise ValueError("posting_read_mode must be 'threaded' or 'sequential'")
+
         queries = np.asarray(fingerprints, dtype=np.uint64)
 
         # 1. vectorized lookup
@@ -613,7 +627,7 @@ class DiskBasedIndex:
         offsets = offsets[order]
         lengths = lengths[order]
 
-        # 5. parallel reads: os.pread releases the GIL so threads overlap I/O;
+        # 5. parallel reads if requested: os.pread releases the GIL so threads overlap I/O;
         #    no shared seek position means reads are safe to issue concurrently.
         def _read_one(args):
             fp, offset, length = args
@@ -621,9 +635,11 @@ class DiskBasedIndex:
             return fp, data
 
         results = {}
-        read_iter = self._io_pool.map(
-            _read_one, zip(found_fingerprints, offsets, lengths)
-        )
+        read_args = zip(found_fingerprints, offsets, lengths)
+        if posting_read_mode == "threaded":
+            read_iter = self._io_pool.map(_read_one, read_args)
+        else:
+            read_iter = map(_read_one, read_args)
         if verbose:
             read_iter = tqdm.tqdm(
                 read_iter, total=len(found_fingerprints), desc="Retrieving postings"

@@ -26,12 +26,12 @@ import argparse
 import heapq
 import os
 from collections.abc import Callable, Iterator
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import tqdm
 
-from .indexing import DiskBasedIndex, similarity_file_name
+from findmytext.indexing import DiskBasedIndex, similarity_file_name
 
 SIMILARITY_DTYPE = np.dtype(
     [("doc_i", np.uint32), ("doc_j", np.uint32), ("count", np.uint32)]
@@ -48,6 +48,10 @@ class _PairAccumulator:
     (``reduce="sum"`` or ``"max"``) into sorted temporary chunks, which are finally
     heap-merged (optionally through bounded-fan-in compaction passes).  Pairs below
     ``min_shared_fingerprints`` are dropped only after complete aggregation.
+
+    Note: we use ``reduce="sum"`` for the inverted index method, as the document-pair counts can
+    occur in multiple chunks, so we need to sum them.
+    For the forward top-k method, ``reduce="max"`` is used as a document-pair will only appear in one chunk.
     """
 
     def __init__(
@@ -58,6 +62,7 @@ class _PairAccumulator:
         min_shared_fingerprints: int = 1,
         max_chunks_per_merge: Optional[int] = None,
     ):
+        # Ensure the provided arguments are valid.
         if reduce not in {"sum", "max"}:
             raise ValueError("reduce must be 'sum' or 'max'")
         if max_pair_updates_in_memory <= 0:
@@ -66,6 +71,8 @@ class _PairAccumulator:
             raise ValueError("min_shared_fingerprints must be at least 1")
         if max_chunks_per_merge is not None and max_chunks_per_merge < 2:
             raise ValueError("max_chunks_per_merge must be at least 2")
+
+        # Store the validated arguments as instance variables.
         self.output_path = output_path
         self.max_pair_updates_in_memory = max_pair_updates_in_memory
         self.min_shared_fingerprints = min_shared_fingerprints
@@ -83,72 +90,118 @@ class _PairAccumulator:
             "." + os.path.splitext(os.path.basename(output_path))[0],
         )
 
+    # Add a new document-pair count to the buffer. Flush if necessary.
     def add(self, keys: np.ndarray, counts: np.ndarray) -> None:
         if len(keys) == 0:
             return
+        # Ensure that the input arrays have the same length.
+        if len(keys) != len(counts):
+            raise ValueError("keys and counts must have the same length")
+
+        # Convert the input arrays to the appropriate data types and append them to the buffer.
         self._keys.append(np.asarray(keys, dtype=np.uint64))
         self._counts.append(np.asarray(counts, dtype=np.uint32))
         self._buffered += len(keys)
+
+        # Flush the buffer to a new chunk if it exceeds the maximum allowed size.
         if self._buffered >= self.max_pair_updates_in_memory:
             self._flush_chunk()
 
+    # Aggregate the counts for each unique key.
     def _aggregate(
         self, keys: np.ndarray, counts: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
+        # Sort the keys and counts by key to prepare for aggregation.
         order = np.argsort(keys, kind="stable")
         keys, counts = keys[order], counts[order]
         starts = np.flatnonzero(np.r_[True, keys[1:] != keys[:-1]])
         return keys[starts], self._np_reduce.reduceat(counts, starts)
 
+    # Flush the current buffer to a new chunk file.
     def _flush_chunk(self) -> None:
         if not self._keys:
             return
+        # Aggregate the buffered keys and counts into a single chunk.
         keys, counts = self._aggregate(
             np.concatenate(self._keys), np.concatenate(self._counts)
         )
-        self._keys, self._counts, self._buffered = [], [], 0
+
+        # Allocate a new structured array for the chunk.
         chunk = np.empty(len(keys), dtype=_CHUNK_DTYPE)
         chunk["key"], chunk["count"] = keys, counts
+
+        # Create a new chunk file path and save the aggregated chunk to disk.
         path = f"{self._tmp_prefix}-chunk-{len(self.chunk_paths):06d}.npy"
         np.save(path, chunk)
         self.chunk_paths.append(path)
 
+        # Reset the buffer after flushing it to a new chunk.
+        self._keys, self._counts, self._buffered = [], [], 0
+
+    # Finalize the similarity computation by writing the output file and cleaning up temporary chunks.
     def finish(self) -> int:
         """Write the output file, remove temporary chunks and return the number of pairs."""
+        # Flush any remaining buffered keys and counts to a new chunk before finalizing.
         self._flush_chunk()
+
+        # Get the list of chunk file paths to be merged.
         paths = self.chunk_paths
+
+        # Compact the chunks if the maximum number of chunks per merge is specified.
         if self.max_chunks_per_merge is not None:
             paths = self._compact_chunks(paths)
 
+        # If there is only one chunk left after compaction, load it directly; otherwise, merge the remaining chunks.
         if len(paths) <= 1:
+            # Load the single remaining chunk if it exists.
             chunk = np.load(paths[0]) if paths else np.empty(0, dtype=_CHUNK_DTYPE)
+
+            # Filter out entries that do not meet the minimum shared fingerprints threshold.
             chunk = chunk[chunk["count"] >= self.min_shared_fingerprints]
+
+            # Allocate the output array for the final similarity pairs and populate it with the filtered chunk data.
             output = np.empty(len(chunk), dtype=SIMILARITY_DTYPE)
             output["doc_i"] = chunk["key"] >> _SHIFT
             output["doc_j"] = chunk["key"] & _LOW_32
             output["count"] = chunk["count"]
+
+            # Save the final similarity pairs to the output file.
             np.save(self.output_path, output)
+
+            # Record the number of similarity pairs for the single-chunk case.
             n_pairs = len(output)
         else:
+            # Count the number of similarity pairs that meet the minimum shared fingerprints threshold.
             n_pairs = sum(
                 1
                 for _, c in self._merged_items(paths)
                 if c >= self.min_shared_fingerprints
             )
+            # Allocate a memory-mapped output array for the merged similarity pairs.
             output = np.lib.format.open_memmap(
                 self.output_path, mode="w+", dtype=SIMILARITY_DTYPE, shape=(n_pairs,)
             )
             index = 0
+            # Populate the output array with merged similarity pairs that meet the threshold.
             for key, count in self._merged_items(paths):
                 if count >= self.min_shared_fingerprints:
                     output[index] = (key >> 32, key & 0xFFFFFFFF, count)
                     index += 1
+
+            # Ensure all changes to the memory-mapped output array are written to disk.
             output.flush()
+
+            # Delete the memory-mapped output array to free resources.
             del output
 
+        # Clean up temporary chunk files.
         for path in paths:
             os.remove(path)
+
+        # Print a summary of the number of similarity pairs saved.
         print(f"Saved {n_pairs:,} document similarity pairs to {self.output_path}.")
+
+        # Return the number of similarity pairs saved.
         return n_pairs
 
     def _compact_chunks(self, paths: List[str]) -> List[str]:
@@ -244,7 +297,7 @@ def compute_similarities_inverted(
     # Determine the output path for the inverted similarities file.
     output_path = os.path.join(index_dir, similarity_file_name("inverted"))
 
-    #
+    # Initialize the pair accumulator for storing inverted similarities.
     accumulator = _PairAccumulator(
         output_path,
         reduce="sum",
@@ -260,9 +313,12 @@ def compute_similarities_inverted(
         desc="Inverted-index similarities",
         disable=not verbose,
     )
+
+    # Loop over batches of unique postings and accumulate inverted similarity pairs.
     for batch_fps, group, docs in index.iter_unique_posting_batches(
         posting_batch_entries
     ):
+        #
         sizes = np.bincount(group, minlength=len(batch_fps))
         starts = np.r_[0, np.cumsum(sizes)[:-1]]
         eligible = sizes >= 2
@@ -296,6 +352,7 @@ def compute_similarities_forward_topk(
     max_pair_updates_in_memory: int = 20_000_000,
     max_chunks_per_merge: Optional[int] = None,
     verbose: bool = True,
+    posting_read_mode: Literal["threaded", "sequential"] = "threaded",
 ) -> str:
     """Top-k neighbours per document, found by querying each document's forward fingerprints.
 
@@ -305,12 +362,24 @@ def compute_similarities_forward_topk(
     stored pairs are the union over all documents, so a pair is kept if either
     document is among the other's top-k.  Counts are exact.
 
+    ``posting_read_mode`` selects threaded or sequential posting-list reads.
+
     Returns:
         Path to ``similarities_forward_topk.npy``.
     """
+    if posting_read_mode not in {"threaded", "sequential"}:
+        raise ValueError("posting_read_mode must be 'threaded' or 'sequential'")
+
+    # Initialize the disk-based index and the accumulator for storing top-k similarities.
     index = DiskBasedIndex(index_dir)
+
+    # Number of documents in the index.
     n_docs = len(index.to_external_doc_id)
+
+    # Path to store the forward top-k similarities.
     output_path = os.path.join(index_dir, similarity_file_name("forward_topk"))
+
+    # Initialize the accumulator for storing top-k similarities.
     accumulator = _PairAccumulator(
         output_path,
         reduce="max",
@@ -319,25 +388,54 @@ def compute_similarities_forward_topk(
         max_chunks_per_merge=max_chunks_per_merge,
     )
 
+    # Iterate over all documents to compute their top-k similarities.
+    doc = 1
     for doc in tqdm.trange(
-        n_docs, desc="Forward top-k similarities", disable=not verbose
+        n_docs,
+        desc="Forward top-k similarities",
+        miniters=1000,  # update progress at least every 1000 iterations
+        mininterval=5.0,  # at most once per 5 second
+        disable=not verbose,
     ):
+        # Get the top-k candidate documents for the current document based on shared fingerprints.
         candidates, counts = index.get_document_candidates(
-            doc, top_k=top_k, min_fingerprints=min_shared_fingerprints
+            internal_doc_id=doc,
+            top_k=top_k,
+            min_fingerprints=min_shared_fingerprints,
+            posting_read_mode=posting_read_mode,
         )
+
+        # Skip the current document if it has no top-k candidates.
         if len(candidates) == 0:
             continue
+
+        # Convert candidates and the current document ID to uint64 for consistent processing.
         candidates = candidates.astype(np.uint64)
+
+        # Convert the current document ID to uint64 as well.
         this_doc = np.uint64(doc)
+
+        # Compute the low and high parts for the pair encoding.
         low = np.minimum(candidates, this_doc)
         high = np.maximum(candidates, this_doc)
-        accumulator.add((low << _SHIFT) | high, counts)
 
+        # Encode the document pair as a single 64-bit key for efficient storage.
+        keys = (low << _SHIFT) | high
+
+        # Add the encoded pairs and their counts to the accumulator.
+        accumulator.add(keys, counts)
+
+    # Finalize the accumulator and write the top-k similarities to disk.
     accumulator.finish()
+
+    # Return the path to the file containing the forward top-k similarities.
     return output_path
 
 
-METHODS: Dict[str, Callable[..., str]] = {
+# ---------------------------------------------------------------------------
+# High-level similarity computation interface
+# ---------------------------------------------------------------------------
+METHODS: dict[str, Callable[..., str]] = {
     "inverted": compute_similarities_inverted,
     "forward_topk": compute_similarities_forward_topk,
 }
@@ -452,11 +550,15 @@ def main() -> None:
         default=None,
         help="inverted: skip fingerprints occurring in more documents than this (approximate).",
     )
-    parser.add_argument(
-        "--max-pair-updates-in-memory", type=int, default=20_000_000
-    )
+    parser.add_argument("--max-pair-updates-in-memory", type=int, default=20_000_000)
     parser.add_argument("--posting-batch-entries", type=int, default=10_000_000)
     parser.add_argument("--max-chunks-per-merge", type=int, default=None)
+    parser.add_argument(
+        "--posting-read-mode",
+        choices=("threaded", "sequential"),
+        default="threaded",
+        help="forward_topk posting-list read mode.",
+    )
     args = parser.parse_args()
 
     kwargs = {
@@ -472,6 +574,7 @@ def main() -> None:
         kwargs["posting_batch_entries"] = args.posting_batch_entries
     else:
         kwargs["top_k"] = args.top_k
+        kwargs["posting_read_mode"] = args.posting_read_mode
     compute_similarities(args.index_dir, args.method, **kwargs)
 
 

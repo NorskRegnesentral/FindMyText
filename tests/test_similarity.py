@@ -36,6 +36,30 @@ def test_forward_topk_matches_truncated_exhaustive(
     assert report["identical"], report
 
 
+def test_forward_topk_threaded_and_sequential_match(index_dir):
+    similarity.compute_similarities_forward_topk(
+        index_dir,
+        top_k=10,
+        min_shared_fingerprints=2,
+        verbose=False,
+        posting_read_mode="sequential",
+    )
+    sequential = indexing.DiskBasedIndex(index_dir).load_similarities(
+        "forward_topk"
+    ).copy()
+
+    similarity.compute_similarities_forward_topk(
+        index_dir,
+        top_k=10,
+        min_shared_fingerprints=2,
+        verbose=False,
+        posting_read_mode="threaded",
+    )
+    threaded = indexing.DiskBasedIndex(index_dir).load_similarities("forward_topk")
+
+    assert np.array_equal(sequential, threaded)
+
+
 def test_inverted_chunked_merge_matches_single_chunk(index_dir):
     similarity.compute_similarities_inverted(index_dir, verbose=False)
     single = indexing.DiskBasedIndex(index_dir).load_similarities("inverted").copy()
