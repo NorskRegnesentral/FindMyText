@@ -22,3 +22,8 @@ dist/
 
 # Temporary artifacts (build logs, candidate dumps, server logs)
 tmp/
+
+# Demo-generated corpora and indexes
+similarity_demo_50.jsonl
+similarity_demo_index/
+similarity_demo_temp/

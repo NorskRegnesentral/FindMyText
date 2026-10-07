@@ -31,20 +31,64 @@ The first step is to index your corpus. Fingerprints are extracted in parallel a
 ```python
 from findmytext import index_builder
 
-# `corpus` is any iterable of dicts with "text" and "id" fields
-files = index_builder.index_data_parallel(corpus, "my_fingerprints", n_workers=4)
+# Write corpus records as JSONL objects with "text" and "id" fields first.
+index_builder.index_file("corpus.jsonl", "my_fingerprints", nb_workers=4)
 index_builder.merge_indexes_from_dir("my_fingerprints", "my_index")
 ```
 
-The resulting index is stored on disk and memory-mapped at query time, so it scales to corpora that are too large to fit in RAM.
+The resulting index is stored on disk and memory-mapped at query time. Besides
+the inverted index (fingerprint → postings), the merge writes a forward index
+(`forward_offsets.npy`, `forward_fingerprints.npy`: each document's sorted unique
+fingerprints). For an index merged without it (`build_forward=False`), run
+`index_builder.build_forward_index("my_index")`.
+
+#### Document similarities (separate step)
+
+Document-document similarities are computed *after* the index is built, so
+several methods can be run and compared on the same index. Each method writes
+`similarities_<method>.npy` into the index directory: a structured NumPy array
+with `doc_i < doc_j` (internal integer IDs) and `count` (number of unique shared
+fingerprints), loaded with `DiskBasedIndex.load_similarities(method)`.
+
+| Method | Description |
+| --- | --- |
+| `inverted` | Exhaustive. One sequential pass over the inverted index; every fingerprint adds one count to each pair of documents in its posting list. |
+| `forward_topk` | For each document, its forward-index fingerprints are queried against the inverted index and its `top_k` neighbours sharing at least `min_shared_fingerprints` fingerprints are kept (union over documents; exact counts). |
+
+```python
+from findmytext import similarity
+
+similarity.compute_similarities_inverted("my_index", min_shared_fingerprints=1)
+similarity.compute_similarities_forward_topk(
+    "my_index", top_k=50, min_shared_fingerprints=5
+)
+```
+
+For large exhaustive builds, `max_pair_updates_in_memory` bounds the pair-count
+updates buffered before a sorted chunk is flushed to disk, `max_chunks_per_merge`
+bounds the chunks opened in one merge pass, and
+`max_fingerprint_document_frequency` skips very common fingerprints (making
+counts approximate). `posting_batch_entries` controls the posting entries read
+per batch.
 
 The `index_builder` can also be used directly from the command line:
 ```bash
 # Step 1: extract fingerprints from a corpus file into intermediate shards
 python -m findmytext.index_builder index corpus.jsonl my_fingerprints --nb_workers 4
 
-# Step 2: merge shards into a final disk-based index
+# Step 2: merge shards into a final disk-based index (incl. forward index)
 python -m findmytext.index_builder merge my_fingerprints my_index
+
+# Step 3 (optional): compute document similarities with one or more methods
+python -m findmytext.similarity my_index --method inverted
+python -m findmytext.similarity my_index --method forward_topk --top-k 50 --min-shared-fingerprints 5
+```
+
+To compare the runtime of both methods and check that `forward_topk` equals the
+exhaustive result truncated to each document's top-k neighbours:
+
+```bash
+python -m experiments.compare_similarity_methods --index-dir my_index --top-k 50 --min-shared-fingerprints 5
 ```
 
 
@@ -75,6 +119,95 @@ from findmytext import oracle
 alignment = oracle.align(query_text, corpus_document_text)
 alignment.show()
 ```
+
+### 4. Analyze passages shared by several documents
+
+For reproducible experiments, `generate_controlled_corpus` creates overlapping
+source intervals and independently sampled common hub fingerprints:
+
+```python
+from findmytext.synthetic import generate_controlled_corpus
+
+corpus = generate_controlled_corpus(
+    n_documents=50,
+    n_hub_fingerprints=6,
+    hub_inclusion_probability=[0.95, 0.9, 0.8, 0.7, 0.5, 0.3],
+    source_intervals={
+        "copy-a": (0, 900),
+        "copy-b": (600, 1500),
+        "copy-c": (1200, 2100),
+    },
+    source_token_count=2100,
+    seed=7,
+)
+```
+
+`corpus.documents` contains JSONL-style `id`/`text` records.
+`corpus.ground_truth` contains source intervals, token and character spans,
+pairwise source-overlap lengths, exact shared-winnowed-fingerprint counts, and
+both intended and realized hub memberships. Hub k-grams use verified
+document-specific carriers so every intended hub hash survives winnowing without
+sharing its surrounding guard text.
+
+`MultiDocumentFingerprintChainAnalyzer` winnows an explicit set of documents,
+finds chains shared by all selected documents, and then classifies pairwise chains
+as `novel`, `partial_overlap`, or `subsumed` by an all-document passage:
+
+```python
+from findmytext.multi_document import MultiDocumentFingerprintChainAnalyzer
+
+analyzer = MultiDocumentFingerprintChainAnalyzer(
+    coordinate_representation="centered_offsets",
+    position_threshold=30,
+    offset_threshold=30,
+)
+analysis = analyzer.analyze(
+    {"doc-a": text_a, "doc-b": text_b, "doc-c": text_c},
+    pairwise_mode="novel",
+)
+```
+
+The analyzer supports any $N \geq 2$ for clustering. Its interactive Plotly view
+is specifically three-dimensional:
+
+```python
+from findmytext.multi_document import plot_three_document_fingerprints
+
+figure = plot_three_document_fingerprints(analysis)
+figure.show()
+```
+
+#### Coordinate representations
+
+Raw positions are always retained in the result and used for plotting. The
+`coordinate_representation` option only controls the geometry used by linkage:
+
+| Value | Coordinates | Advantages | Limitations |
+| --- | --- | --- | --- |
+| `raw` | $(p_1,\ldots,p_N)$ | Simplest representation; $O(N)$ construction; directly matches the plot | Ordinary distance mixes progress along the shared passage with deviation from its diagonal |
+| `anchor_offsets` | $(p_1,p_2-p_1,\ldots,p_N-p_1)$ | $O(N)$; cheapest transformed form; extends the pairwise detector directly; offsets are easy to interpret | Numerically privileges the first document as an anchor; changing document order can change threshold-boundary decisions |
+| `centered_offsets` | $(\bar p,p_1-\bar p,\ldots,p_N-\bar p)$ | $O(N)$; symmetric under document reordering; separates diagonal progress from disagreement between documents | Stores one redundant offset because centered offsets sum to zero; slightly more arithmetic than anchor offsets |
+
+`centered_offsets` is the default when document order should not matter.
+`anchor_offsets` is useful when the first document is intentionally a source or
+reference. `raw` is appropriate when a single isotropic positional distance is
+the desired model. Position and offset coordinates are divided by
+`position_threshold` and `offset_threshold` before linkage, respectively.
+
+Hashes with too many positional combinations can otherwise create a Cartesian
+product across documents. `max_position_combinations_per_hash` bounds that work;
+skipped hashes are reported in `analysis.skipped_hashes`.
+
+To stress the complete merge path with many intermediate indexes, two-pair
+similarity chunks, and fan-in-two compaction, run:
+
+```bash
+python -m experiments.verify_multifile_similarity
+```
+
+The experiment independently re-winnows every generated document and requires
+the complete external-ID similarity map to equal `similarities_inverted.npy`, and
+every forward-index entry to equal the document's winnowed fingerprint set.
 
 ---
 

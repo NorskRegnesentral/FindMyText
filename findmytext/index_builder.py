@@ -8,7 +8,7 @@ Step 1 — Build intermediate indexes  (index_file)
     Each document is tokenised and run through the winnowing algorithm to produce a
     set of (fingerprint, position) pairs.  The pairs are accumulated in a
     MemoryBasedIndex (an in-memory dict) in the main process and periodically flushed
-    to a gzipped JSONL file to keep peak memory bounded.  With nb_workers > 1, a
+    to a gzipped MsgPack file to keep peak memory bounded.  With nb_workers > 1, a
     dedicated producer process dispatches fingerprinting to a pool of worker processes
     and forwards results to the main process via a bounded queue.
 
@@ -16,7 +16,11 @@ Step 2 — Merge into a disk-based index  (merge_indexes)
     The intermediate .jsonl.gz files from Step 1 are read back, sorted by fingerprint,
     and merged into a compact binary index that can be memory-mapped at query time.  The
     merge itself is parallelised: each file is parsed in a dedicated worker process and
-    the sorted streams are heap-merged in the main process.
+    the sorted streams are heap-merged in the main process.  A forward index
+    (document -> fingerprints) is then derived from the inverted index.
+
+Document-document similarities are computed afterwards, as a separate step, with
+:mod:`findmytext.similarity`.
 
 """
 
@@ -38,7 +42,7 @@ import orjson
 import tqdm
 
 from . import utils, winnower
-from .indexing import MemoryBasedIndex
+from .indexing import POSTING_DTYPE, MemoryBasedIndex, iter_unique_posting_batches
 
 try:
     import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
@@ -60,11 +64,13 @@ def index_file(
     delete_existing: bool = False,
     nb_workers: int = 1,
     max_nb_documents_before_flush=1_000_000,
+    min_length: int = 100,
+    max_length: int = 100_000,
 ) -> List[str]:
     """Index documents from a corpus file and save intermediate index files to output_dir.
 
     Reads the corpus, computes winnowed fingerprints for every document, and
-    periodically flushes the accumulated in-memory index to a gzipped JSONL file.
+    periodically flushes the accumulated in-memory index to a gzipped MsgPack file.
     The resulting intermediate files can then be merged into a final disk-based index
     with merge_indexes().
 
@@ -81,6 +87,8 @@ def index_file(
             reading + dispatch); the rest are fingerprint workers.  nb_workers=1 runs
             a single worker with no separate producer process.
         max_nb_documents_before_flush: Maximum number of documents to hold in memory before flushing to disk. Default is 1M.
+        min_length: Minimum document text length to index; shorter documents are skipped (default 100).
+        max_length: Maximum document text length to index; longer documents are skipped (default 100,000).
 
     Returns:
         List of paths to the saved intermediate index files.
@@ -90,12 +98,18 @@ def index_file(
     if not os.path.isfile(corpus_file):
         raise ValueError(f"Provided file {corpus_file} does not exist or is not a file")
 
-    if corpus_file.endswith(".jsonl"):
-        stream = utils.stream_jsonl(corpus_file)
-    elif corpus_file.endswith(".jsonl.gz"):
-        stream = utils.stream_jsonl(corpus_file)
+    if corpus_file.endswith((".jsonl", ".jsonl.gz")):
+        stream = utils.stream_jsonl(
+            corpus_file,
+            min_length=min_length,
+            max_length=max_length,
+        )
     elif corpus_file.endswith(".jsonl.zst"):
-        stream = utils.stream_json_zst(corpus_file)
+        stream = utils.stream_json_zst(
+            corpus_file,
+            min_length=min_length,
+            max_length=max_length,
+        )
     else:
         raise ValueError(
             "Unsupported file format. Please provide a .jsonl, .jsonl.gz, or .jsonl.zst file."
@@ -138,8 +152,9 @@ def index_file(
                 print(f"Processed {total_count:,} documents...", flush=True)
 
             if index.doc_count >= max_nb_documents_before_flush:
-                increment_str = str((total_count + 1) // 1000) + "K"
-                path = os.path.join(output_dir, f"intermediate-{increment_str}.mpk.gz")
+                path = os.path.join(
+                    output_dir, f"intermediate-{len(index_files):06d}.mpk.gz"
+                )
                 index.to_msgpack(path)
                 index_files.append(path)
                 index = MemoryBasedIndex(meta=meta)
@@ -150,6 +165,19 @@ def index_file(
         index_files.append(path)
 
     return index_files
+
+
+def _get_fork_context() -> mp.context.BaseContext:
+    """Return the "fork" start-method context, falling back to the default.
+
+    The producer process receives the corpus stream (a generator), which only
+    survives process creation with "fork"; "forkserver" (the default on Linux from
+    Python 3.14) and "spawn" both try to pickle it and fail.
+    """
+    try:
+        return mp.get_context("fork")
+    except ValueError:  # platform without fork, e.g. Windows
+        return mp.get_context()
 
 
 def get_batched_fingerprints(
@@ -181,10 +209,12 @@ def get_batched_fingerprints(
 
     n_workers = max(1, nb_workers - 1)  # reserve one core for the producer process
 
-    # Queue for results from the producer to the main process.
-    result_queue: mp.Queue = mp.Queue(maxsize=n_workers * 4)
+    ctx = _get_fork_context()
 
-    producer = mp.Process(
+    # Queue for results from the producer to the main process.
+    result_queue: mp.Queue = ctx.Queue(maxsize=n_workers * 4)
+
+    producer = ctx.Process(
         target=_produce,
         args=(stream, stop_after, n_workers, result_queue, length, window_size),
     )
@@ -228,7 +258,7 @@ def _produce(
 
     batches_gen = utils.generate_batches(data_stream, stop_after)
     try:
-        with mp.Pool(processes=n_workers) as pool:
+        with _get_fork_context().Pool(processes=n_workers) as pool:
             pending: List[Any] = []
             for batch in batches_gen:
                 if len(pending) >= n_workers:
@@ -254,9 +284,23 @@ def _produce(
 #####################################################
 
 
-def merge_indexes_from_dir(temp_index_dir: str, output_dir: str):
-    """Merge the index files in the specified directory and store the result
-    in output_dir. The index files in temp_index_dir must be in .mpk.gz format."""
+def merge_indexes_from_dir(
+    temp_index_dir: str,
+    output_dir: str,
+    build_forward: bool = True,
+):
+    """Merge intermediate MsgPack indexes into a disk-based index.
+    The intermediate indexes must be in gzipped MsgPack format with the extension ``.mpk.gz``.
+
+    Args:
+        temp_index_dir (str): Directory containing the intermediate index files to merge.
+        output_dir (str): Directory where the merged index files will be saved.
+        build_forward (bool): Whether to also write the forward index
+            (see :func:`build_forward_index`).
+
+    Raises:
+        ValueError: If the provided temp_index_dir does not exist or contains no .mpk.gz files.
+    """
 
     if not os.path.isdir(temp_index_dir):
         raise ValueError(f"Provided path {temp_index_dir} is not a directory")
@@ -266,14 +310,16 @@ def merge_indexes_from_dir(temp_index_dir: str, output_dir: str):
             index_files.append(os.path.join(temp_index_dir, f))
     if not index_files:
         raise ValueError(f"No .mpk.gz index files found in {temp_index_dir}")
-    merge_indexes(index_files, output_dir)
+    merge_indexes(index_files, output_dir, build_forward=build_forward)
 
 
 def merge_indexes(
-    index_files: List[str], output_dir: str, save_every_n: int = 10_000_000
+    index_files: List[str],
+    output_dir: str,
+    save_every_n: int = 10_000_000,
+    build_forward: bool = True,
 ):
-    """Merge multiple intermediate index files (in gzipped JSONL format) into a single
-    disk-based index.
+    """Merge gzipped MsgPack intermediate indexes into one disk-based index.
 
     The merged index will consist of the following files:
     - postings.dat: a binary file containing the concatenated postings lists (with internal integer doc IDs)
@@ -283,11 +329,14 @@ def merge_indexes(
     - meta.json: a JSON file containing the index parameters (length, window_size, base, punctuation)
     - doc_name_offsets.npy: an array of uint64 containing the byte offsets for each doc name in the concatenated byte array
     - doc_name_bytes.npy: an array of uint8 containing the UTF-8 encoded doc names concatenated together.
+    - forward_offsets.npy / forward_fingerprints.npy (if ``build_forward``): the
+      forward index, see :func:`build_forward_index`.
 
     Args:
         index_files (List[str]): List of paths to the intermediate index files to merge.
         output_dir (str): Directory where the merged index files will be saved.
-        save_every_n (int): Frequency (in number of fingerprints) at which to save intermediate merged index files during merging
+        save_every_n (int): Frequency (in number of fingerprints) at which to save intermediate merged index files during merging.
+        build_forward (bool): Whether to also write the forward index.
     Raises:
         ValueError: If no index files are provided or if the input files are not in the expected format.
 
@@ -357,6 +406,70 @@ def merge_indexes(
     print(f"Saving final index ({buf.count:,} fingerprints)...", end="", flush=True)
     buf.save(output_dir)
     print("Done")
+
+    if build_forward:
+        build_forward_index(output_dir)
+
+
+def build_forward_index(index_dir: str, batch_entries: int = 10_000_000) -> None:
+    """Derive the forward index (document -> fingerprints) from the inverted index.
+
+    Writes, in CSR layout:
+    - forward_offsets.npy: uint64 array of shape (n_docs + 1,); the fingerprints of
+      internal document ``d`` are ``forward_fingerprints[offsets[d]:offsets[d + 1]]``.
+    - forward_fingerprints.npy: uint64 array of each document's sorted, unique
+      fingerprints.
+
+    ``postings.dat`` is streamed twice (count, then scatter), so RAM usage is
+    bounded by ``batch_entries`` and one counter per document; the output is
+    written through a memory map.
+    """
+    print("Building forward index...", flush=True)
+    fingerprints = np.load(os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r")
+    offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
+    lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+    n_docs = len(np.load(os.path.join(index_dir, "doc_name_offsets.npy"))) - 1
+    postings_path = os.path.join(index_dir, "postings.dat")
+    postings = (
+        np.memmap(postings_path, dtype=POSTING_DTYPE, mode="r")
+        if os.path.getsize(postings_path) > 0
+        else np.empty(0, dtype=POSTING_DTYPE)
+    )
+
+    def _batches():
+        return iter_unique_posting_batches(
+            fingerprints, offsets, lengths, postings, batch_entries
+        )
+
+    counts = np.zeros(n_docs, dtype=np.uint64)
+    for _, _, docs in _batches():
+        counts += np.bincount(docs, minlength=n_docs).astype(np.uint64)
+
+    forward_offsets = np.zeros(n_docs + 1, dtype=np.uint64)
+    np.cumsum(counts, out=forward_offsets[1:])
+    np.save(os.path.join(index_dir, "forward_offsets.npy"), forward_offsets)
+
+    forward_fps = np.lib.format.open_memmap(
+        os.path.join(index_dir, "forward_fingerprints.npy"),
+        mode="w+",
+        dtype=np.uint64,
+        shape=(int(forward_offsets[-1]),),
+    )
+    cursor = forward_offsets[:-1].copy()
+    for batch_fps, group, docs in _batches():
+        # Batches arrive in increasing fingerprint order, and a stable sort by doc
+        # keeps that order, so each document's fingerprints end up sorted.
+        order = np.argsort(docs, kind="stable")
+        sorted_docs = docs[order]
+        doc_starts = np.flatnonzero(np.r_[True, sorted_docs[1:] != sorted_docs[:-1]])
+        run_lengths = np.diff(np.r_[doc_starts, len(sorted_docs)])
+        rank = np.arange(len(sorted_docs)) - np.repeat(doc_starts, run_lengths)
+        targets = cursor[sorted_docs] + rank.astype(np.uint64)
+        forward_fps[targets] = batch_fps[group[order]]
+        cursor[sorted_docs[doc_starts]] += run_lengths.astype(np.uint64)
+    forward_fps.flush()
+    del forward_fps
+    print(f"Saved forward index for {n_docs:,} documents.")
 
 
 class ExpandingBuffer:
@@ -596,7 +709,18 @@ if __name__ == "__main__":
     index_parser.add_argument(
         "--stop_after", type=int, default=None, help="Stop after this many samples"
     )
-
+    index_parser.add_argument(
+        "--min_length",
+        type=int,
+        default=100,
+        help="Minimum document text length to index (default: 100)",
+    )
+    index_parser.add_argument(
+        "--max_length",
+        type=int,
+        default=100_000,
+        help="Maximum document text length to index (default: 100,000)",
+    )
     # --- merge task ---
     merge_parser = subparsers.add_parser(
         "merge", help="Merge intermediate index files into a DiskBasedIndex"
@@ -611,6 +735,17 @@ if __name__ == "__main__":
         type=str,
         help="Directory where the merged index will be saved.",
     )
+    merge_parser.add_argument(
+        "--no-forward-index",
+        action="store_true",
+        help="Do not build the forward index (document -> fingerprints).",
+    )
+
+    # --- forward task ---
+    forward_parser = subparsers.add_parser(
+        "forward", help="Build the forward index of an existing merged index"
+    )
+    forward_parser.add_argument("index_dir", type=str, help="Merged index directory")
 
     args = parser.parse_args()
 
@@ -622,7 +757,16 @@ if __name__ == "__main__":
             output_dir=args.output_dir,
             stop_after=args.stop_after,
             nb_workers=args.nb_workers,
+            min_length=args.min_length,
+            max_length=args.max_length,
         )
 
     elif args.task == "merge":
-        merge_indexes_from_dir(args.temp_index_dir, args.output_dir)
+        merge_indexes_from_dir(
+            args.temp_index_dir,
+            args.output_dir,
+            build_forward=not args.no_forward_index,
+        )
+
+    elif args.task == "forward":
+        build_forward_index(args.index_dir)
