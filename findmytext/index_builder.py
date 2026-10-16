@@ -42,7 +42,13 @@ import orjson
 import tqdm
 
 from . import utils, winnower
-from .indexing import POSTING_DTYPE, MemoryBasedIndex, iter_unique_posting_batches
+from .indexing import (
+    POSTING_DTYPE,
+    POSTINGS_LAYOUT_COLUMNAR,
+    POSTINGS_LAYOUT_INTERLEAVED,
+    MemoryBasedIndex,
+    iter_unique_posting_batches,
+)
 
 try:
     import isal.igzip as gzip  # 2-4x faster gzip decompression (Intel ISA-L)
@@ -288,6 +294,7 @@ def merge_indexes_from_dir(
     temp_index_dir: str,
     output_dir: str,
     build_forward: bool = True,
+    postings_layout: str = POSTINGS_LAYOUT_INTERLEAVED,
 ):
     """Merge intermediate MsgPack indexes into a disk-based index.
     The intermediate indexes must be in gzipped MsgPack format with the extension ``.mpk.gz``.
@@ -310,7 +317,12 @@ def merge_indexes_from_dir(
             index_files.append(os.path.join(temp_index_dir, f))
     if not index_files:
         raise ValueError(f"No .mpk.gz index files found in {temp_index_dir}")
-    merge_indexes(index_files, output_dir, build_forward=build_forward)
+    merge_indexes(
+        index_files,
+        output_dir,
+        build_forward=build_forward,
+        postings_layout=postings_layout,
+    )
 
 
 def merge_indexes(
@@ -318,6 +330,7 @@ def merge_indexes(
     output_dir: str,
     save_every_n: int = 10_000_000,
     build_forward: bool = True,
+    postings_layout: str = POSTINGS_LAYOUT_INTERLEAVED,
 ):
     """Merge gzipped MsgPack intermediate indexes into one disk-based index.
 
@@ -337,6 +350,7 @@ def merge_indexes(
         output_dir (str): Directory where the merged index files will be saved.
         save_every_n (int): Frequency (in number of fingerprints) at which to save intermediate merged index files during merging.
         build_forward (bool): Whether to also write the forward index.
+        postings_layout: Interleaved or columnar posting storage layout.
     Raises:
         ValueError: If no index files are provided or if the input files are not in the expected format.
 
@@ -347,6 +361,11 @@ def merge_indexes(
 
     if not index_files:
         raise ValueError("At least one JSONL file must be provided to load the index")
+    if postings_layout not in {
+        POSTINGS_LAYOUT_INTERLEAVED,
+        POSTINGS_LAYOUT_COLUMNAR,
+    }:
+        raise ValueError(f"Unknown postings layout: {postings_layout!r}")
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -358,6 +377,7 @@ def merge_indexes(
             for k in ["length", "window_size", "base", "punctuation"]
             if k in meta_raw
         }
+    meta["postings_layout"] = postings_layout
     with open(os.path.join(output_dir, "meta.json"), "w", encoding="utf-8") as f:
         f.write(orjson.dumps(meta).decode("utf-8"))
     print("Meta parameters:", meta)
@@ -377,19 +397,25 @@ def merge_indexes(
     # Parse all files in parallel processes and merge the sorted streams
     merged_stream = merge_streams_parallel(index_files)
 
-    # Large write buffer (8 MB) amortises syscall overhead across millions of small writes.
-    current_offset = 0
-    with open(posting_file_path, "wb", buffering=8 * 1024 * 1024) as posting_file:
+    def write_postings(doc_file, position_file=None):
+        current_offset = 0
         for fp, postings_list in merged_stream:
-            # Remap external doc IDs to internal integers (pure lookups)
             internal_postings = [(to_internal[eid], pos) for eid, pos in postings_list]
-            data = np.array(internal_postings, dtype=np.uint32).tobytes()
+            if position_file is None:
+                data = np.asarray(internal_postings, dtype=np.uint32).tobytes()
+                posting_offset = current_offset
+                doc_file.write(data)
+                current_offset += len(data)
+            else:
+                records = np.asarray(internal_postings, dtype=np.uint32)
+                doc_data = records[:, 0].tobytes()
+                position_data = records[:, 1].tobytes()
+                posting_offset = current_offset
+                doc_file.write(doc_data)
+                position_file.write(position_data)
+                current_offset += len(doc_data)
 
-            # Add fingerprint with byte offset and postings entry count in postings.dat.
-            buf.add(fp, current_offset, len(internal_postings))
-            posting_file.write(data)
-
-            current_offset += len(data)
+            buf.add(fp, posting_offset, len(internal_postings))
 
             if buf.count % 1_000_000 == 0:
                 print(f"Processed {buf.count:,} fingerprints...", flush=True)
@@ -402,6 +428,31 @@ def merge_indexes(
                 )
                 buf.save(output_dir)
                 print("Done")
+
+    # Large write buffers amortise syscall overhead across millions of small writes.
+    if postings_layout == POSTINGS_LAYOUT_INTERLEAVED:
+        with open(posting_file_path, "wb", buffering=8 * 1024 * 1024) as posting_file:
+            write_postings(posting_file)
+    else:
+        doc_path = posting_file_path + ".doc_ids.tmp"
+        position_path = posting_file_path + ".positions.tmp"
+        try:
+            with (
+                open(doc_path, "wb", buffering=8 * 1024 * 1024) as doc_file,
+                open(position_path, "wb", buffering=8 * 1024 * 1024) as position_file,
+            ):
+                write_postings(doc_file, position_file)
+            with (
+                open(posting_file_path, "wb", buffering=8 * 1024 * 1024) as output,
+                open(doc_path, "rb") as doc_file,
+                open(position_path, "rb") as position_file,
+            ):
+                shutil.copyfileobj(doc_file, output, 8 * 1024 * 1024)
+                shutil.copyfileobj(position_file, output, 8 * 1024 * 1024)
+        finally:
+            for path in (doc_path, position_path):
+                if os.path.exists(path):
+                    os.remove(path)
 
     print(f"Saving final index ({buf.count:,} fingerprints)...", end="", flush=True)
     buf.save(output_dir)
@@ -428,17 +479,35 @@ def build_forward_index(index_dir: str, batch_entries: int = 10_000_000) -> None
     fingerprints = np.load(os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r")
     offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
     lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+    with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
+        meta = orjson.loads(f.read())
+    postings_layout = meta.get("postings_layout", "interleaved")
+    if postings_layout not in {"interleaved", "columnar"}:
+        raise ValueError(f"Unknown postings layout: {postings_layout!r}")
     n_docs = len(np.load(os.path.join(index_dir, "doc_name_offsets.npy"))) - 1
     postings_path = os.path.join(index_dir, "postings.dat")
     postings = (
-        np.memmap(postings_path, dtype=POSTING_DTYPE, mode="r")
+        np.memmap(
+            postings_path,
+            dtype=(
+                POSTING_DTYPE
+                if postings_layout == "interleaved"
+                else np.uint32
+            ),
+            mode="r",
+        )
         if os.path.getsize(postings_path) > 0
         else np.empty(0, dtype=POSTING_DTYPE)
     )
 
     def _batches():
         return iter_unique_posting_batches(
-            fingerprints, offsets, lengths, postings, batch_entries
+            fingerprints,
+            offsets,
+            lengths,
+            postings,
+            batch_entries,
+            postings_layout=postings_layout,
         )
 
     counts = np.zeros(n_docs, dtype=np.uint64)
@@ -740,6 +809,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Do not build the forward index (document -> fingerprints).",
     )
+    merge_parser.add_argument(
+        "--postings-layout",
+        choices=[POSTINGS_LAYOUT_INTERLEAVED, POSTINGS_LAYOUT_COLUMNAR],
+        default=POSTINGS_LAYOUT_INTERLEAVED,
+        help="Posting storage layout (default: interleaved).",
+    )
 
     # --- forward task ---
     forward_parser = subparsers.add_parser(
@@ -766,6 +841,7 @@ if __name__ == "__main__":
             args.temp_index_dir,
             args.output_dir,
             build_forward=not args.no_forward_index,
+            postings_layout=args.postings_layout,
         )
 
     elif args.task == "forward":

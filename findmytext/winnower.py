@@ -96,6 +96,12 @@ class Winnower:
         tokens = document.split()
         return tokens
 
+    def __str__(self) -> str:
+        return (
+            f"Winnower(length={self.length}, window_size={self.window_size}, "
+            f"base={self.base}, punctuation={self.punctuation})"
+        )
+
 
 def tokens2unicode(tokens: List[str]) -> np.ndarray:
     """Convert a list of tokens to a NumPy array of deterministic integer values.

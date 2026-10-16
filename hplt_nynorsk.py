@@ -542,7 +542,10 @@ def main():
     # build_index()
 
     # Inspect the index metadata before verifying the forward and inverted indices
-    disk_index = indexing.DiskBasedIndex(str(INDEX_PATH))
+    disk_index = indexing.DiskBasedIndex(
+        index_dir=str(INDEX_PATH),
+        posting_read_threads=1,
+    )
 
     # Inspect the index metadata
     inspect_metadata(disk_index)
@@ -556,10 +559,24 @@ def main():
     # Count distinct documents for each fingerprint without running verification.
     documents_per_fingerprint = get_documents_per_fingerprint(disk_index)
     documents_per_fingerprint_df = build_fingerprint_statistics(
-        disk_index, documents_per_fingerprint
+        disk_index=disk_index,
+        documents_per_fingerprint=documents_per_fingerprint,
     )
     print("Fingerprint statistics (first 10 rows):")
     print(documents_per_fingerprint_df.head(10))
+
+    fingerprint_summary = documents_per_fingerprint_df.select(
+        pl.len().alias("total_fingerprints"),
+        (pl.col("document_count") == 1).sum().alias("single_document_fingerprints"),
+    ).row(0, named=True)
+    total_fingerprints = fingerprint_summary["total_fingerprints"]
+    single_document_fingerprints = fingerprint_summary["single_document_fingerprints"]
+    single_document_fraction = single_document_fingerprints / total_fingerprints
+    print(
+        f"Number of fingerprints with only one associated document: {single_document_fingerprints}\n"
+        f"Total number of fingerprints: {total_fingerprints}\n"
+        f"Fraction of fingerprints with only one associated document: {single_document_fraction:.4f}"
+    )
 
     quantile_summary_df = summarize_fingerprint_quantiles(documents_per_fingerprint_df)
     print("Document count quantiles and similarity-update counts:")
@@ -590,26 +607,11 @@ def main():
     for external_doc_id in EXTERNAL_DOC_IDS:
         inspect_corpus_document(external_doc_id)
 
-    disk_index.forward_fingerprints
-    disk_index.to_external_doc_id.__len__()
-
-    # Get all the external document IDs.
-    all_external_doc_ids = list(disk_index.to_external_doc_id)
-
-    # Loop over all of them and get the corresponding forward fingerprints.
-    external_doc_id = all_external_doc_ids[0] if all_external_doc_ids else None
-    for external_doc_id in all_external_doc_ids:
-        forward_fingerprints = disk_index.forward_fingerprints[
-            disk_index.to_external_doc_id.inverse[external_doc_id]
-        ]
-
-    # I want to make an alternative way for the
-
     # Compute and inspect document similarity scores.
     similarity.compute_similarities_inverted(
         index_dir=str(INDEX_PATH),
-        min_shared_fingerprints=1,
-        max_fingerprint_document_frequency=None,
+        min_shared_fingerprints=5,
+        max_fingerprint_document_frequency=500,
         max_pair_updates_in_memory=20_000_000,
         max_chunks_per_merge=None,
         posting_batch_entries=10_000_000,
@@ -622,7 +624,7 @@ def main():
         max_pair_updates_in_memory=20_000_000,
         max_chunks_per_merge=None,
         verbose=True,
-        posting_read_mode="sequential",
+        posting_read_threads=1,
     )
 
     similarities = disk_index.load_similarities("inverted")

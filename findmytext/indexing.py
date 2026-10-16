@@ -14,7 +14,7 @@ try:
 except ImportError:
     igzip = gzip  # type: ignore[assignment]
 
-from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import msgpack
 import numpy as np
@@ -22,6 +22,18 @@ import numpy as np
 from . import winnower
 
 POSTING_DTYPE = np.dtype([("doc_id", np.uint32), ("position", np.uint32)])
+POSTINGS_LAYOUT_INTERLEAVED = "interleaved"
+POSTINGS_LAYOUT_COLUMNAR = "columnar"
+
+
+def _unique_sorted_doc_ids(doc_ids: np.ndarray) -> np.ndarray:
+    """Collapse adjacent repeats in a posting list sorted by document ID."""
+    if len(doc_ids) < 2:
+        return doc_ids
+    keep = np.empty(len(doc_ids), dtype=np.bool_)
+    keep[0] = True
+    np.not_equal(doc_ids[1:], doc_ids[:-1], out=keep[1:])
+    return doc_ids[keep]
 
 
 def similarity_file_name(method: str) -> str:
@@ -35,6 +47,7 @@ def iter_unique_posting_batches(
     lengths: np.ndarray,
     postings: np.ndarray,
     batch_entries: int = 10_000_000,
+    postings_layout: str = POSTINGS_LAYOUT_INTERLEAVED,
 ) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Stream the inverted index sequentially as de-duplicated (fingerprint, doc) pairs.
 
@@ -50,8 +63,11 @@ def iter_unique_posting_batches(
     n_fps = len(fingerprints)
     if n_fps == 0:
         return
+    if postings_layout not in {POSTINGS_LAYOUT_INTERLEAVED, POSTINGS_LAYOUT_COLUMNAR}:
+        raise ValueError(f"Unknown postings layout: {postings_layout!r}")
     lengths_all = np.asarray(lengths, dtype=np.int64)
-    entry_starts = np.asarray(offsets, dtype=np.int64) // POSTING_DTYPE.itemsize
+    entry_lengths = lengths_all
+    entry_starts = np.r_[0, np.cumsum(entry_lengths[:-1], dtype=np.int64)]
     ends = np.cumsum(lengths_all)
 
     start = 0
@@ -60,10 +76,13 @@ def iter_unique_posting_batches(
         stop = int(np.searchsorted(ends, base + batch_entries, side="right"))
         stop = min(max(stop, start + 1), n_fps)
 
-        batch_lengths = lengths_all[start:stop]
+        batch_lengths = entry_lengths[start:stop]
         first = int(entry_starts[start])
         last = int(entry_starts[stop - 1] + batch_lengths[-1])
-        docs = np.asarray(postings["doc_id"][first:last], dtype=np.uint64)
+        if postings_layout == POSTINGS_LAYOUT_COLUMNAR:
+            docs = np.asarray(postings[first:last], dtype=np.uint64)
+        else:
+            docs = np.asarray(postings["doc_id"][first:last], dtype=np.uint64)
         group = np.repeat(np.arange(stop - start, dtype=np.uint64), batch_lengths)
         keys = np.unique((group << np.uint64(32)) | docs)
 
@@ -277,9 +296,17 @@ class DiskBasedIndex:
     :mod:`findmytext.similarity`) and loaded with :meth:`load_similarities`.
     """
 
-    def __init__(self, index_dir: str):
-        """Initialize the disk-based index by loading the metadata and memory-mapped
-        files from the specified index directory."""
+    def __init__(
+        self,
+        index_dir: str,
+        posting_read_threads: int = 1,
+    ):
+        """Initialize the disk-based index and configure posting-list reads.
+
+        A thread count of 1 reads postings sequentially without creating a pool.
+        """
+        if posting_read_threads < 1:
+            raise ValueError("posting_read_threads must be at least 1")
         self.index_dir = index_dir
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
@@ -289,6 +316,14 @@ class DiskBasedIndex:
                 base=meta["base"],
                 punctuation=meta["punctuation"],
             )
+            self.postings_layout = meta.get(
+                "postings_layout", POSTINGS_LAYOUT_INTERLEAVED
+            )
+        if self.postings_layout not in {
+            POSTINGS_LAYOUT_INTERLEAVED,
+            POSTINGS_LAYOUT_COLUMNAR,
+        }:
+            raise ValueError(f"Unknown postings layout: {self.postings_layout!r}")
 
         # Load index arrays as memory-mapped files (zero RAM cost; served from OS page cache)
         self.fingerprints = np.load(
@@ -296,6 +331,7 @@ class DiskBasedIndex:
         )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+        self._positions_offset = int(self.lengths.sum()) * 4
 
         forward_offsets_path = os.path.join(index_dir, "forward_offsets.npy")
         forward_fps_path = os.path.join(index_dir, "forward_fingerprints.npy")
@@ -318,7 +354,11 @@ class DiskBasedIndex:
         # Raw fd (not a file object) so os.pread can be called concurrently from
         # multiple threads without a shared seek position.
         self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
-        self._io_pool = ThreadPoolExecutor(max_workers=8)
+        self._io_pool = (
+            ThreadPoolExecutor(max_workers=posting_read_threads)
+            if posting_read_threads > 1
+            else None
+        )
 
     def load_similarities(self, method: str = "inverted") -> np.ndarray:
         """Memory-map ``similarities_<method>.npy`` (rows of ``doc_i, doc_j, count``).
@@ -340,13 +380,23 @@ class DiskBasedIndex:
         """Sequentially stream the inverted index; see :func:`iter_unique_posting_batches`."""
         if len(self.fingerprints) == 0:
             return
+        postings_dtype = (
+            POSTING_DTYPE
+            if self.postings_layout == POSTINGS_LAYOUT_INTERLEAVED
+            else np.uint32
+        )
         postings = np.memmap(
             os.path.join(self.index_dir, "postings.dat"),
-            dtype=POSTING_DTYPE,
+            dtype=postings_dtype,
             mode="r",
         )
         yield from iter_unique_posting_batches(
-            self.fingerprints, self.offsets, self.lengths, postings, batch_entries
+            self.fingerprints,
+            self.offsets,
+            self.lengths,
+            postings,
+            batch_entries,
+            postings_layout=self.postings_layout,
         )
 
     def get_document_fingerprints(self, internal_doc_id: int) -> np.ndarray:
@@ -366,7 +416,6 @@ class DiskBasedIndex:
         top_k: int = 50,
         min_fingerprints: int = 5,
         exclude_doc_id: Optional[int] = None,
-        posting_read_mode: Literal["threaded", "sequential"] = "threaded",
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Return the top-k internal doc IDs by number of shared unique fingerprints.
 
@@ -380,12 +429,14 @@ class DiskBasedIndex:
         postings = self._get_postings(
             fingerprints,
             only_doc_ids=True,
-            posting_read_mode=posting_read_mode,
         )
         if not postings:
             return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.int64)
 
-        all_doc_ids = np.concatenate([np.unique(p) for p in postings.values()])
+        # Concatenate all unique sorted document IDs from the postings and count their occurrences.
+        all_doc_ids = np.concatenate(
+            [_unique_sorted_doc_ids(p) for p in postings.values()]
+        )
         docs, counts = np.unique(all_doc_ids, return_counts=True)
         mask = counts >= min_fingerprints
         if exclude_doc_id is not None:
@@ -399,7 +450,6 @@ class DiskBasedIndex:
         internal_doc_id: int,
         top_k: int = 50,
         min_fingerprints: int = 5,
-        posting_read_mode: Literal["threaded", "sequential"] = "threaded",
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Top-k most similar other documents of an indexed document.
 
@@ -411,7 +461,6 @@ class DiskBasedIndex:
             top_k=top_k,
             min_fingerprints=min_fingerprints,
             exclude_doc_id=internal_doc_id,
-            posting_read_mode=posting_read_mode,
         )
 
     def get_document_similarities(
@@ -590,7 +639,6 @@ class DiskBasedIndex:
         fingerprints: np.ndarray,
         only_doc_ids: bool = False,
         verbose: bool = False,
-        posting_read_mode: Literal["threaded", "sequential"] = "threaded",
     ) -> Dict[np.uint64, np.ndarray]:
         """Retrieve the postings lists for a given array of fingerprints from the index,
         returning a list of Numpy arrays containing document IDs and positions for each
@@ -600,9 +648,6 @@ class DiskBasedIndex:
         retrieves the corresponding offsets and lengths for the postings in the posting
         file, and extracts the relevant postings for each fingerprint.
         """
-        if posting_read_mode not in {"threaded", "sequential"}:
-            raise ValueError("posting_read_mode must be 'threaded' or 'sequential'")
-
         queries = np.asarray(fingerprints, dtype=np.uint64)
 
         # 1. vectorized lookup
@@ -627,16 +672,25 @@ class DiskBasedIndex:
         offsets = offsets[order]
         lengths = lengths[order]
 
-        # 5. parallel reads if requested: os.pread releases the GIL so threads overlap I/O;
-        #    no shared seek position means reads are safe to issue concurrently.
+        # 5. os.pread releases the GIL, so threads can overlap I/O safely.
         def _read_one(args):
             fp, offset, length = args
+            if self.postings_layout == POSTINGS_LAYOUT_COLUMNAR:
+                doc_data = os.pread(self._posting_fd, int(length) * 4, int(offset))
+                if only_doc_ids:
+                    return fp, int(length), doc_data, b""
+                position_data = os.pread(
+                    self._posting_fd,
+                    int(length) * 4,
+                    self._positions_offset + int(offset),
+                )
+                return fp, int(length), doc_data, position_data
             data = os.pread(self._posting_fd, int(length) * 8, int(offset))
-            return fp, data
+            return fp, int(length), data, b""
 
         results = {}
         read_args = zip(found_fingerprints, offsets, lengths)
-        if posting_read_mode == "threaded":
+        if self._io_pool is not None:
             read_iter = self._io_pool.map(_read_one, read_args)
         else:
             read_iter = map(_read_one, read_args)
@@ -644,14 +698,26 @@ class DiskBasedIndex:
             read_iter = tqdm.tqdm(
                 read_iter, total=len(found_fingerprints), desc="Retrieving postings"
             )
-        for fp, data in read_iter:
-            postings_array = np.frombuffer(
-                data, dtype=[("doc_id", np.uint32), ("position", np.uint32)]
-            )
-            if only_doc_ids:
-                results[fp] = postings_array["doc_id"]
+
+        # 6. read postings and populate results dictionary
+        for fp, length, data, position_data in read_iter:
+            if self.postings_layout == POSTINGS_LAYOUT_COLUMNAR:
+                doc_ids = np.frombuffer(data, dtype=np.uint32, count=length)
+                if only_doc_ids:
+                    results[fp] = doc_ids
+                else:
+                    postings_array = np.empty(length, dtype=POSTING_DTYPE)
+                    postings_array["doc_id"] = doc_ids
+                    postings_array["position"] = np.frombuffer(
+                        position_data, dtype=np.uint32, count=length
+                    )
+                    results[fp] = postings_array
             else:
-                results[fp] = postings_array
+                postings_array = np.frombuffer(data, dtype=POSTING_DTYPE)
+                if only_doc_ids:
+                    results[fp] = postings_array["doc_id"]
+                else:
+                    results[fp] = postings_array
 
         return results
 
@@ -661,7 +727,7 @@ class DiskBasedIndex:
         if hasattr(self, "_posting_fd") and self._posting_fd >= 0:
             os.close(self._posting_fd)
             self._posting_fd = -1
-        if hasattr(self, "_io_pool"):
+        if hasattr(self, "_io_pool") and self._io_pool is not None:
             self._io_pool.shutdown(wait=False)
 
 

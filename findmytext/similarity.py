@@ -26,7 +26,7 @@ import argparse
 import heapq
 import os
 from collections.abc import Callable, Iterator
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import tqdm
@@ -318,7 +318,6 @@ def compute_similarities_inverted(
     for batch_fps, group, docs in index.iter_unique_posting_batches(
         posting_batch_entries
     ):
-        #
         sizes = np.bincount(group, minlength=len(batch_fps))
         starts = np.r_[0, np.cumsum(sizes)[:-1]]
         eligible = sizes >= 2
@@ -329,6 +328,8 @@ def compute_similarities_inverted(
         wide_docs = docs.astype(np.uint64)
         for g in np.flatnonzero(eligible):
             size = int(sizes[g])
+
+            # Retrieve or compute the upper-triangular indices for the current group size.
             if size not in triu_cache:
                 triu_cache[size] = np.triu_indices(size, 1)
             first, second = triu_cache[size]
@@ -352,7 +353,8 @@ def compute_similarities_forward_topk(
     max_pair_updates_in_memory: int = 20_000_000,
     max_chunks_per_merge: Optional[int] = None,
     verbose: bool = True,
-    posting_read_mode: Literal["threaded", "sequential"] = "threaded",
+    posting_read_threads: int = 8,
+    max_documents: Optional[int] = None,
 ) -> str:
     """Top-k neighbours per document, found by querying each document's forward fingerprints.
 
@@ -362,19 +364,20 @@ def compute_similarities_forward_topk(
     stored pairs are the union over all documents, so a pair is kept if either
     document is among the other's top-k.  Counts are exact.
 
-    ``posting_read_mode`` selects threaded or sequential posting-list reads.
+    ``posting_read_threads`` sets the posting-list read thread count; 1 reads
+    sequentially without a thread pool. If ``max_documents`` is set, only the
+    first ``max_documents`` documents are queried.
 
     Returns:
         Path to ``similarities_forward_topk.npy``.
     """
-    if posting_read_mode not in {"threaded", "sequential"}:
-        raise ValueError("posting_read_mode must be 'threaded' or 'sequential'")
-
     # Initialize the disk-based index and the accumulator for storing top-k similarities.
-    index = DiskBasedIndex(index_dir)
+    index = DiskBasedIndex(index_dir, posting_read_threads=posting_read_threads)
 
     # Number of documents in the index.
     n_docs = len(index.to_external_doc_id)
+    if max_documents is not None:
+        n_docs = min(n_docs, max_documents)
 
     # Path to store the forward top-k similarities.
     output_path = os.path.join(index_dir, similarity_file_name("forward_topk"))
@@ -393,8 +396,8 @@ def compute_similarities_forward_topk(
     for doc in tqdm.trange(
         n_docs,
         desc="Forward top-k similarities",
-        miniters=1000,  # update progress at least every 1000 iterations
-        mininterval=5.0,  # at most once per 5 second
+        miniters=1000,
+        mininterval=5.0,
         disable=not verbose,
     ):
         # Get the top-k candidate documents for the current document based on shared fingerprints.
@@ -402,7 +405,6 @@ def compute_similarities_forward_topk(
             internal_doc_id=doc,
             top_k=top_k,
             min_fingerprints=min_shared_fingerprints,
-            posting_read_mode=posting_read_mode,
         )
 
         # Skip the current document if it has no top-k candidates.
@@ -553,12 +555,7 @@ def main() -> None:
     parser.add_argument("--max-pair-updates-in-memory", type=int, default=20_000_000)
     parser.add_argument("--posting-batch-entries", type=int, default=10_000_000)
     parser.add_argument("--max-chunks-per-merge", type=int, default=None)
-    parser.add_argument(
-        "--posting-read-mode",
-        choices=("threaded", "sequential"),
-        default="threaded",
-        help="forward_topk posting-list read mode.",
-    )
+    parser.add_argument("--posting-read-threads", type=int, default=1)
     args = parser.parse_args()
 
     kwargs = {
@@ -574,7 +571,7 @@ def main() -> None:
         kwargs["posting_batch_entries"] = args.posting_batch_entries
     else:
         kwargs["top_k"] = args.top_k
-        kwargs["posting_read_mode"] = args.posting_read_mode
+        kwargs["posting_read_threads"] = args.posting_read_threads
     compute_similarities(args.index_dir, args.method, **kwargs)
 
 
