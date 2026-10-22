@@ -92,6 +92,91 @@ python -m experiments.compare_similarity_methods --index-dir my_index --top-k 50
 ```
 
 
+#### Inspect existing indexes
+
+Print index statistics and save interactive figures for the four HPLT corpora
+(Nynorsk, Bokmal, Icelandic, and Latvian) in a parent folder:
+
+```bash
+.venv/bin/python -m experiments.index_stats /path/to/corpora --output-dir /path/to/analysis
+```
+
+With no arguments, it analyzes the four indexes at
+`/nr/project/stat/COPY.AI/data/Lars/hplt_<language>/findmytext_build/index`
+(`nynorsk`, `bokmal`, `icelandic`, and `latvian`) and saves reports in
+`/nr/project/stat/COPY.AI/data/Lars/index_analysis`:
+
+```bash
+.venv/bin/python -m experiments.index_stats
+```
+
+Explicit index arguments and `--output-dir` override these defaults.
+The command discovers merged indexes in each immediate child folder, including
+the `hplt_<language>/findmytext_build/index` layout. It also accepts a single
+index/corpus folder, or explicitly named indexes:
+
+```bash
+.venv/bin/python -m experiments.index_stats \
+  nynorsk=/path/to/hplt_nynorsk/findmytext_build/index \
+  bokmal=/path/to/hplt_bokmal/findmytext_build/index \
+  icelandic=/path/to/hplt_icelandic/findmytext_build/index \
+  latvian=/path/to/hplt_latvian/findmytext_build/index \
+  --output-dir /path/to/analysis
+```
+
+Install the visualization extra (`pip install -e '.[viz]'`) for Plotly.
+The report includes document and distinct fingerprint counts, total positional
+postings, distinct document/fingerprint pairs, fingerprints confined to one
+document or shared by multiple documents, within-document repetitions, disk
+sizes, and distribution minima, means, quantiles, and maxima. A singleton means
+**one distinct document**, even if the fingerprint occurs repeatedly there.
+Document counts refer to indexed documents, not discarded source records.
+
+Results are printed and saved as `index_stats.json`, `index_stats.csv`, and one
+offline-viewable `index_stats_<name>.html` per corpus, containing distributions
+of fingerprints per document, documents per fingerprint, and posting-list lengths.
+Plots use logarithmic axes for positive counts, with quantile and maximum
+markers at their actual count values. A distribution containing zero uses a
+linear x-axis so zeros remain visible.
+Results for previously analyzed corpus names are retained in the same output
+folder; rerunning a name replaces its results.
+
+An additional `index_stats_comparison.html` shows distinct fingerprints on the
+x-axis and singleton fingerprints on the y-axis, with one labeled point per
+corpus. Color indicates singleton fraction; hover details include document
+counts, posting counts, document/fingerprint pairs, index size, and index path.
+A second plot in the same HTML report shows distinct fingerprints on the x-axis
+and singleton fraction on the y-axis, displayed as a percentage from 0% to 100%.
+Both plots include the same corpus metadata on hover.
+These are comparisons of different corpora, not a growth curve for one corpus.
+
+To fix previously generated histogram axes and produce this comparison without
+rescanning any index:
+
+```bash
+.venv/bin/python -m experiments.index_stats --repair-plots
+# Or: --repair-plots --output-dir /path/to/analysis
+```
+
+This reads the saved JSON and HTML reports, preserves the embedded histogram
+data, and updates only each chart's layout. Original HTML is retained as
+`index_stats_<name>.html.bak`; repeated repairs keep the original backup.
+
+Fingerprint counts measure distinct **hash values**, not necessarily distinct
+text k-grams. The current rolling hash uses modulus `2**31 - 1` (about 2.147
+billion values), despite storing fingerprints in `uint64` arrays. Hash collisions
+can merge unrelated k-grams, increasing apparent sharing across documents.
+Winnowing selects window minima, so selected hashes are not uniformly distributed.
+A lower singleton fraction in a larger corpus can reflect collisions, genuine
+shared text, or both; these aggregate reports cannot separate the causes.
+
+Analysis is read-only and makes one sequential pass over postings; no corpus
+text or similarity computation is needed. Indexes without a forward index are
+supported. `--batch-entries` (default: 1,000,000) controls the target number of
+postings processed per batch, not a strict RAM limit: a single fingerprint's
+posting list is never split, and index-wide arrays and frequency tables also
+use memory.
+
 ### 2. Detect content
 
 Once the index is built, detection is a single call:
