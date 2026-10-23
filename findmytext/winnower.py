@@ -13,11 +13,9 @@ from typing import Dict, List, Set, Tuple
 import numpy as np
 from numba import njit
 
-# Modulus for the rolling hash. 2^31 - 1 is the largest Mersenne prime that
-# guarantees all intermediate multiplications (token * b_pow_k and H * base)
-# fit within signed int64 without overflow. The 31-bit hash space (~2 billion values)
-# is sufficient for document similarity tasks where min_fingerprints > 1.
-_HASH_MOD = (1 << 31) - 1
+ROLLING64_HASH = "rolling64-v1"
+HASH_METHODS = (ROLLING64_HASH,)
+ROLLING_BASE64 = 0x9E3779B185EBCA87
 
 
 class Winnower:
@@ -25,7 +23,8 @@ class Winnower:
     algorithm."""
 
     def __init__(
-        self, length: int = 5, window_size: int = 6, base: int = 256, punctuation=False
+        self, length: int = 5, window_size: int = 6, base: int | None = None,
+        punctuation=False, hash_method: str = ROLLING64_HASH,
     ):
         """Initialize the Winnower with specified parameters.
 
@@ -34,17 +33,32 @@ class Winnower:
             window_size: The size of the window for winnowing.
             base: The base for the rolling hash computation.
             punctuation: Whether to include punctuation in the tokenization.
+            hash_method: Only ``rolling64-v1`` is supported.
+                It uses unsigned wraparound, unreduced token hashes,
+                and an odd base (default ROLLING_BASE64). It is non-cryptographic.
 
         """
+        if hash_method not in HASH_METHODS:
+            raise ValueError(
+                f"Unsupported hash method {hash_method!r}; only {ROLLING64_HASH} is supported. "
+                "Rebuild legacy indexes and intermediate shards from source text."
+            )
+        if base is None:
+            base = ROLLING_BASE64
+        if (
+            not isinstance(base, (int, np.integer)) or not 1 < base < 2**64 or base % 2 == 0
+        ):
+            raise ValueError("rolling64-v1 requires an odd base between 3 and 2**64 - 1")
+        self.hash_method = hash_method
         self.length = length
         self.window_size = window_size
-        self.base = base
+        self.base = int(base)
         self.punctuation = punctuation
 
     def get_winnowed_fingerprints(self, document: str) -> Tuple[np.ndarray, np.ndarray]:
         """Compute winnowed fingerprints for the given document string.
 
-        The process includes tokenization, conversion to Unicode code point sums, rolling hash
+        The process includes tokenization, full-width token hashing, rolling hash
         computation for k-grams, and winnowing to select representative fingerprints.
 
         Arguments:
@@ -58,15 +72,41 @@ class Winnower:
         """
         tokens = self.tokenize(document)
 
-        unicode_tokens = tokens2unicode(tokens)
-
-        fingerprints = get_fingerprints(unicode_tokens, self.base, self.length)
+        fingerprints = self.get_token_fingerprints(tokens)
 
         winnowed_fingerprints, winnowed_positions = winnow(
             fingerprints, self.window_size
         )
 
         return winnowed_fingerprints, winnowed_positions
+
+    def get_token_fingerprints(self, tokens: List[str]) -> np.ndarray:
+        """Hash every k-gram before winnowing, using this index's hash method."""
+        values = tokens2uint64(tokens)
+        if self.base == ROLLING_BASE64:
+            return get_fingerprints64(values, self.length)
+        return get_fingerprints64(values, self.length, self.base)
+
+    def to_metadata(self) -> dict:
+        return {
+            "length": self.length, "window_size": self.window_size,
+            "base": self.base, "punctuation": self.punctuation, "hash_method": self.hash_method,
+        }
+
+    @classmethod
+    def from_metadata(cls, meta: dict) -> "Winnower":
+        """Require explicit rolling64 metadata; old indexes must be rebuilt."""
+        method = meta.get("hash_method")
+        if method != ROLLING64_HASH:
+            raise ValueError(
+                f"Unsupported or missing index hash_method: {method!r}. "
+                f"Rebuild the index and intermediate shards from source text using {ROLLING64_HASH}; "
+                "changing meta.json alone cannot convert fingerprints."
+            )
+        return cls(
+            length=meta["length"], window_size=meta["window_size"], base=meta["base"],
+            punctuation=meta["punctuation"], hash_method=method,
+        )
 
     def get_winnowed_fingerprints_batch(
         self, batch: Dict[str, str]
@@ -96,77 +136,63 @@ class Winnower:
         tokens = document.split()
         return tokens
 
-
-def tokens2unicode(tokens: List[str]) -> np.ndarray:
-    """Convert a list of tokens to a NumPy array of deterministic integer values.
-
-    We use a simple FNV-1a hash on the UTF-8 bytes of each token to produce a consistent
-    integer representation. The top bit is cleared to ensure the values fit in signed
-    int64 for compatibility with NumPy and Numba.
-    """
-    results = np.empty(len(tokens), dtype=np.int64)
-
-    # Deterministic FNV-1a hash on UTF-8 bytes. Keep the top bit clear so the
-    # value always fits in signed int64 for NumPy/Numba downstream.
-    for i, token in enumerate(tokens):
-        h = 1469598103934665603
-        for b in token.encode("utf-8"):
-            h ^= b
-            h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-        results[i] = h % _HASH_MOD
-
-    return results
-
-
-@njit
-def get_fingerprints(unicode_tokens, base, length):
-    """Compute rolling hash fingerprints for k-grams of the token sequence using an
-    improved Karp-Rabin algorithm:
-    H'(c1..ck)    = c1*b^k + c2*b^(k-1) + ... + ck*b
-    H'(c2..ck+1)  = ((H'(c1..ck) - c1*b^k) + c_{k+1}) * b.
-
-    The rolling hash is computed modulo a large prime to keep values bounded and avoid overflow.
-
-    Args:
-        unicode_tokens: A NumPy array of integer values representing the tokens.
-        base: The base for the rolling hash (e.g., 256).
-        length: The length of k-grams to compute fingerprints for.
-
-    Returns:
-        A NumPy array of fingerprint values for each k-gram in the document.
-
-    """
-
-    # Precompute b^k mod the large prime to avoid repeated exponentiation in the loop.
-    mod = _HASH_MOD
-    b_pow_k = 1
-    for _ in range(length):
-        b_pow_k = (b_pow_k * base) % mod
-
-    n = len(unicode_tokens)
-    if length <= 0 or n < length:
-        return np.empty(0, dtype=np.int64)
-
-    # Initial hash: (c1*b^(k-1) + c2*b^(k-2) + ... + ck) * b
-    H = 0
-    for i in range(length):
-        H = (H * base + unicode_tokens[i]) % mod
-    H = (H * base) % mod
-
-    # We preallocate the output array for fingerprints.
-    fingerprints = np.empty(n - length + 1, dtype=np.int64)
-    fingerprints[0] = H
-
-    # Rolling hash: H'(c2..ck+1)  = ((H'(c1..ck) - c1*b^k) + c_{k+1}) * b
-    for i in range(1, n - length + 1):
-        H = (
-            ((H - unicode_tokens[i - 1] * b_pow_k) + unicode_tokens[i + length - 1])
-            * base
-            % mod
+    def __str__(self) -> str:
+        return (
+            f"Winnower(length={self.length}, window_size={self.window_size}, "
+            f"base={self.base}, punctuation={self.punctuation}, hash_method={self.hash_method!r})"
         )
-        fingerprints[i] = H
 
-    return fingerprints
+
+@njit(cache=True, nogil=True)
+def _hash_token_bytes64(data, offsets):
+    result = np.empty(len(offsets) - 1, dtype=np.uint64)
+    for token in range(len(result)):
+        value = np.uint64(1469598103934665603)
+        for position in range(offsets[token], offsets[token + 1]):
+            value ^= np.uint64(data[position])
+            value *= np.uint64(1099511628211)
+        result[token] = value
+    return result
+
+
+def tokens2uint64(tokens: List[str]) -> np.ndarray:
+    """Unreduced legacy FNV-1a-style token hashes, with compiled byte iteration."""
+    encoded = [token.encode("utf-8") for token in tokens]
+    offsets = np.zeros(len(tokens) + 1, dtype=np.int64)
+    offsets[1:] = np.cumsum([len(token) for token in encoded])
+    return _hash_token_bytes64(np.frombuffer(b"".join(encoded), dtype=np.uint8), offsets)
+
+
+@njit(cache=True, nogil=True)
+def get_fingerprints64(tokens, length, base=ROLLING_BASE64):
+    """rolling64-v1: odd-base polynomial mod 2**64 followed by fmix64.
+
+    The unmixed state is rolled; mixing is a bijection applied only to outputs.
+    All arithmetic intentionally wraps as uint64, never through float or int64.
+    """
+    if length <= 0 or len(tokens) < length:
+        return np.empty(0, dtype=np.uint64)
+    unsigned_base = np.uint64(base)
+    power = np.uint64(1)
+    for _ in range(length):
+        power *= unsigned_base
+    state = np.uint64(0)
+    for position in range(length):
+        state = state * unsigned_base + tokens[position]
+    state *= unsigned_base
+    result = np.empty(len(tokens) - length + 1, dtype=np.uint64)
+    for position in range(len(result)):
+        if position:
+            state = (state - tokens[position - 1] * power
+                     + tokens[position + length - 1]) * unsigned_base
+        value = state
+        value ^= value >> np.uint64(33)
+        value *= np.uint64(0xFF51AFD7ED558CCD)
+        value ^= value >> np.uint64(33)
+        value *= np.uint64(0xC4CEB9FE1A85EC53)
+        value ^= value >> np.uint64(33)
+        result[position] = value
+    return result
 
 
 @njit
@@ -191,13 +217,13 @@ def winnow(
     """
     n = len(fingerprint_values)
     if window_size <= 0 or n == 0 or window_size > n:
-        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int32)
+        return np.empty(0, dtype=fingerprint_values.dtype), np.empty(0, dtype=np.int32)
 
     # The maximum number of winnowed fingerprints is n - window_size + 1 (one per window), but we may emit
     # fewer due to duplicates. We preallocate arrays of this maximum size and keep track of how many we
     # actually emit.
     size = n - window_size + 1
-    tmp_fingerprints = np.empty(size, dtype=np.int64)
+    tmp_fingerprints = np.empty(size, dtype=fingerprint_values.dtype)
     tmp_positions = np.empty(size, dtype=np.int32)
     out_count = 0
     last_pos = -1
