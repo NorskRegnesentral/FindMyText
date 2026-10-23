@@ -207,6 +207,8 @@ class _PairAccumulator:
     def _compact_chunks(self, paths: List[str]) -> List[str]:
         """Reduce chunk count through bounded-fan-in merge passes."""
         fan_in = self.max_chunks_per_merge
+        if fan_in is None:
+            return paths
         pass_index = 0
         while len(paths) > fan_in:
             compacted = []

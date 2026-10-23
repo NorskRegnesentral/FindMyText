@@ -25,16 +25,13 @@ Document-document similarities are computed afterwards, as a separate step, with
 """
 
 import argparse
-import array
-import collections
 import heapq
 import multiprocessing as mp
 import os
 import queue
 import shutil
-import sys
-import threading
-from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
+from collections.abc import Generator, Iterator
+from typing import Any, Dict, List, Optional, Tuple
 
 import msgpack
 import numpy as np
@@ -73,7 +70,7 @@ def index_file(
     min_length: int = 100,
     max_length: int = 100_000,
     hash_method: str = winnower.ROLLING64_HASH,
-) -> List[str]:
+) -> list[str]:
     """Index documents from a corpus file and save intermediate index files to output_dir.
 
     Reads the corpus, computes winnowed fingerprints for every document, and
@@ -106,7 +103,9 @@ def index_file(
     if not os.path.isfile(corpus_file):
         raise ValueError(f"Provided file {corpus_file} does not exist or is not a file")
     configured_winnower = winnower.Winnower(
-        length=length, window_size=window_size, hash_method=hash_method,
+        length=length,
+        window_size=window_size,
+        hash_method=hash_method,
     )
 
     if corpus_file.endswith((".jsonl", ".jsonl.gz")):
@@ -141,7 +140,7 @@ def index_file(
 
     index = MemoryBasedIndex(meta=meta)
 
-    index_files: List[str] = []
+    index_files: list[str] = []
 
     # Get batched fingerprints from the stream using a producer-consumer pattern.
     batch_results = get_batched_fingerprints(
@@ -173,7 +172,7 @@ def index_file(
     return index_files
 
 
-def _get_fork_context() -> mp.context.BaseContext:
+def _get_fork_context():
     """Return the "fork" start-method context, falling back to the default.
 
     The producer process receives the corpus stream (a generator), which only
@@ -193,7 +192,7 @@ def get_batched_fingerprints(
     length: int,
     window_size: int,
     hash_method: str = winnower.ROLLING64_HASH,
-) -> Iterator[Dict[str, List[Tuple[int, int]]]]:
+) -> Iterator[dict[str, list[tuple[int, int]]]]:
     """Get batched fingerprints from the stream using a producer-consumer pattern.
     The fingerprinting is extracted with winnowing in parallel using multiple
     worker processes, and the results are yielded in batches.
@@ -223,7 +222,15 @@ def get_batched_fingerprints(
 
     producer = ctx.Process(
         target=_produce,
-        args=(stream, stop_after, n_workers, result_queue, length, window_size, hash_method),
+        args=(
+            stream,
+            stop_after,
+            n_workers,
+            result_queue,
+            length,
+            window_size,
+            hash_method,
+        ),
     )
     producer.start()
     try:
@@ -267,7 +274,7 @@ def _produce(
     batches_gen = utils.generate_batches(data_stream, stop_after)
     try:
         with _get_fork_context().Pool(processes=n_workers) as pool:
-            pending: List[Any] = []
+            pending: list[Any] = []
             for batch in batches_gen:
                 if len(pending) >= n_workers:
                     # Wait for the oldest task and forward the result before submitting
@@ -734,7 +741,9 @@ if __name__ == "__main__":
         "--window_size", type=int, default=6, help="Winnowing window size (default: 6)"
     )
     index_parser.add_argument(
-        "--hash-method", choices=winnower.HASH_METHODS, default=winnower.ROLLING64_HASH,
+        "--hash-method",
+        choices=winnower.HASH_METHODS,
+        default=winnower.ROLLING64_HASH,
         help="Hash version (rolling64-v1 only). Legacy indexes must be rebuilt.",
     )
     index_parser.add_argument(
