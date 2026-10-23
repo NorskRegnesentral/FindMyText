@@ -72,6 +72,7 @@ def index_file(
     max_nb_documents_before_flush=1_000_000,
     min_length: int = 100,
     max_length: int = 100_000,
+    hash_method: str = winnower.ROLLING64_HASH,
 ) -> List[str]:
     """Index documents from a corpus file and save intermediate index files to output_dir.
 
@@ -95,6 +96,7 @@ def index_file(
         max_nb_documents_before_flush: Maximum number of documents to hold in memory before flushing to disk. Default is 1M.
         min_length: Minimum document text length to index; shorter documents are skipped (default 100).
         max_length: Maximum document text length to index; longer documents are skipped (default 100,000).
+        hash_method: Hash version; only rolling64-v1 is supported.
 
     Returns:
         List of paths to the saved intermediate index files.
@@ -103,6 +105,9 @@ def index_file(
 
     if not os.path.isfile(corpus_file):
         raise ValueError(f"Provided file {corpus_file} does not exist or is not a file")
+    configured_winnower = winnower.Winnower(
+        length=length, window_size=window_size, hash_method=hash_method,
+    )
 
     if corpus_file.endswith((".jsonl", ".jsonl.gz")):
         stream = utils.stream_jsonl(
@@ -132,12 +137,7 @@ def index_file(
     print("Index files will be saved to", output_dir)
     print(f"Indexing stream with {nb_workers} fingerprint workers...", flush=True)
 
-    meta = {
-        "length": length,
-        "window_size": window_size,
-        "base": 256,
-        "punctuation": False,
-    }
+    meta = configured_winnower.to_metadata()
 
     index = MemoryBasedIndex(meta=meta)
 
@@ -145,7 +145,7 @@ def index_file(
 
     # Get batched fingerprints from the stream using a producer-consumer pattern.
     batch_results = get_batched_fingerprints(
-        stream, stop_after, nb_workers, length, window_size
+        stream, stop_after, nb_workers, length, window_size, hash_method
     )
 
     total_count = 0
@@ -192,6 +192,7 @@ def get_batched_fingerprints(
     nb_workers: int,
     length: int,
     window_size: int,
+    hash_method: str = winnower.ROLLING64_HASH,
 ) -> Iterator[Dict[str, List[Tuple[int, int]]]]:
     """Get batched fingerprints from the stream using a producer-consumer pattern.
     The fingerprinting is extracted with winnowing in parallel using multiple
@@ -222,7 +223,7 @@ def get_batched_fingerprints(
 
     producer = ctx.Process(
         target=_produce,
-        args=(stream, stop_after, n_workers, result_queue, length, window_size),
+        args=(stream, stop_after, n_workers, result_queue, length, window_size, hash_method),
     )
     producer.start()
     try:
@@ -249,6 +250,7 @@ def _produce(
     result_queue: mp.Queue,
     length: int,
     window_size: int,
+    hash_method: str = winnower.ROLLING64_HASH,
 ) -> None:
     """Read batches of documents from the stream, dispatch to workers that will run
     the winnowing algorithm, and forward the resulting fingerprints.
@@ -259,7 +261,7 @@ def _produce(
     main process that the stream is exhausted.
     """
     batch_winnower = winnower.Winnower(
-        length=length, window_size=window_size
+        length=length, window_size=window_size, hash_method=hash_method
     ).get_winnowed_fingerprints_batch
 
     batches_gen = utils.generate_batches(data_stream, stop_after)
@@ -367,16 +369,18 @@ def merge_indexes(
     }:
         raise ValueError(f"Unknown postings layout: {postings_layout!r}")
 
+    meta = None
+    for index_file_path in index_files:
+        with gzip.open(index_file_path, "rb") as f:
+            source_meta = winnower.Winnower.from_metadata(
+                next(msgpack.Unpacker(f, raw=False))
+            ).to_metadata()
+        if meta is not None and source_meta != meta:
+            raise ValueError(f"Incompatible fingerprint metadata in {index_file_path}")
+        meta = source_meta
+    if meta is None:
+        raise ValueError("No index metadata found")
     os.makedirs(output_dir, exist_ok=True)
-
-    # Read the metadata record from the first msgpack file and save to meta.json.
-    with gzip.open(index_files[0], "rb") as f:
-        meta_raw = next(msgpack.Unpacker(f, raw=False))
-        meta = {
-            k: meta_raw[k]
-            for k in ["length", "window_size", "base", "punctuation"]
-            if k in meta_raw
-        }
     meta["postings_layout"] = postings_layout
     with open(os.path.join(output_dir, "meta.json"), "w", encoding="utf-8") as f:
         f.write(orjson.dumps(meta).decode("utf-8"))
@@ -481,6 +485,7 @@ def build_forward_index(index_dir: str, batch_entries: int = 10_000_000) -> None
     lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
     with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
         meta = orjson.loads(f.read())
+    winnower.Winnower.from_metadata(meta)
     postings_layout = meta.get("postings_layout", "interleaved")
     if postings_layout not in {"interleaved", "columnar"}:
         raise ValueError(f"Unknown postings layout: {postings_layout!r}")
@@ -776,6 +781,10 @@ if __name__ == "__main__":
         "--window_size", type=int, default=6, help="Winnowing window size (default: 6)"
     )
     index_parser.add_argument(
+        "--hash-method", choices=winnower.HASH_METHODS, default=winnower.ROLLING64_HASH,
+        help="Hash version (rolling64-v1 only). Legacy indexes must be rebuilt.",
+    )
+    index_parser.add_argument(
         "--stop_after", type=int, default=None, help="Stop after this many samples"
     )
     index_parser.add_argument(
@@ -834,6 +843,7 @@ if __name__ == "__main__":
             nb_workers=args.nb_workers,
             min_length=args.min_length,
             max_length=args.max_length,
+            hash_method=args.hash_method,
         )
 
     elif args.task == "merge":

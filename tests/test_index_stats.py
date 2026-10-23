@@ -46,7 +46,7 @@ def write_index(folder, *, forward=True, layout="interleaved", empty=False):
     folder.mkdir(parents=True)
     (folder / "meta.json").write_text(json.dumps({
         "length": 4, "window_size": 6, "base": 257, "punctuation": False,
-        "postings_layout": layout,
+        "postings_layout": layout, "hash_method": "rolling64-v1",
     }))
     fingerprints = [] if empty else [10, 20, 30]
     lengths = np.array([] if empty else [4, 2, 1], dtype=np.uint32)

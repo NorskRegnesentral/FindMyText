@@ -51,11 +51,7 @@ def _make_hub_kgrams(
     candidate_tokens = _tokens(
         "hub_candidate", pool_size + configured_winnower.length - 1
     )
-    candidate_hashes = winnower.get_fingerprints(
-        winnower.tokens2unicode(candidate_tokens),
-        configured_winnower.base,
-        configured_winnower.length,
-    )
+    candidate_hashes = configured_winnower.get_token_fingerprints(candidate_tokens)
     selected_positions: list[int] = []
     for position in np.argsort(candidate_hashes):
         position = int(position)
@@ -257,12 +253,7 @@ def generate_controlled_corpus(
         documents=documents,
         ground_truth={
             "seed": seed,
-            "winnower": {
-                "length": fingerprint_length,
-                "window_size": window_size,
-                "base": configured_winnower.base,
-                "punctuation": configured_winnower.punctuation,
-            },
+            "winnower": configured_winnower.to_metadata(),
             "source_intervals": specs_by_id,
             "passage_spans": passage_spans,
             "pairwise": pairwise,

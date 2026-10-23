@@ -75,6 +75,7 @@ class _BaseDetector(ABC):
             window_size=1,
             base=self.index.winnower.base,
             punctuation=self.index.winnower.punctuation,
+            hash_method=self.index.winnower.hash_method,
         )
 
         # Mean fingerprint weight across the whole index, used to normalise rarity
@@ -119,7 +120,9 @@ class _BaseDetector(ABC):
         fingerprints, fingerprints_pos = (
             self.runtime_winnower.get_winnowed_fingerprints(text)
         )
-        return pl.DataFrame({"hash": fingerprints, "position": fingerprints_pos})
+        return pl.DataFrame({"hash": fingerprints, "position": fingerprints_pos}).with_columns(
+            pl.col("hash").cast(pl.UInt64)
+        )
 
     def _get_candidates(self, fingerprints) -> pl.DataFrame:
         """Return the candidate-match table for the given fingerprints.
@@ -146,7 +149,7 @@ class _BaseDetector(ABC):
         mean equals 1.0.
         """
         if not self.rarity_weighted:
-            hashes = np.unique(np.asarray(fingerprints, dtype=np.int64))
+            hashes = np.unique(np.asarray(fingerprints, dtype=np.uint64))
             return dict.fromkeys(hashes.tolist(), 1.0)
         postings = self.index._get_postings(fingerprints, only_doc_ids=True)
         return {
@@ -267,7 +270,7 @@ class NbSharedFingerprintsDetector(_BaseDetector):
         fingerprint_weights = self._get_fingerprint_weights(df_query["hash"])
         weights_df = pl.DataFrame(
             list(fingerprint_weights.items()),
-            schema={"hash": pl.Int64, "weight": pl.Float64},
+            schema={"hash": pl.UInt64, "weight": pl.Float64},
             orient="row",
         )
 
@@ -467,7 +470,7 @@ class FingerprintChainDetector(_BaseDetector):
         if df_clusters.height == 0:
             return 0.0
 
-        return float(df_clusters["score"].max())
+        return float(df_clusters["score"].to_numpy().max())
 
     def _get_df_hash_cluster_rectangle(
         self, df_shared_hashes: pl.DataFrame
@@ -594,7 +597,7 @@ def convert_closest_matches_with_positions_to_df(
     -------
     pl.DataFrame
         One row per (doc, hash, position) with columns ``doc_match_id``,
-        ``doc_match_closeness_rank``, ``hash`` (Int64), ``position`` (Int32).
+        ``doc_match_closeness_rank``, ``hash`` (UInt64), ``position`` (Int32).
         Returns an empty DataFrame with the correct schema when the input is
         empty.
 
@@ -604,7 +607,7 @@ def convert_closest_matches_with_positions_to_df(
             {
                 "doc_match_id": pl.Series([], dtype=pl.Utf8),
                 "doc_match_closeness_rank": pl.Series([], dtype=pl.Int32),
-                "hash": pl.Series([], dtype=pl.Int64),
+                "hash": pl.Series([], dtype=pl.UInt64),
                 "position": pl.Series([], dtype=pl.Int32),
             }
         )
@@ -616,7 +619,7 @@ def convert_closest_matches_with_positions_to_df(
         frames.append(
             pl.DataFrame(
                 {
-                    "hash": list(hash_positions.keys()),
+                    "hash": pl.Series(list(hash_positions.keys()), dtype=pl.UInt64),
                     "position": list(hash_positions.values()),
                 }
             )
@@ -624,7 +627,7 @@ def convert_closest_matches_with_positions_to_df(
             .with_columns(
                 pl.lit(doc_id).alias("doc_match_id"),
                 pl.lit(rank, dtype=pl.Int32).alias("doc_match_closeness_rank"),
-                pl.col("hash").cast(pl.Int64),
+                pl.col("hash").cast(pl.UInt64),
                 pl.col("position").cast(pl.Int32),
             )
             .select(["doc_match_id", "doc_match_closeness_rank", "hash", "position"])

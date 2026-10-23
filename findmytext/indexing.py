@@ -108,6 +108,7 @@ class MemoryBasedIndex:
     _CHUNK = 10_000_000  # grow in 10 M-entry (~160 MB) steps
 
     def __init__(self, meta: Dict[str, Any]):
+        winnower.Winnower.from_metadata(meta)
         self.doc_id_map: Dict[str, int] = {}
         self.to_external: List[str] = []
         self.meta = meta
@@ -310,12 +311,7 @@ class DiskBasedIndex:
         self.index_dir = index_dir
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
-            self.winnower = winnower.Winnower(
-                length=meta["length"],
-                window_size=meta["window_size"],
-                base=meta["base"],
-                punctuation=meta["punctuation"],
-            )
+            self.winnower = winnower.Winnower.from_metadata(meta)
             self.postings_layout = meta.get(
                 "postings_layout", POSTINGS_LAYOUT_INTERLEAVED
             )

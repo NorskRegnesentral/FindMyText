@@ -277,7 +277,10 @@ def verify_similarity_counts(
         ): int(row["count"])
         for row in index.load_similarities(method)
     }
-    fingerprinter = winnower.Winnower(length=length, window_size=window_size)
+    fingerprinter = winnower.Winnower(
+        length=length, window_size=window_size, base=index.winnower.base,
+        punctuation=index.winnower.punctuation, hash_method=index.winnower.hash_method,
+    )
     fingerprint_sets = {
         doc_id: set(
             fingerprinter.get_winnowed_fingerprints(id_to_text[doc_id])[0].tolist()
@@ -498,6 +501,7 @@ def locate_shared_passage(
         window_size=index.winnower.window_size,
         base=index.winnower.base,
         punctuation=index.winnower.punctuation,
+        hash_method=index.winnower.hash_method,
     )
     other_text = id_to_text[other_doc_id]
     fingerprints, positions = query_winnower.get_winnowed_fingerprints(other_text)
@@ -517,7 +521,9 @@ def locate_shared_passage(
     if df_match.height == 0:
         return None
 
-    df_query = pl.DataFrame({"hash": fingerprints, "position": positions})
+    df_query = pl.DataFrame({"hash": fingerprints, "position": positions}).with_columns(
+        pl.col("hash").cast(pl.UInt64)
+    )
     df_shared = web.TextContainmentDetector._shared_positions(df_query, df_match)
     if df_shared.height == 0:
         return None

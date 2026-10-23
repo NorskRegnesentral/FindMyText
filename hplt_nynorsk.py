@@ -19,6 +19,7 @@ INDEX_PATH = BUILD_PATH / "index"
 
 def build_index():
     if INDEX_PATH.is_dir():
+        winnower.Winnower.from_metadata(json.loads((INDEX_PATH / "meta.json").read_text()))
         if not all(
             (INDEX_PATH / name).is_file()
             for name in ("forward_offsets.npy", "forward_fingerprints.npy")

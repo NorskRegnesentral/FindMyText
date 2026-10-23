@@ -4,11 +4,12 @@ Example: python hplt_build.py lvs_Latn hplt_latvian
 """
 
 import argparse
+import json
 import subprocess
 import urllib.request
 from pathlib import Path
 
-from findmytext import index_builder
+from findmytext import index_builder, winnower
 
 ROOT_PATH = Path("/nr/project/stat/COPY.AI/data/Lars")
 MAP_URL = "https://data.hplt-project.org/three/sorted/{language}.map"
@@ -31,6 +32,7 @@ def download(language, corpus_path):
 def build_index(corpus_path, build_path, nb_workers):
     index_path = build_path / "index"
     if index_path.is_dir():
+        winnower.Winnower.from_metadata(json.loads((index_path / "meta.json").read_text()))
         if not all(
             (index_path / name).is_file()
             for name in ("forward_offsets.npy", "forward_fingerprints.npy")

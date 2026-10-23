@@ -247,7 +247,7 @@ class MultiDocumentFingerprintChainAnalyzer:
                 hierarchy, t=self.distance_threshold, criterion="distance"
             )
 
-        hashes = np.asarray([row[0] for row in rows], dtype=np.int64)
+        hashes = np.asarray([row[0] for row in rows], dtype=np.uint64)
         valid_labels = [
             int(label)
             for label in np.unique(labels)
@@ -295,7 +295,8 @@ class MultiDocumentFingerprintChainAnalyzer:
                 )
                 point_rows.append(point_row)
         points = (
-            pl.DataFrame(point_rows) if point_rows else self._empty_points(document_ids)
+            pl.DataFrame(point_rows, schema_overrides={"hash": pl.UInt64})
+            if point_rows else self._empty_points(document_ids)
         )
         return passages, points, skipped
 
@@ -334,7 +335,7 @@ class MultiDocumentFingerprintChainAnalyzer:
     @staticmethod
     def _empty_points(document_ids: Sequence[str]) -> pl.DataFrame:
         columns: dict[str, pl.Series] = {
-            "hash": pl.Series([], dtype=pl.Int64),
+            "hash": pl.Series([], dtype=pl.UInt64),
             "passage_id": pl.Series([], dtype=pl.Utf8),
             "relationship": pl.Series([], dtype=pl.Utf8),
             "document_ids": pl.Series([], dtype=pl.List(pl.Utf8)),
