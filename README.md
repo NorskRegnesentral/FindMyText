@@ -42,6 +42,35 @@ the inverted index (fingerprint → postings), the merge writes a forward index
 fingerprints). For an index merged without it (`build_forward=False`), run
 `index_builder.build_forward_index("my_index")`.
 
+#### Rolling64 fingerprints and rebuilding old indexes
+
+All builds and queries now use the versioned non-cryptographic `rolling64-v1`
+method. Legacy31 hashing has been removed. Create a **new** index from source:
+
+```python
+index_builder.index_file(
+    "corpus.jsonl", "my_fingerprints64", nb_workers=4,
+)
+index_builder.merge_indexes_from_dir("my_fingerprints64", "my_index64")
+```
+
+No hash selection flag is needed. For standalone fingerprinting, use
+`Winnower(length=4, window_size=6)`.
+Index metadata records the hash method and base. Readers and detectors use
+these settings automatically. Missing/legacy/unknown hash versions are errors,
+as are incompatible shard settings. Existing corpus indexes and old
+intermediate shards must be rebuilt; they are not converted automatically.
+Do not mix old/new hashes or change an existing index's metadata to "upgrade"
+it: changing hashes requires rebuilding from source text.
+
+Rolling64 uses compiled unreduced token hashing, odd-base unsigned arithmetic
+modulo `2**64`, and a bijective fmix64 output finalizer before winnowing. Its
+fingerprints and hash DataFrame columns preserve the full UInt64 range, including
+values above `2**63`. It is not intended for cryptographic/adversarial integrity
+checks, and collision/quality measurements remain corpus-specific.
+The full findings, historical comparisons, and migration decision are in
+[experiments/HASHING_FINDINGS.md](experiments/HASHING_FINDINGS.md).
+
 #### Document similarities (separate step)
 
 Document-document similarities are computed *after* the index is built, so
@@ -163,14 +192,84 @@ data, and updates only each chart's layout. Original HTML is retained as
 `index_stats_<name>.html.bak`; repeated repairs keep the original backup.
 
 Fingerprint counts measure distinct **hash values**, not necessarily distinct
-text k-grams. The current rolling hash uses modulus `2**31 - 1` (about 2.147
+text k-grams. The retired legacy method used modulus `2**31 - 1` (about 2.147
 billion values), despite storing fingerprints in `uint64` arrays. Hash collisions
 can merge unrelated k-grams, increasing apparent sharing across documents.
 Winnowing selects window minima, so selected hashes are not uniformly distributed.
 A lower singleton fraction in a larger corpus can reflect collisions, genuine
 shared text, or both; these aggregate reports cannot separate the causes.
 
-Analysis is read-only and makes one sequential pass over postings; no corpus
+##### Frozen collision experiments and current throughput benchmark
+
+Legacy31-dependent experiment execution is retired. The completed Nynorsk
+and Latvian comparisons are preserved and explained in
+[experiments/HASHING_FINDINGS.md](experiments/HASHING_FINDINGS.md), including
+their output locations. Existing reports can be rendered without loading old
+indexes or implementing legacy hashing:
+
+```bash
+.venv/bin/python -m experiments.hash_collision_study \
+  --report-dir /path/to/existing/completed_study
+```
+
+The original JSON, CSV, exact-variant Parquet data and occurrence files remain
+unchanged by migration. Prefer Parquet for full-width numeric hashes; CSV
+readers must parse `hash` and `signature64` as unsigned 64-bit integers, not
+signed integers or floats. Generic regrouping helpers remain available for
+saved occurrence data; new legacy corpus collection and verification are not.
+
+The throughput benchmark now compares production rolling64 with an independent
+BLAKE2b-64 reference, not with a retained legacy implementation:
+
+```bash
+.venv/bin/python -m experiments.benchmark_hash_width --documents 5000 --repeats 5 \
+  --output /path/to/new/hash_width_speed.json
+```
+
+Timings include tokenization and UTF-8 preparation through winnowing, exclude
+decompression/index I/O and JIT warm-up, and rotate method order across repeats.
+The benchmark calls the same rolling implementation used by the index builder
+and detectors.
+This does not certify a collision rate for unseen data: collision quality and
+changes in selected positions must be measured on representative corpora.
+Merely widening the old modulus or storing old reduced hashes in uint64 does
+not implement this design.
+
+##### Profile complete index builds
+
+Profile a rolling64 build on a seeded 50,000-document Nynorsk sample, including
+extraction, inverted-index merging and forward-index creation. The historical
+legacy/rolling64 comparison is frozen; legacy build configurations are rejected.
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 POLARS_MAX_THREADS=1 NUMBA_NUM_THREADS=1 \
+  .venv/bin/python -m experiments.profile_index_build \
+  --documents 50000 --nb-workers 4 --output-dir /path/to/new/build_profile
+```
+
+This creates one phase-timed rolling64 index and one separate CPU-profiled
+diagnostic index. The output directory must be new; source indexes are not
+changed. `--nb-workers 4` gives three fingerprint-pool workers plus the producer,
+alongside the main indexing process. The runner uses fresh subprocesses, warms
+JIT compilation before timing, and explicitly uses Linux `fork`.
+
+`report.json`, `wall_time_phases.csv` and `build_profile.html` contain wall-time
+phases in seconds and percentages of total build time. Extraction also reports
+main-process insertion, sorting/export, and the remaining input/hash/IPC
+waiting and orchestration time; that last remainder is not pure hashing time.
+Diagnostic directories contain per-process cProfile files and CPU hotspot
+JSON/CSV tables. Exclusive CPU times are additive across processes; inclusive
+times overlap, and summed CPU time is not wall time. Instrumentation changes
+timings, so use the non-cProfile build for performance comparisons.
+
+Input preparation is reported separately and excluded from build timings.
+The controlled compressed input contains sampled IDs and text, not all original
+HPLT metadata. A single timing run, cache effects, and the
+single intermediate shard produced by this sample limit generalization to
+whole-corpus multi-shard builds. Completed indexes are retained for inspection.
+
+The index-statistics command (unlike the collision study) makes one sequential
+pass over postings; no corpus
 text or similarity computation is needed. Indexes without a forward index are
 supported. `--batch-entries` (default: 1,000,000) controls the target number of
 postings processed per batch, not a strict RAM limit: a single fingerprint's
