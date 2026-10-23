@@ -93,7 +93,7 @@ can compare each optimization with the current exact implementation.
 ## What exists today
 
 - The merged index stores sorted fingerprint posting lists with document IDs
-  and token positions. The postings can be interleaved or columnar.
+  and token positions. Full positional postings are interleaved only.
 - The forward index stores each document's **unique** fingerprints in numeric
   fingerprint order, **not source-document position order**. Its offsets are
   array slice boundaries, not token offsets. Posting lists may contain multiple
@@ -109,10 +109,12 @@ can compare each optimization with the current exact implementation.
 - Posting positions are available for later verification. The current forward
   index does not contain positions.
 
-#### Positional posting-layout decision remains open
+#### Canonical interleaved positional format
 
-The `columnar`/`interleaved` setting applies only to the full inverted index's
-document/position posting payload. The full forward index always uses
+The full inverted index uses interleaved `(doc_id:uint32, position:uint32)`
+postings only. Columnar support and layout-selection flags have been removed;
+declared columnar indexes are rejected with a rebuild message. This affects
+only the positional posting payload. The full forward index always uses
 document offsets plus concatenated hash-sorted unique uint64 fingerprints,
 without positions. The document-only sidecar has no document/position pair
 to interleave; its fingerprint/offset/document-ID arrays are independent of
@@ -133,22 +135,21 @@ arbitrary external text. External query helpers accept freshly computed
 fingerprints. Keeping all fingerprints in the full indexes is distinct from
 choosing their physical posting layout.
 
-Keep interleaved (the default) and columnar support while implementing the
-sidecar. The document-only `df >= 2` sidecar removes much of the motivation for
-columnar reads during indexed-document self-joins. Positional verification
-usually needs both IDs and positions, where interleaved provides one contiguous
-read. Both layouts have the same uncompressed posting payload size.
+The document-only `df >= 2` sidecar removes much of the motivation for columnar
+reads during indexed-document self-joins. Positional verification usually needs
+both IDs and positions, where interleaved provides one contiguous read. Both
+historical formats had the same uncompressed posting payload size.
 
 However, an external query can legitimately match a fingerprint found in only
 one indexed document. The singleton-free sidecar is not a lossless replacement
 for that search, and original-index document-only candidate retrieval still
-exists. Columnar may retain an I/O advantage there. Do not route all external
-queries through the sidecar or remove a layout before measuring those paths.
+exists. The interleaved-only decision accepts reading position bytes during
+those ID-only lookups. Do not route external queries through the sidecar to
+avoid this cost: doing so can lose legitimate singleton-based matches.
 
-Recommendation, not yet an implementation decision: use interleaved as the
-canonical positional format if sidecar and external-query benchmarks show no
-material benefit from keeping columnar. Do not store both physical copies just
-to support an option.
+The decision prioritizes one canonical format and simpler code, not a claim
+that interleaved won a new matched layout benchmark. The writeup is
+[experiments/POSTING_LAYOUT_FINDINGS.md](./experiments/POSTING_LAYOUT_FINDINGS.md).
 
 Relevant code: [index_builder.py](./findmytext/index_builder.py),
 [indexing.py](./findmytext/indexing.py), and
@@ -825,7 +826,8 @@ BLAKE2b-64; rolling64 was checked on its matched 50,000-document sample.
 The historical comparisons, storage findings and complete-build profiling
 are frozen in [experiments/HASHING_FINDINGS.md](./experiments/HASHING_FINDINGS.md).
 Legacy-dependent experiment runs are retired by choice. This migration does
-not implement the similarity-join sidecar or remove either posting layout.
+not implement the similarity-join sidecar. A subsequent storage change removes
+columnar support and makes interleaved canonical, as described above.
 
 The retired legacy implementation reduced token and rolling hashes modulo
 `2**31 - 1`, about 2.147 billion possibilities. It is not a full unsigned

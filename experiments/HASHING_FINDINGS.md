@@ -15,8 +15,9 @@ the current production code.
 - Historical report JSON/CSV/HTML, occurrence data, examples, and profiles are
   preserved. Legacy-dependent collection/build comparisons are retired.
   Existing collision reports can still be rendered without loading indexes.
-- Both positional posting layouts remain supported. Removing a layout is a
-  separate decision, not part of the hash migration.
+- A subsequent, separate decision standardized the positional index on
+  interleaved and removed columnar support. The findings and migration are in
+  [POSTING_LAYOUT_FINDINGS.md](POSTING_LAYOUT_FINDINGS.md).
 
 Production code: [winnower](../findmytext/winnower.py),
 [builder](../findmytext/index_builder.py), and
@@ -258,15 +259,15 @@ further hash arithmetic tuning. Possible hashing improvements include batched
 UTF-8 preparation, buffer reuse, and fused rolling/winnowing with identical
 tie handling. Token caching requires a benchmark and bounded memory.
 
-## Columnar versus interleaved positional postings
+## Historical layout trade-off and interleaved-only decision
 
-Both currently store 8 bytes per occurrence:
+Both layouts used 8 bytes per occurrence:
 
 - Interleaved: `(document, position), (document, position), ...`.
 - Columnar: all document IDs, followed by all positions.
 
-Columnar saves position I/O for document-only lookups. Interleaved obtains
-document/position pairs with one contiguous read and is the current default.
+Columnar saved position I/O for document-only lookups. Interleaved obtains
+document/position pairs with one contiguous read and is now the only format.
 The proposed sidecar stores sorted unique document IDs for `df >= 2`, with
 fingerprints ordered by `(df, hash)`; it is still a separate planned structure.
 
@@ -276,11 +277,12 @@ query candidate retrieval still uses the original index. A corpus-singleton
 fingerprint can be useful evidence for an external query, so the singleton-free
 sidecar cannot replace that lookup losslessly.
 
-Recommendation: retain both layouts during hash migration and until the
-sidecar is implemented and benchmarked. Then consider standardizing the
-positional index on interleaved if external-query and positional verification
-benchmarks show no meaningful columnar benefit. Do not maintain two physical
-copies merely to support both options.
+The subsequent decision accepts that possible external-query I/O trade-off
+to simplify storage and standardizes on interleaved. Columnar readers/writers,
+selection flags and the conversion benchmark are removed; declared columnar
+indexes are rejected rather than misread. This is an architectural simplicity
+decision, not a measured universal interleaved speed advantage. The sidecar
+is still planned. See [POSTING_LAYOUT_FINDINGS.md](POSTING_LAYOUT_FINDINGS.md).
 
 ## Location of frozen measurements
 

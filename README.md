@@ -71,6 +71,23 @@ checks, and collision/quality measurements remain corpus-specific.
 The full findings, historical comparisons, and migration decision are in
 [experiments/HASHING_FINDINGS.md](experiments/HASHING_FINDINGS.md).
 
+#### Canonical interleaved positional index
+
+The full inverted index always stores interleaved `(doc_id:uint32,
+position:uint32)` records: 8 bytes per occurrence. The fingerprint values are
+stored separately as uint64. The full forward index is unchanged: sorted
+unique uint64 fingerprints per document, with no positions.
+
+Columnar storage and the `--postings-layout`/`postings_layout` build options
+have been removed. Columnar metadata is rejected with an explicit rebuild
+message; changing metadata alone cannot convert posting bytes. Existing
+interleaved rolling64 indexes remain usable.
+
+The proposed `df >= 2` document-only screening sidecar remains separate and
+is not yet implemented. Full indexes retain singletons for external queries.
+The trade-offs and migration details are recorded in
+[experiments/POSTING_LAYOUT_FINDINGS.md](experiments/POSTING_LAYOUT_FINDINGS.md).
+
 #### Document similarities (separate step)
 
 Document-document similarities are computed *after* the index is built, so

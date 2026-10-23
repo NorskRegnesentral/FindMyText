@@ -23,7 +23,16 @@ from . import winnower
 
 POSTING_DTYPE = np.dtype([("doc_id", np.uint32), ("position", np.uint32)])
 POSTINGS_LAYOUT_INTERLEAVED = "interleaved"
-POSTINGS_LAYOUT_COLUMNAR = "columnar"
+
+
+def validate_postings_layout(meta: Dict[str, Any]) -> None:
+    layout = meta.get("postings_layout", POSTINGS_LAYOUT_INTERLEAVED)
+    if layout != POSTINGS_LAYOUT_INTERLEAVED:
+        raise ValueError(
+            f"Unsupported postings layout {layout!r}; only interleaved is supported. "
+            "Rebuild this index from source or compatible intermediate shards. "
+            "Changing meta.json alone cannot convert posting bytes."
+        )
 
 
 def _unique_sorted_doc_ids(doc_ids: np.ndarray) -> np.ndarray:
@@ -47,12 +56,12 @@ def iter_unique_posting_batches(
     lengths: np.ndarray,
     postings: np.ndarray,
     batch_entries: int = 10_000_000,
-    postings_layout: str = POSTINGS_LAYOUT_INTERLEAVED,
 ) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Stream the inverted index sequentially as de-duplicated (fingerprint, doc) pairs.
 
     Fingerprints are processed in consecutive batches holding roughly
     ``batch_entries`` posting entries (a single fingerprint is never split).
+    ``postings`` must use the interleaved ``POSTING_DTYPE`` record format.
 
     Yields:
         ``(batch_fingerprints, group, doc_ids)`` where ``group[i]`` indexes into
@@ -60,11 +69,11 @@ def iter_unique_posting_batches(
         Pairs are unique and sorted by ``(group, doc_id)``, so fingerprints appear
         in increasing order and each fingerprint's documents are sorted.
     """
+    if postings.dtype != POSTING_DTYPE:
+        raise ValueError("postings must use interleaved POSTING_DTYPE records")
     n_fps = len(fingerprints)
     if n_fps == 0:
         return
-    if postings_layout not in {POSTINGS_LAYOUT_INTERLEAVED, POSTINGS_LAYOUT_COLUMNAR}:
-        raise ValueError(f"Unknown postings layout: {postings_layout!r}")
     lengths_all = np.asarray(lengths, dtype=np.int64)
     entry_lengths = lengths_all
     entry_starts = np.r_[0, np.cumsum(entry_lengths[:-1], dtype=np.int64)]
@@ -79,10 +88,7 @@ def iter_unique_posting_batches(
         batch_lengths = entry_lengths[start:stop]
         first = int(entry_starts[start])
         last = int(entry_starts[stop - 1] + batch_lengths[-1])
-        if postings_layout == POSTINGS_LAYOUT_COLUMNAR:
-            docs = np.asarray(postings[first:last], dtype=np.uint64)
-        else:
-            docs = np.asarray(postings["doc_id"][first:last], dtype=np.uint64)
+        docs = np.asarray(postings["doc_id"][first:last], dtype=np.uint64)
         group = np.repeat(np.arange(stop - start, dtype=np.uint64), batch_lengths)
         keys = np.unique((group << np.uint64(32)) | docs)
 
@@ -312,14 +318,8 @@ class DiskBasedIndex:
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
             self.winnower = winnower.Winnower.from_metadata(meta)
-            self.postings_layout = meta.get(
-                "postings_layout", POSTINGS_LAYOUT_INTERLEAVED
-            )
-        if self.postings_layout not in {
-            POSTINGS_LAYOUT_INTERLEAVED,
-            POSTINGS_LAYOUT_COLUMNAR,
-        }:
-            raise ValueError(f"Unknown postings layout: {self.postings_layout!r}")
+            validate_postings_layout(meta)
+        self.postings_layout = POSTINGS_LAYOUT_INTERLEAVED
 
         # Load index arrays as memory-mapped files (zero RAM cost; served from OS page cache)
         self.fingerprints = np.load(
@@ -327,7 +327,6 @@ class DiskBasedIndex:
         )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
-        self._positions_offset = int(self.lengths.sum()) * 4
 
         forward_offsets_path = os.path.join(index_dir, "forward_offsets.npy")
         forward_fps_path = os.path.join(index_dir, "forward_fingerprints.npy")
@@ -376,14 +375,9 @@ class DiskBasedIndex:
         """Sequentially stream the inverted index; see :func:`iter_unique_posting_batches`."""
         if len(self.fingerprints) == 0:
             return
-        postings_dtype = (
-            POSTING_DTYPE
-            if self.postings_layout == POSTINGS_LAYOUT_INTERLEAVED
-            else np.uint32
-        )
         postings = np.memmap(
             os.path.join(self.index_dir, "postings.dat"),
-            dtype=postings_dtype,
+            dtype=POSTING_DTYPE,
             mode="r",
         )
         yield from iter_unique_posting_batches(
@@ -392,7 +386,6 @@ class DiskBasedIndex:
             self.lengths,
             postings,
             batch_entries,
-            postings_layout=self.postings_layout,
         )
 
     def get_document_fingerprints(self, internal_doc_id: int) -> np.ndarray:
@@ -671,18 +664,8 @@ class DiskBasedIndex:
         # 5. os.pread releases the GIL, so threads can overlap I/O safely.
         def _read_one(args):
             fp, offset, length = args
-            if self.postings_layout == POSTINGS_LAYOUT_COLUMNAR:
-                doc_data = os.pread(self._posting_fd, int(length) * 4, int(offset))
-                if only_doc_ids:
-                    return fp, int(length), doc_data, b""
-                position_data = os.pread(
-                    self._posting_fd,
-                    int(length) * 4,
-                    self._positions_offset + int(offset),
-                )
-                return fp, int(length), doc_data, position_data
             data = os.pread(self._posting_fd, int(length) * 8, int(offset))
-            return fp, int(length), data, b""
+            return fp, int(length), data
 
         results = {}
         read_args = zip(found_fingerprints, offsets, lengths)
@@ -696,24 +679,12 @@ class DiskBasedIndex:
             )
 
         # 6. read postings and populate results dictionary
-        for fp, length, data, position_data in read_iter:
-            if self.postings_layout == POSTINGS_LAYOUT_COLUMNAR:
-                doc_ids = np.frombuffer(data, dtype=np.uint32, count=length)
-                if only_doc_ids:
-                    results[fp] = doc_ids
-                else:
-                    postings_array = np.empty(length, dtype=POSTING_DTYPE)
-                    postings_array["doc_id"] = doc_ids
-                    postings_array["position"] = np.frombuffer(
-                        position_data, dtype=np.uint32, count=length
-                    )
-                    results[fp] = postings_array
+        for fp, length, data in read_iter:
+            postings_array = np.frombuffer(data, dtype=POSTING_DTYPE, count=length)
+            if only_doc_ids:
+                results[fp] = postings_array["doc_id"]
             else:
-                postings_array = np.frombuffer(data, dtype=POSTING_DTYPE)
-                if only_doc_ids:
-                    results[fp] = postings_array["doc_id"]
-                else:
-                    results[fp] = postings_array
+                results[fp] = postings_array
 
         return results
 

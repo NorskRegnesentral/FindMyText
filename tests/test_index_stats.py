@@ -42,11 +42,11 @@ def test_histogram_annotations_use_axis_coordinates(include_zero):
     assert figure.data[0].to_plotly_json()["x"][-1] == 297
 
 
-def write_index(folder, *, forward=True, layout="interleaved", empty=False):
+def write_index(folder, *, forward=True, empty=False):
     folder.mkdir(parents=True)
     (folder / "meta.json").write_text(json.dumps({
         "length": 4, "window_size": 6, "base": 257, "punctuation": False,
-        "postings_layout": layout, "hash_method": "rolling64-v1",
+        "postings_layout": "interleaved", "hash_method": "rolling64-v1",
     }))
     fingerprints = [] if empty else [10, 20, 30]
     lengths = np.array([] if empty else [4, 2, 1], dtype=np.uint32)
@@ -60,10 +60,7 @@ def write_index(folder, *, forward=True, layout="interleaved", empty=False):
     entries = [] if empty else [(0, 0), (0, 1), (0, 2), (1, 0),
                                 (0, 3), (0, 4), (2, 0)]
     postings = np.array(entries, dtype=POSTING_DTYPE)
-    if layout == "columnar":
-        np.concatenate([postings["doc_id"], postings["position"]]).tofile(folder / "postings.dat")
-    else:
-        postings.tofile(folder / "postings.dat")
+    postings.tofile(folder / "postings.dat")
     if forward:
         np.save(folder / "forward_offsets.npy",
                 np.array([0] if empty else [0, 2, 3, 4, 4], dtype=np.uint64))
@@ -73,9 +70,8 @@ def write_index(folder, *, forward=True, layout="interleaved", empty=False):
 
 
 @pytest.mark.parametrize("forward", [True, False])
-@pytest.mark.parametrize("layout", ["interleaved", "columnar"])
-def test_statistics_count_distinct_documents(tmp_path, forward, layout):
-    folder = write_index(tmp_path / "index", forward=forward, layout=layout)
+def test_statistics_count_distinct_documents(tmp_path, forward):
+    folder = write_index(tmp_path / "index", forward=forward)
     stats, figures = index_statistics("test", folder, batch_entries=2)
     expected = {
         "n_documents": 4,
@@ -96,7 +92,7 @@ def test_statistics_count_distinct_documents(tmp_path, forward, layout):
         "postings_per_fingerprint_max": 4,
         "inverted_pair_updates": 1,
         "has_forward_index": forward,
-        "postings_layout": layout,
+        "postings_layout": "interleaved",
     }
     for key, value in expected.items():
         assert stats[key] == value, key
@@ -113,6 +109,16 @@ def test_statistics_count_distinct_documents(tmp_path, forward, layout):
     assert list(frequency_trace["x"]) == [1, 2]
     assert list(frequency_trace["y"]) == [2, 1]
     assert list(posting_trace["x"]) == [1, 2, 4]
+
+
+def test_missing_layout_metadata_defaults_to_interleaved(tmp_path):
+    folder = write_index(tmp_path / "index")
+    metadata = json.loads((folder / "meta.json").read_text())
+    del metadata["postings_layout"]
+    (folder / "meta.json").write_text(json.dumps(metadata))
+    stats, _ = index_statistics("test", folder, batch_entries=2)
+    assert stats["postings_layout"] == "interleaved"
+    assert stats["n_postings"] == 7
 
 
 @pytest.mark.parametrize("forward", [True, False])

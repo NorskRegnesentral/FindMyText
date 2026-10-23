@@ -48,8 +48,7 @@ def test_production_hashes_deterministic_with_rightmost_ties_and_empty_input():
     assert list(positions) == list(range(2, 10))
 
 
-@pytest.mark.parametrize("layout", ["interleaved", "columnar"])
-def test_build_merge_query_and_detectors_preserve_high_bits(tmp_path, layout):
+def test_build_merge_query_and_detectors_preserve_high_bits(tmp_path):
     method = ROLLING64_HASH
     text = " ".join(f"source_token_{i}" for i in range(150))
     records = [{"id": "a", "text": text}, {"id": "b", "text": text},
@@ -61,9 +60,10 @@ def test_build_merge_query_and_detectors_preserve_high_bits(tmp_path, layout):
         window_size=6, nb_workers=2, max_nb_documents_before_flush=2,
     )
     target = tmp_path / "index"
-    index_builder.merge_indexes(shards, str(target), postings_layout=layout)
+    index_builder.merge_indexes(shards, str(target))
     index = indexing.DiskBasedIndex(str(target))
     assert index.winnower.hash_method == method
+    assert index.postings_layout == "interleaved"
     assert json.loads((target / "meta.json").read_text())["hash_method"] == method
     hashes, _ = index.winnower.get_winnowed_fingerprints(text)
     assert any(int(value) > 2**63 for value in hashes)
