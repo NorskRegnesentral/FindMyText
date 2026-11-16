@@ -1,5 +1,7 @@
 {
   "baseline_commit": "8d032a8b30d515925e98f288d3dae4893ee1f41b",
+  "candidate_commit": "1bcd60c",
+  "scope_note": "These build measurements predate the separate posting-read default change; no posting-query work is included in the build timers.",
   "candidate_hash_method": "polynomial64-fmix64",
   "date": "2026-11-16",
   "cpu": "Intel Xeon 6761P",

@@ -103,6 +103,8 @@ Small same-machine comparison against the original `main` commit above:
 **5,000 identical Nynorsk documents**, k=4/window=6, three timing runs per
 implementation/configuration with alternating old/new order, warmed JIT,
 and 2,000 documents per flush (three shards). Times are medians, in seconds.
+These build measurements were collected at `1bcd60c`, before the separate
+posting-read default change described below.
 The host was a shared Intel Xeon 6761P machine running Linux/Python 3.14.0,
 NumPy 2.5.3, Numba 0.68.0 and optional ISA-L GZip.
 
@@ -154,6 +156,65 @@ python experiments/benchmark_index_build.py \
 
 Use a new output directory; rerun with `--workers 1` for the single-worker
 comparison. The source corpus is not distributed with the benchmark.
+
+### Posting-read comparison (not index building)
+
+Posting-list retrieval now defaults to **one thread**, with no thread pool.
+This restores the research branch's sequential-read default; all existing
+detectors and the web adapter inherit it. Explicit parallel reads remain
+available for other storage/workload combinations:
+
+```python
+from findmytext.indexing import DiskBasedIndex
+
+index = DiskBasedIndex("my_index")  # sequential posting reads
+parallel_index = DiskBasedIndex("my_index", posting_read_threads=8)
+```
+
+This setting is separate from the builder's `nb_workers`. It controls reads of
+an **already-built index**, not corpus fingerprinting or shard merging.
+
+On the existing full Nynorsk positional index (1,028,632 documents;
+96,496,752 distinct hashes), the same **200 queries** were measured with one
+and eight read threads. Queries use unique stored-window fingerprints from
+the first 200 eligible records of the frozen 50,000-document sample, in a
+seeded common order. Each configuration/path was warmed first; five measured
+passes alternated thread-configuration order. Reader creation, corpus loading,
+fingerprinting, warm-up and output verification are excluded.
+
+| Work for all 200 queries, median seconds | Former 8-thread behavior | New sequential default | Speedup |
+|---|---:|---:|---:|
+| Fingerprint lookup, positional reads and array decoding | 2.744 | 0.204 | **13.4x** |
+| Retrieval plus candidate counting and top-50 ranking | 3.907 | 0.594 | **6.6x** |
+
+These queries requested 67,085 posting lists in total (including the same
+list requested by different queries), representing 31.51 MB of positional
+payload per pass. Many are small reads: thread scheduling and synchronization
+can cost more than the I/O they overlap. The second row includes document-ID
+deduplication/counting/ranking but **not passage clustering or text
+fingerprinting**, so it is not complete detector latency.
+
+All **4,000 timed query results** matched the sequential reference by output
+digest; focused tests also compare arrays and candidate counts directly.
+Index metadata/file identities were unchanged, and the benchmark never writes
+to the source index. The test corpus is warmed and the host is shared: these
+numbers are not cold-cache throughput, a guarantee on other storage, or a
+13x improvement in building the index. NumPy/OpenMP thread environment limits
+were set to one for both configurations.
+
+Raw per-pass timings, query-volume statistics, result digests and source
+identity are in
+[`experiments/posting_read_benchmark.json`](experiments/posting_read_benchmark.json).
+To repeat with matching corpus text and an existing positional index:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python experiments/benchmark_posting_reads.py \
+  /path/to/index /path/to/corpus.jsonl.zst \
+  --output /path/to/new-read-results.json --documents 200 --repeats 5
+```
+
+The script reads only the positional index and source text; it does not build
+or require a forward index, compute document similarities, or rebuild data.
 
 
 ### 2. Detect content

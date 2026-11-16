@@ -219,3 +219,54 @@ def test_buffered_msgpack_roundtrip_crosses_compression_buffer_boundaries(tmp_pa
     np.testing.assert_array_equal(
         restored.index_array[:restored.index_size], memory.index_array[:memory.index_size],
     )
+
+
+def test_default_posting_reads_avoid_pool_and_equal_explicit_threaded_reads(tmp_path, monkeypatch):
+    monkeypatch.setattr(indexing.MemoryBasedIndex, "_CHUNK", 100)
+    source = tmp_path / "corpus.jsonl"
+    records = make_corpus(source, count=3)
+    shards = index_builder.index_file(str(source), str(tmp_path / "shards"), nb_workers=1)
+    target = tmp_path / "index"
+    index_builder.merge_indexes(shards, str(target))
+    threaded = indexing.DiskBasedIndex(str(target), posting_read_threads=8)
+    queries, _ = threaded.winnower.get_winnowed_fingerprints(records[0]["text"])
+    queries = np.r_[queries[::-1], queries[:2], np.uint64(2**64 - 1)]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Default posting reads must not create a thread pool")
+
+    monkeypatch.setattr(indexing, "ThreadPoolExecutor", forbidden)
+    sequential = indexing.DiskBasedIndex(str(target))
+    for only_doc_ids in (False, True):
+        expected = threaded._get_postings(queries, only_doc_ids=only_doc_ids)
+        actual = sequential._get_postings(queries, only_doc_ids=only_doc_ids)
+        assert list(actual) == list(expected)
+        for fingerprint in expected:
+            np.testing.assert_array_equal(actual[fingerprint], expected[fingerprint])
+    assert sequential.get_match_counts(queries) == threaded.get_match_counts(queries)
+    assert sequential._get_postings(np.empty(0, dtype=np.uint64)) == {}
+    with pytest.raises(ValueError, match="at least 1"):
+        indexing.DiskBasedIndex(str(target), posting_read_threads=0)
+
+
+def test_posting_read_benchmark_compares_both_modes_without_writing_index(tmp_path, monkeypatch):
+    from experiments.benchmark_posting_reads import benchmark
+
+    monkeypatch.setattr(indexing.MemoryBasedIndex, "_CHUNK", 100)
+    source = tmp_path / "corpus.jsonl"
+    make_corpus(source, count=3)
+    shards = index_builder.index_file(str(source), str(tmp_path / "shards"), nb_workers=1)
+    target = tmp_path / "index"
+    index_builder.merge_indexes(shards, str(target))
+    before = {path.name: path.read_bytes() for path in target.iterdir()}
+    output = tmp_path / "reads.json"
+    report = benchmark(target, source, output, documents=3, repeats=2)
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == before
+    assert json.loads(output.read_text()) == report
+    for mode in ("positional_postings", "candidate_counts_top50"):
+        runs = [row for row in report["runs"] if row["mode"] == mode]
+        assert {row["threads"] for row in runs} == {1, 8}
+        assert len({row["ordered_results_sha256"] for row in runs}) == 1
+        assert all(row["all_queries_identical"] and row["queries_verified"] == 3 for row in runs)
+    with pytest.raises(ValueError, match="outside"):
+        benchmark(target, source, target / "invalid.json", documents=3, repeats=1)

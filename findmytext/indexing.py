@@ -225,9 +225,14 @@ class DiskBasedIndex:
     file that is accessed on demand.
     """
 
-    def __init__(self, index_dir: str):
-        """Initialize the disk-based index by loading the metadata and memory-mapped
-        files from the specified index directory."""
+    def __init__(self, index_dir: str, posting_read_threads: int = 1):
+        """Load a positional index; one posting-read thread avoids creating a pool.
+
+        Explicit larger counts are available for workloads that benefit from
+        concurrent reads. This setting does not control index-build processes.
+        """
+        if posting_read_threads < 1:
+            raise ValueError("posting_read_threads must be at least 1")
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
             self.winnower = winnower.Winnower.from_metadata(meta)
@@ -253,7 +258,10 @@ class DiskBasedIndex:
         # Raw fd (not a file object) so os.pread can be called concurrently from
         # multiple threads without a shared seek position.
         self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
-        self._io_pool = ThreadPoolExecutor(max_workers=8)
+        self._io_pool = (
+            ThreadPoolExecutor(max_workers=posting_read_threads)
+            if posting_read_threads > 1 else None
+        )
 
     def get_closest_matches(
         self, fingerprints: np.ndarray, min_fingerprints=5, top_k: int = 5
@@ -433,16 +441,17 @@ class DiskBasedIndex:
         offsets = offsets[order]
         lengths = lengths[order]
 
-        # 5. parallel reads: os.pread releases the GIL so threads overlap I/O;
-        #    no shared seek position means reads are safe to issue concurrently.
+        # os.pread avoids a shared seek position in the optional threaded path.
         def _read_one(args):
             fp, offset, length = args
             data = os.pread(self._posting_fd, int(length) * 8, int(offset))
             return fp, data
 
         results = {}
-        read_iter = self._io_pool.map(
-            _read_one, zip(found_fingerprints, offsets, lengths)
+        read_args = zip(found_fingerprints, offsets, lengths)
+        read_iter = (
+            self._io_pool.map(_read_one, read_args)
+            if self._io_pool is not None else map(_read_one, read_args)
         )
         if verbose:
             read_iter = tqdm.tqdm(
@@ -465,7 +474,7 @@ class DiskBasedIndex:
         if hasattr(self, "_posting_fd") and self._posting_fd >= 0:
             os.close(self._posting_fd)
             self._posting_fd = -1
-        if hasattr(self, "_io_pool"):
+        if hasattr(self, "_io_pool") and self._io_pool is not None:
             self._io_pool.shutdown(wait=False)
 
 
