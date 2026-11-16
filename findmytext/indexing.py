@@ -236,8 +236,6 @@ class DiskBasedIndex:
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
             self.winnower = winnower.Winnower.from_metadata(meta)
-            if meta.get("postings_layout", "interleaved") != "interleaved":
-                raise ValueError("Unsupported postings layout; rebuild an interleaved positional index")
 
         # Load index arrays as memory-mapped files (zero RAM cost; served from OS page cache)
         self.fingerprints = np.load(
