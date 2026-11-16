@@ -10,6 +10,45 @@ The tool builds on standard document fingerprinting techniques, and extends them
 
 A full step-by-step walkthrough is available in [`demo.ipynb`](demo.ipynb).
 
+## Research branch guide
+
+This is the `feature/document-similarity-index` research branch. Core package
+imports remain under `findmytext`; the research commands and evidence are
+organized separately:
+
+| Location | Contents |
+|---|---|
+| [findmytext/](findmytext/) | Indexes, similarity/overlap algorithms, detectors and source-record retrieval |
+| [experiments/indexing/](experiments/indexing/) | Hashing studies, index statistics, build profiles and index verification |
+| [experiments/similarity/](experiments/similarity/) | Similarity-method comparisons and posting-read benchmarks |
+| [experiments/overlap/](experiments/overlap/) | Exact overlap benchmarks, full-corpus runs and guarded queues |
+| [experiments/review/](experiments/review/) | Groups, passage review, domain analysis and highlighted text exports |
+| [notebooks/](notebooks/) | Controlled similarity demo and executed Nynorsk group review |
+| [docs/](docs/) | Similarity-join plan and hashing/posting-layout findings |
+| [reports/nynorsk/](reports/nynorsk/) | Readable domain investigations and complete highlighted source examples |
+| [reports/benchmarks/](reports/benchmarks/) | Historical benchmark logs |
+| [tests/](tests/) | Regression tests; existing test paths are unchanged |
+
+Run research commands from the repository root, for example
+`python -m experiments.overlap.benchmark_overlap_join --help` or
+`python -m experiments.review.review_overlap_groups --help`.
+The top-level `hplt_build.py` and `hplt_nynorsk.py` build entry points are
+retained. Generated corpus/index data and large run outputs remain outside
+git; local report paths in this README identify those external results.
+
+### Dated progress
+
+Dates below describe when the work/results were produced, not when they were
+subsequently grouped into commits.
+
+| Date | Completed work |
+|---|---|
+| 2026-10-23 | Rebuilt and verified all three Nynorsk indexes for 1,028,632 documents; added the rarity-ordered document-only overlap index and source-bound resumable builds. |
+| 2026-10-25 | Finished and verified Icelandic, Latvian and Bokmal index rebuilds; completed the full exact Nynorsk overlap run and derived the K sweep from its counts. |
+| 2026-10-25 to 2026-10-26 | Validated cross-corpus prefix pilots and introduced guarded full-run queues with a 32 GiB working allowance. |
+| 2026-10-26 | Computed full Nynorsk groups at K=50/30/20, built batch raw-document retrieval, and recorded default-detector passage and host-specific review evidence. |
+| 2026-11-16 | Committed the accumulated research work in focused feature/documentation commits, organized the folders above, and updated imports, commands, notebook setup and links. Existing pushed history and core import paths were preserved; no corpus results were recomputed for the reorganization. |
+
 ---
 
 ## Installation
@@ -41,6 +80,16 @@ the inverted index (fingerprint → postings), the merge writes a forward index
 (`forward_offsets.npy`, `forward_fingerprints.npy`: each document's sorted unique
 fingerprints). For an index merged without it (`build_forward=False`), run
 `index_builder.build_forward_index("my_index")`.
+
+#### How intermediate positional indexes are merged
+
+This is a **single k-way merge**, not a hierarchy of pairwise merges. Each
+intermediate MsgPack file is already sorted by fingerprint. Reader processes
+stream those files, while the main process uses a heap to select the next hash
+across all streams. Postings with the same hash are combined, document IDs are
+remapped, and the result is written once to the final positional index.
+The files are therefore neither loaded completely nor merged one whole file
+at a time. The separate overlap-index builder has its own disk-run merge logic.
 
 #### Rolling64 fingerprints and rebuilding old indexes
 
