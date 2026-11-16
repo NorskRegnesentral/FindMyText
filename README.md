@@ -92,32 +92,7 @@ Compiled hashing, buffered compression and fewer unnecessary processes improve
 the build pipeline. Sequential posting reads avoid thread-pool overhead for
 many small reads.
 
-### Index build time, index size and query latency
-
-Example measurements on the **same fresh 5,000-document Nynorsk index**,
-k=4/window=6, one build worker and sequential posting reads, on a shared
-Intel Xeon 6761P/Linux host with Python 3.14:
-
-| Metric | Measurement |
-|---|---:|
-| Index build time, median of three CLI builds | **8.01 s** |
-| Final index size, excluding intermediate shards | **18.36 MB** (17.51 MiB) |
-| Query latency, median / mean / p95 | **13.35 / 43.51 / 295.43 ms** |
-
-Build timing includes interpreter startup, imports and JIT with normal existing
-caches. Query timing measures the complete `FingerprintChainDetector.get_containment_scores`
-call on a loaded, warmed index: fingerprinting, retrieval, clustering and scoring.
-It excludes detector initialization and query preparation.
-
-Queries are 50 seeded positive 2,000-character fragments, measured over three
-passes using detector defaults. All 50 source documents were retrieved, all
-timed scores were stable, and no resource-safety exclusions were needed.
-These are **small-workload examples, not full-corpus paper results**; report
-the corpus size, settings, hardware, query workload and cache state with results.
-[Reproduce](experiments/benchmark_index_metrics.py) /
-[measurements and methodology](experiments/index_metrics.json).
-
-### Index building
+### Build speedup compared with original main
 
 Rerun medians for the same **5,000 Nynorsk documents** (19.3 MB JSONL),
 k=4/window=6. Original main uses legacy hashes; the updated implementation uses
@@ -126,13 +101,13 @@ excluding interpreter/import/JIT warm-up. CLI timings use three runs of separate
 index and merge processes, including startup/imports/JIT, with default flushing
 (one shard). Normal filesystem/JIT caches are retained.
 
-| Measurement | Original main | Updated implementation |
-|---|---:|---:|
-| Tokenization through winnowing | 1.87 | **0.69** |
-| API extraction + merge, `nb_workers=1` | 6.16 | **4.63** |
-| API extraction + merge, `nb_workers=4` | 4.82 | **4.81** |
-| CLI index + merge, `nb_workers=1` | 11.57 | **7.91** |
-| CLI index + merge, `nb_workers=4` | 9.66 | **8.51** |
+| Measurement | Original main (s) | Updated implementation (s) | Speedup |
+|---|---:|---:|---:|
+| Tokenization through winnowing | 1.87 | **0.69** | **2.7x** |
+| API extraction + merge, `nb_workers=1` | 6.16 | **4.63** | **1.33x** |
+| API extraction + merge, `nb_workers=4` | 4.82 | 4.81 | ~1.00x |
+| CLI index + merge, `nb_workers=1` | 11.57 | **7.91** | **1.46x** |
+| CLI index + merge, `nb_workers=4` | 9.66 | **8.51** | **1.14x** |
 
 These are complete builds of the **sample, not the full corpus**. Hashing is
 about **2.7x faster** and the single-worker API pipeline **1.33x faster**;
@@ -157,6 +132,31 @@ measurements are not cold-cache guarantees. Query timings exclude fingerprinting
 and passage clustering, and are **not index-build speedups**.
 [Benchmark script](experiments/benchmark_posting_reads.py) /
 [measurements and methodology](experiments/posting_read_benchmark.json).
+
+### Additional metrics: build time, index size and query latency
+
+Example measurements on the **same fresh 5,000-document Nynorsk index**,
+k=4/window=6, one build worker and sequential posting reads, on a shared
+Intel Xeon 6761P/Linux host with Python 3.14:
+
+| Metric | Measurement |
+|---|---:|
+| Index build time, median of three CLI builds | **8.01 s** |
+| Final index size, excluding intermediate shards | **18.36 MB** (17.51 MiB) |
+| Query latency, median / mean / p95 | **13.35 / 43.51 / 295.43 ms** |
+
+Build timing includes interpreter startup, imports and JIT with normal existing
+caches. Query timing measures the complete `FingerprintChainDetector.get_containment_scores`
+call on a loaded, warmed index: fingerprinting, retrieval, clustering and scoring.
+It excludes detector initialization and query preparation.
+
+Queries are 50 seeded positive 2,000-character fragments, measured over three
+passes using detector defaults. All 50 source documents were retrieved, all
+timed scores were stable, and no resource-safety exclusions were needed.
+These are **small-workload examples, not full-corpus paper results**; report
+the corpus size, settings, hardware, query workload and cache state with results.
+[Reproduce](experiments/benchmark_index_metrics.py) /
+[measurements and methodology](experiments/index_metrics.json).
 
 ## License
 
