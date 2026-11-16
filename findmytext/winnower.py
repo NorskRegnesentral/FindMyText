@@ -22,8 +22,11 @@ class Winnower:
     algorithm."""
 
     def __init__(
-        self, length: int = 5, window_size: int = 6,
-        base: int = ROLLING_BASE64, punctuation=False,
+        self,
+        length: int = 5,
+        window_size: int = 6,
+        base: int = ROLLING_BASE64,
+        punctuation=False,
     ):
         """Initialize the Winnower with specified parameters.
 
@@ -36,12 +39,14 @@ class Winnower:
         """
         if length < 1 or window_size < 1:
             raise ValueError("length and window_size must be positive")
-        if (
-            not isinstance(base, (int, np.integer)) or isinstance(base, (bool, np.bool_))
+        if not isinstance(base, (int, np.integer)) or isinstance(
+            base, (bool, np.bool_)
         ):
             raise ValueError("The rolling base must be an integer")
         if not 1 < base < 2**64 or base % 2 == 0:
-            raise ValueError("The rolling hash requires an odd base between 3 and 2**64 - 1")
+            raise ValueError(
+                "The rolling hash requires an odd base between 3 and 2**64 - 1"
+            )
         self.length = length
         self.window_size = window_size
         self.base = int(base)
@@ -74,12 +79,16 @@ class Winnower:
 
     def get_token_fingerprints(self, tokens: List[str]) -> np.ndarray:
         """Hash every k-gram before winnowing with polynomial64-fmix64."""
-        return get_fingerprints64(tokens2uint64(tokens), self.length, np.uint64(self.base))
+        return get_fingerprints64(
+            tokens2uint64(tokens), self.length, np.uint64(self.base)
+        )
 
     def to_metadata(self) -> dict:
         return {
-            "length": self.length, "window_size": self.window_size,
-            "base": self.base, "punctuation": self.punctuation,
+            "length": self.length,
+            "window_size": self.window_size,
+            "base": self.base,
+            "punctuation": self.punctuation,
             "hash_method": HASH_METHOD,
         }
 
@@ -92,8 +101,10 @@ class Winnower:
                 "changing metadata alone cannot convert fingerprints."
             )
         return cls(
-            length=meta["length"], window_size=meta["window_size"],
-            base=meta["base"], punctuation=meta["punctuation"],
+            length=meta["length"],
+            window_size=meta["window_size"],
+            base=meta["base"],
+            punctuation=meta["punctuation"],
         )
 
     def get_winnowed_fingerprints_batch(
@@ -143,7 +154,7 @@ def tokens2uint64(tokens: List[str]) -> np.ndarray:
     offsets = np.zeros(len(tokens) + 1, dtype=np.int64)
     offsets[1:] = np.cumsum([len(token) for token in encoded])
     return _hash_token_bytes64(
-        np.frombuffer(b"".join(encoded), dtype=np.uint8), offsets,
+        np.frombuffer(b"".join(encoded), dtype=np.uint8), offsets
     )
 
 
@@ -167,8 +178,9 @@ def get_fingerprints64(tokens, length, base=ROLLING_BASE64):
     result = np.empty(len(tokens) - length + 1, dtype=np.uint64)
     for position in range(len(result)):
         if position:
-            state = (state - tokens[position - 1] * power
-                     + tokens[position + length - 1]) * unsigned_base
+            state = (
+                state - tokens[position - 1] * power + tokens[position + length - 1]
+            ) * unsigned_base
         value = state
         value ^= value >> np.uint64(33)
         value *= np.uint64(0xFF51AFD7ED558CCD)
