@@ -14,10 +14,7 @@ import numpy as np
 from numba import njit
 
 HASH_METHOD = "polynomial64-fmix64"
-LEGACY_HASH = "legacy31"
-HASH_METHODS = (HASH_METHOD, LEGACY_HASH)
 ROLLING_BASE64 = 0x9E3779B185EBCA87
-_HASH_MOD = (1 << 31) - 1
 
 
 class Winnower:
@@ -26,38 +23,29 @@ class Winnower:
 
     def __init__(
         self, length: int = 5, window_size: int = 6,
-        base: int | None = None, punctuation=False,
-        hash_method: str = HASH_METHOD,
+        base: int = ROLLING_BASE64, punctuation=False,
     ):
         """Initialize the Winnower with specified parameters.
 
         Args:
             length: The length of k-grams for fingerprinting.
             window_size: The size of the window for winnowing.
-            base: Rolling base; defaults to an odd 64-bit base, or 256 for legacy31.
+            base: Odd base for the polynomial rolling hash modulo 2**64.
             punctuation: Whether to include punctuation in the tokenization.
-            hash_method: polynomial64-fmix64 (default) or paper-compatible legacy31.
 
         """
-        if hash_method not in HASH_METHODS:
-            raise ValueError(f"Unsupported hash_method {hash_method!r}; choose from {HASH_METHODS}")
         if length < 1 or window_size < 1:
             raise ValueError("length and window_size must be positive")
-        if base is None:
-            base = 256 if hash_method == LEGACY_HASH else ROLLING_BASE64
         if (
             not isinstance(base, (int, np.integer)) or isinstance(base, (bool, np.bool_))
         ):
             raise ValueError("The rolling base must be an integer")
-        if hash_method == HASH_METHOD and (not 1 < base < 2**64 or base % 2 == 0):
+        if not 1 < base < 2**64 or base % 2 == 0:
             raise ValueError("The rolling hash requires an odd base between 3 and 2**64 - 1")
-        if hash_method == LEGACY_HASH and not -(2**63) <= base < 2**63:
-            raise ValueError("legacy31 requires a signed 64-bit rolling base")
         self.length = length
         self.window_size = window_size
         self.base = int(base)
         self.punctuation = punctuation
-        self.hash_method = hash_method
 
     def get_winnowed_fingerprints(self, document: str) -> Tuple[np.ndarray, np.ndarray]:
         """Compute winnowed fingerprints for the given document string.
@@ -85,28 +73,27 @@ class Winnower:
         return winnowed_fingerprints, winnowed_positions
 
     def get_token_fingerprints(self, tokens: List[str]) -> np.ndarray:
-        """Hash every k-gram before winnowing with the configured method."""
-        if self.hash_method == LEGACY_HASH:
-            return get_fingerprints(tokens2unicode(tokens), self.base, self.length)
+        """Hash every k-gram before winnowing with polynomial64-fmix64."""
         return get_fingerprints64(tokens2uint64(tokens), self.length, np.uint64(self.base))
 
     def to_metadata(self) -> dict:
         return {
             "length": self.length, "window_size": self.window_size,
             "base": self.base, "punctuation": self.punctuation,
-            "hash_method": self.hash_method,
+            "hash_method": HASH_METHOD,
         }
 
     @classmethod
     def from_metadata(cls, meta: dict) -> "Winnower":
-        # Paper-era metadata had no method field; its hashes are always legacy31.
-        method = meta.get("hash_method", LEGACY_HASH)
-        if method == "rolling64-v1":
-            method = HASH_METHOD
+        if meta.get("hash_method") != HASH_METHOD:
+            raise ValueError(
+                f"Unsupported or missing hash_method: {meta.get('hash_method')!r}. "
+                f"Rebuild indexes and intermediate shards from source using {HASH_METHOD}; "
+                "changing metadata alone cannot convert fingerprints."
+            )
         return cls(
             length=meta["length"], window_size=meta["window_size"],
             base=meta["base"], punctuation=meta["punctuation"],
-            hash_method=method,
         )
 
     def get_winnowed_fingerprints_batch(
@@ -136,44 +123,6 @@ class Winnower:
             document = re.sub(r"[^\w\s]", "", document, flags=re.UNICODE)
         tokens = document.split()
         return tokens
-
-
-def tokens2unicode(tokens: List[str]) -> np.ndarray:
-    """Original paper token hashing, including reduction modulo 2**31 - 1."""
-    results = np.empty(len(tokens), dtype=np.int64)
-    for i, token in enumerate(tokens):
-        h = 1469598103934665603
-        for b in token.encode("utf-8"):
-            h ^= b
-            h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-        results[i] = h % _HASH_MOD
-    return results
-
-
-@njit(cache=True)
-def get_fingerprints(unicode_tokens, base, length):
-    """Original paper rolling kernel; retain its signed arithmetic for reproduction."""
-    mod = _HASH_MOD
-    b_pow_k = 1
-    for _ in range(length):
-        b_pow_k = (b_pow_k * base) % mod
-    n = len(unicode_tokens)
-    if length <= 0 or n < length:
-        return np.empty(0, dtype=np.int64)
-    H = 0
-    for i in range(length):
-        H = (H * base + unicode_tokens[i]) % mod
-    H = (H * base) % mod
-    fingerprints = np.empty(n - length + 1, dtype=np.int64)
-    fingerprints[0] = H
-    for i in range(1, n - length + 1):
-        H = (
-            ((H - unicode_tokens[i - 1] * b_pow_k) + unicode_tokens[i + length - 1])
-            * base
-            % mod
-        )
-        fingerprints[i] = H
-    return fingerprints
 
 
 @njit(cache=True, nogil=True)

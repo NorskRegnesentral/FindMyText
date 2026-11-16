@@ -92,7 +92,6 @@ class TextContainmentDetector:
             window_size=1,
             base=self.index.winnower.base,
             punctuation=self.index.winnower.punctuation,
-            hash_method=self.index.winnower.hash_method,
         )
 
     def find_matches_jaccard(self, text: str, score: str = "count") -> Dict[str, float]:

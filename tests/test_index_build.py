@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 
 from findmytext import detectors, index_builder, indexing, web
-from findmytext.winnower import HASH_METHOD, LEGACY_HASH, ROLLING_BASE64, Winnower, winnow
+from findmytext.winnower import HASH_METHOD, ROLLING_BASE64, Winnower, winnow
 
 
 def reference_fingerprints(tokens, length, base):
@@ -53,10 +53,9 @@ def test_hashing_matches_independent_unsigned_reference_and_rightmost_winnowing(
         assert Winnower(length=4).get_winnowed_fingerprints(text)[0].dtype == np.uint64
         assert not len(Winnower(length=4).get_winnowed_fingerprints(text)[0])
     configured = Winnower(length=4)
-    research_meta = {**configured.to_metadata(), "hash_method": "rolling64-v1"}
-    assert Winnower.from_metadata(research_meta).to_metadata() == configured.to_metadata()
-    with pytest.raises(ValueError, match="Unsupported"):
-        Winnower(hash_method="unknown")
+    assert Winnower.from_metadata(configured.to_metadata()).to_metadata() == configured.to_metadata()
+    with pytest.raises(TypeError, match="hash_method"):
+        Winnower(hash_method="legacy31")
     frame = detectors.convert_closest_matches_with_positions_to_df({"document": {2**63 + 9: [3]}})
     assert frame["hash"].dtype == pl.UInt64 and frame["hash"][0] == 2**63 + 9
 
@@ -90,21 +89,19 @@ def assert_index_matches_source(directory, records):
     return reader
 
 
-@pytest.mark.parametrize("hash_method", [HASH_METHOD, LEGACY_HASH])
-def test_multiple_sub_thousand_flushes_preserve_every_occurrence_and_query(tmp_path, monkeypatch, hash_method):
+def test_multiple_sub_thousand_flushes_preserve_every_occurrence_and_query(tmp_path, monkeypatch):
     monkeypatch.setattr(indexing.MemoryBasedIndex, "_CHUNK", 100)
     source = tmp_path / "corpus.jsonl"
     records = make_corpus(source)
     shards = index_builder.index_file(
         str(source), str(tmp_path / "shards"), nb_workers=1,
         max_nb_documents_before_flush=2,
-        hash_method=hash_method,
     )
     assert len(shards) == len(set(shards)) == 4
     target = tmp_path / "index"
     index_builder.merge_indexes(shards, str(target))
     reader = assert_index_matches_source(target, records)
-    assert reader.winnower.to_metadata()["hash_method"] == hash_method
+    assert reader.winnower.to_metadata()["hash_method"] == HASH_METHOD
     assert not list(target.glob("forward*"))
     query = records[0]["text"]
     for cls in (detectors.NbSharedFingerprintsDetector, detectors.FingerprintChainDetector):
@@ -119,8 +116,7 @@ def test_multiple_sub_thousand_flushes_preserve_every_occurrence_and_query(tmp_p
 
 
 @pytest.mark.parametrize("start_method", [name for name in ("spawn", "forkserver") if name in mp.get_all_start_methods()])
-@pytest.mark.parametrize("hash_method", [HASH_METHOD, LEGACY_HASH])
-def test_parallel_build_accepts_generator_with_modern_start_methods(tmp_path, start_method, hash_method):
+def test_parallel_build_accepts_generator_with_modern_start_methods(tmp_path, start_method):
     source = tmp_path / "corpus.jsonl"
     records = make_corpus(source, count=4)
     script = (
@@ -128,7 +124,7 @@ def test_parallel_build_accepts_generator_with_modern_start_methods(tmp_path, st
         "from findmytext import index_builder\n"
         "if __name__ == '__main__':\n"
         f"    mp.set_start_method({start_method!r})\n"
-        f"    shards = index_builder.index_file({str(source)!r}, {str(tmp_path / 'shards')!r}, nb_workers=2, max_nb_documents_before_flush=2, hash_method={hash_method!r})\n"
+        f"    shards = index_builder.index_file({str(source)!r}, {str(tmp_path / 'shards')!r}, nb_workers=2, max_nb_documents_before_flush=2)\n"
         f"    index_builder.merge_indexes(shards, {str(tmp_path / 'index')!r})\n"
     )
     completed = subprocess.run(
@@ -179,12 +175,12 @@ def test_merge_rejects_unknown_and_mixed_settings_before_writing(tmp_path):
     with pytest.raises(ValueError, match="Unsupported"):
         indexing.MemoryBasedIndex(invalid)
     shards = [tmp_path / f"part{i}.mpk.gz" for i in range(2)]
-    for different in ("method", "length"):
+    for different in ("base", "length"):
         configurations = [
             Winnower(length=4, base=1_000_003),
             Winnower(
-                length=5 if different == "length" else 4, base=1_000_003,
-                hash_method=LEGACY_HASH if different == "method" else HASH_METHOD,
+                length=5 if different == "length" else 4,
+                base=1_000_033 if different == "base" else 1_000_003,
             ),
         ]
         for shard, configured in zip(shards, configurations):
@@ -193,6 +189,40 @@ def test_merge_rejects_unknown_and_mixed_settings_before_writing(tmp_path):
         with pytest.raises(ValueError, match="Incompatible"):
             index_builder.merge_indexes(list(map(str, shards)), str(target))
         assert not target.exists()
+
+
+@pytest.mark.parametrize("method", [None, "legacy31", "rolling64-v1"])
+def test_old_hash_formats_require_rebuild_without_writing_outputs(tmp_path, method):
+    metadata = Winnower(length=4).to_metadata()
+    if method is None:
+        del metadata["hash_method"]
+    else:
+        metadata["hash_method"] = method
+    (tmp_path / "meta.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="Rebuild"):
+        indexing.DiskBasedIndex(str(tmp_path))
+    with pytest.raises(ValueError, match="Rebuild"):
+        indexing.MemoryBasedIndex(metadata)
+    shard = tmp_path / "old.mpk.gz"
+    write_shard(shard, metadata)
+    target = tmp_path / "output"
+    with pytest.raises(ValueError, match="Rebuild"):
+        index_builder.merge_indexes([str(shard)], str(target))
+    assert not target.exists()
+
+
+def test_hash_method_selection_is_not_available_in_api_or_cli(tmp_path):
+    with pytest.raises(TypeError, match="hash_method"):
+        index_builder.index_file("unused.jsonl", str(tmp_path / "shards"), hash_method="legacy31")
+    completed = subprocess.run(
+        [
+            sys.executable, "-m", "findmytext.index_builder", "index", "unused.jsonl",
+            str(tmp_path / "shards"), "--hash-method", "legacy31",
+        ],
+        cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=30,
+    )
+    assert completed.returncode != 0 and "unrecognized arguments" in completed.stderr
+    assert not (tmp_path / "shards").exists()
 
 
 def test_truncated_merge_reader_raises_instead_of_hanging_or_finishing(tmp_path):

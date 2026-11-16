@@ -55,7 +55,6 @@ def index_file(
     delete_existing: bool = False,
     nb_workers: int = 1,
     max_nb_documents_before_flush=1_000_000,
-    hash_method: str = winnower.HASH_METHOD,
 ) -> List[str]:
     """Index documents from a corpus file and save intermediate index files to output_dir.
 
@@ -77,7 +76,6 @@ def index_file(
             Values above one use max(1, nb_workers - 1) fingerprint workers.
             nb_workers=1 fingerprints directly in the parent.
         max_nb_documents_before_flush: Maximum number of documents to hold in memory before flushing to disk. Default is 1M.
-        hash_method: polynomial64-fmix64 (default), or legacy31 for paper reproduction.
 
     Returns:
         List of paths to the saved intermediate index files.
@@ -91,7 +89,7 @@ def index_file(
     if stop_after is not None and stop_after < 0:
         raise ValueError("stop_after must be nonnegative")
     configured_winnower = winnower.Winnower(
-        length=length, window_size=window_size, hash_method=hash_method,
+        length=length, window_size=window_size,
     )
 
     if corpus_file.endswith(".jsonl"):
@@ -124,7 +122,7 @@ def index_file(
 
     # Get batched fingerprints from the stream using a producer-consumer pattern.
     batch_results = get_batched_fingerprints(
-        stream, stop_after, nb_workers, length, window_size, hash_method
+        stream, stop_after, nb_workers, length, window_size
     )
 
     total_count = 0
@@ -157,7 +155,6 @@ def get_batched_fingerprints(
     nb_workers: int,
     length: int,
     window_size: int,
-    hash_method: str = winnower.HASH_METHOD,
 ) -> Iterator[Dict[str, List[Tuple[int, int]]]]:
     """Get batched fingerprints from the stream using a producer-consumer pattern.
     The fingerprinting is extracted with winnowing in parallel using multiple
@@ -169,7 +166,6 @@ def get_batched_fingerprints(
         nb_workers: Process budget including the reading/inserting parent.
         length: k-gram length for fingerprinting.
         window_size: Winnowing window size.
-        hash_method: Hash method propagated to all fingerprint workers.
 
     Returns:
         Iterator[Dict[str, List[Tuple[int, int]]]]: An iterator over batched
@@ -181,7 +177,7 @@ def get_batched_fingerprints(
     if nb_workers < 1:
         raise ValueError("Worker count must be positive")
     batch_winnower = winnower.Winnower(
-        length=length, window_size=window_size, hash_method=hash_method
+        length=length, window_size=window_size
     ).get_winnowed_fingerprints_batch
     batches = utils.generate_batches(stream, stop_after)
     if nb_workers == 1:
@@ -569,10 +565,6 @@ if __name__ == "__main__":
     index_parser.add_argument(
         "--stop_after", type=int, default=None, help="Stop after this many samples"
     )
-    index_parser.add_argument(
-        "--hash-method", choices=winnower.HASH_METHODS, default=winnower.HASH_METHOD,
-        help="Fingerprint method (default: polynomial64-fmix64; legacy31 reproduces paper hashes)",
-    )
 
     # --- merge task ---
     merge_parser = subparsers.add_parser(
@@ -599,7 +591,6 @@ if __name__ == "__main__":
             output_dir=args.output_dir,
             stop_after=args.stop_after,
             nb_workers=args.nb_workers,
-            hash_method=args.hash_method,
         )
 
     elif args.task == "merge":

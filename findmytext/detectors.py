@@ -75,7 +75,6 @@ class _BaseDetector(ABC):
             window_size=1,
             base=self.index.winnower.base,
             punctuation=self.index.winnower.punctuation,
-            hash_method=self.index.winnower.hash_method,
         )
 
         # Mean fingerprint weight across the whole index, used to normalise rarity

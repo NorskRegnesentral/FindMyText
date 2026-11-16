@@ -74,45 +74,48 @@ alignment = oracle.align(query_text, corpus_document_text)
 alignment.show()  # highlighted alignment in a notebook
 ```
 
-## Hashing and paper reproducibility
+## Hashing and rebuilding indexes
 
-| Method | Use |
-|---|---|
-| **`polynomial64-fmix64`** (default) | Full unsigned 64-bit fingerprints to reduce hash collisions |
-| **`legacy31`** | Original modulo-`2**31 - 1` hashes for reproducing paper-era results |
-
-The default combines compiled UTF-8 token hashing, polynomial rolling arithmetic
+**`polynomial64-fmix64` is the only supported hashing method.** It uses full
+unsigned 64-bit fingerprints, combining compiled UTF-8 token hashing, rolling arithmetic
 modulo `2**64`, and the `fmix64` finalizer. It is non-cryptographic; the larger
 hash space reduces collisions but does not guarantee their absence.
 
-To select the original method:
-
-```bash
-python -m findmytext.index_builder index corpus.jsonl paper_fingerprints \
-  --hash-method legacy31 --length 4 --window_size 6
-python -m findmytext.index_builder merge paper_fingerprints paper_index
-```
-
-The API equivalent is `index_builder.index_file(..., hash_method="legacy31")`.
-Legacy mode uses the original base of 256. Reproduction also requires the same
-input records, parameters and seeds.
-
-Readers automatically follow index metadata. Old indexes without a method
-label are recognized as `legacy31`; the earlier `rolling64-v1` label is accepted
-as an alias for the new method. Incompatible shards cannot be merged.
-**Changing an index's hashing method requires rebuilding from source, not
-editing its metadata.**
-
-Legacy compatibility was checked against the
-[original implementation](https://github.com/NorskRegnesentral/FindMyText/commit/8d032a8b30d515925e98f288d3dae4893ee1f41b):
-fingerprints, positions, index payloads and detector scores matched.
-[Verification details](experiments/legacy_hash_compatibility.json).
+**Breaking change: rebuild existing corpus indexes and intermediate shards from
+source.** Missing method metadata, `legacy31`, and the previous experimental
+`rolling64-v1` label are rejected with a rebuild error. There is no hashing-method
+argument or CLI selector. Do not edit metadata to make an old index appear new.
 
 ## Performance
 
 Compiled hashing, buffered compression and fewer unnecessary processes improve
 the build pipeline. Sequential posting reads avoid thread-pool overhead for
 many small reads.
+
+### Index build time, index size and query latency
+
+Example measurements on the **same fresh 5,000-document Nynorsk index**,
+k=4/window=6, one build worker and sequential posting reads, on a shared
+Intel Xeon 6761P/Linux host with Python 3.14:
+
+| Metric | Measurement |
+|---|---:|
+| Index build time, median of three CLI builds | **8.01 s** |
+| Final index size, excluding intermediate shards | **18.36 MB** (17.51 MiB) |
+| Query latency, median / mean / p95 | **13.35 / 43.51 / 295.43 ms** |
+
+Build timing includes interpreter startup, imports and JIT with normal existing
+caches. Query timing measures the complete `FingerprintChainDetector.get_containment_scores`
+call on a loaded, warmed index: fingerprinting, retrieval, clustering and scoring.
+It excludes detector initialization and query preparation.
+
+Queries are 50 seeded positive 2,000-character fragments, measured over three
+passes using detector defaults. All 50 source documents were retrieved, all
+timed scores were stable, and no resource-safety exclusions were needed.
+These are **small-workload examples, not full-corpus paper results**; report
+the corpus size, settings, hardware, query workload and cache state with results.
+[Reproduce](experiments/benchmark_index_metrics.py) /
+[measurements and methodology](experiments/index_metrics.json).
 
 ### Index building
 
