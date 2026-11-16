@@ -1,4 +1,4 @@
-"""Compare two source checkouts on the same bounded JSONL index build."""
+"""Compare warmed API or startup-inclusive CLI builds on the same bounded JSONL."""
 
 from __future__ import annotations
 
@@ -24,19 +24,44 @@ def build_one(args):
     mp.set_start_method(args.start_method, force=True)
     records = [json.loads(line) for line in args.corpus.read_text().splitlines()]
     configured = Winnower(length=4, window_size=6)
-    warmup = time.perf_counter()
-    configured.get_winnowed_fingerprints(records[0]["text"])
-    warmup = time.perf_counter() - warmup
+    warmup = 0.0
+    if not args.cli:
+        started = time.perf_counter()
+        configured.get_winnowed_fingerprints(records[0]["text"])
+        warmup = time.perf_counter() - started
     output = args.output
     output.mkdir()
+
+    def run_cli(arguments):
+        wrapper = (
+            "import multiprocessing as mp, runpy; "
+            f"mp.set_start_method({args.start_method!r}); "
+            "runpy.run_module('findmytext.index_builder', run_name='__main__')"
+        )
+        subprocess.run(
+            [sys.executable, "-c", wrapper, *arguments],
+            cwd=args.checkout, check=True, timeout=600,
+        )
+
     build_started = time.perf_counter()
-    shards = index_builder.index_file(
-        str(args.corpus), str(output / "shards"), length=4, window_size=6,
-        nb_workers=args.workers, max_nb_documents_before_flush=2000,
-    )
+    if args.cli:
+        run_cli([
+            "index", str(args.corpus), str(output / "shards"),
+            "--length", "4", "--window_size", "6", "--nb_workers", str(args.workers),
+        ])
+    else:
+        shards = index_builder.index_file(
+            str(args.corpus), str(output / "shards"), length=4, window_size=6,
+            nb_workers=args.workers, max_nb_documents_before_flush=2000,
+        )
     extracted = time.perf_counter()
-    index_builder.merge_indexes(shards, str(output / "index"))
+    if args.cli:
+        run_cli(["merge", str(output / "shards"), str(output / "index")])
+    else:
+        index_builder.merge_indexes(shards, str(output / "index"))
     merged = time.perf_counter()
+    if args.cli:
+        shards = list(map(str, sorted((output / "shards").glob("*.mpk.gz"))))
     reader = indexing.DiskBasedIndex(str(output / "index"))
     names = list(reader.to_external_doc_id)
     if len(names) != len(records) or set(names) != {row["id"] for row in records}:
@@ -75,6 +100,8 @@ def build_one(args):
         "intermediate_bytes": sum(Path(path).stat().st_size for path in shards),
         "tokenization_to_winnowing_seconds": statistics.median(hash_times),
         "jit_warmup_seconds_excluded": warmup,
+        "timing_mode": "startup_inclusive_cli" if args.cli else "warmed_api",
+        "intermediate_shards": len(shards),
     }
     return result
 
@@ -88,9 +115,15 @@ def main():
     parser.add_argument("--documents", type=int, default=5000)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--cli", action="store_true",
+        help="Time separate CLI processes with startup/JIT and default flushing (requires --start-method fork)",
+    )
     parser.add_argument("--start-method", choices=mp.get_all_start_methods(), default=mp.get_start_method())
     parser.add_argument("--checkout", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.cli and args.start_method != "fork":
+        parser.error("--cli comparison requires --start-method fork to run unchanged original main")
     if args.checkout:
         result = build_one(args)
         (args.output / "result.json").write_text(json.dumps(result, indent=2))
@@ -130,6 +163,8 @@ def main():
                 "--checkout", str(checkout), "--corpus", str(sample), "--output", str(destination),
                 "--workers", str(args.workers), "--start-method", args.start_method,
             ]
+            if args.cli:
+                command.append("--cli")
             env = {**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}
             with (output / f"{label}-{repeat + 1}.log").open("w") as log:
                 subprocess.run(command, cwd=checkout, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
@@ -139,8 +174,13 @@ def main():
         "documents": count, "workers_argument": args.workers, "start_method": args.start_method,
         "python": platform.python_version(), "platform": platform.platform(),
         "input_sha256": hashlib.sha256(sample.read_bytes()).hexdigest(),
-        "scope": "Extraction + positional merge only; no forward index or document similarity.",
-        "timing": "Fresh child per build, warmed parent JIT; alternate old/new order. Input sampling, occurrence verification and separate hashing loop excluded.",
+        "scope": "Extraction + positional merge on the sampled JSONL, not a full-corpus build.",
+        "timing_mode": "startup_inclusive_cli" if args.cli else "warmed_api",
+        "flush_documents": 1_000_000 if args.cli else 2000,
+        "timing": (
+            "Separate CLI index/merge processes, including their interpreter/import/startup/JIT time; no explicit JIT warm-up, normal existing caches retained."
+            if args.cli else "Fresh child per build, warmed parent JIT; interpreter/import/JIT warm-up excluded."
+        ) + " Alternate old/new order; input sampling, occurrence verification and separate hashing loop excluded. Timed writes use normal OS buffering, without a durability fsync.",
         "runs": runs,
         "medians": {
             label: {

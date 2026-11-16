@@ -116,18 +116,26 @@ many small reads.
 
 ### Index building
 
-Median seconds for **5,000 Nynorsk documents**, three runs, k=4/window=6,
-warmed JIT. Original main uses legacy hashes; the updated implementation uses
-the 64-bit default.
+Rerun medians for the same **5,000 Nynorsk documents** (19.3 MB JSONL),
+k=4/window=6. Original main uses legacy hashes; the updated implementation uses
+the 64-bit default. API timings use five warmed-JIT runs with three shards,
+excluding interpreter/import/JIT warm-up. CLI timings use three runs of separate
+index and merge processes, including startup/imports/JIT, with default flushing
+(one shard). Normal filesystem/JIT caches are retained.
 
 | Measurement | Original main | Updated implementation |
 |---|---:|---:|
 | Tokenization through winnowing | 1.87 | **0.69** |
-| Full build, `nb_workers=1` | 6.08 | **4.66** |
-| Full build, `nb_workers=4` | **4.79** | 5.00 |
+| API extraction + merge, `nb_workers=1` | 6.16 | **4.63** |
+| API extraction + merge, `nb_workers=4` | 4.82 | **4.81** |
+| CLI index + merge, `nb_workers=1` | 11.57 | **7.91** |
+| CLI index + merge, `nb_workers=4` | 9.66 | **8.51** |
 
-Hashing is about **2.7x faster** and the single-worker build **1.31x faster**.
-The four-worker build was 4.3% slower in this sample; speedups are not universal.
+These are complete builds of the **sample, not the full corpus**. Hashing is
+about **2.7x faster** and the single-worker API pipeline **1.33x faster**;
+four-worker API times are essentially unchanged. CLI/API differences are not
+startup alone because shard counts differ. Outputs were verified after all
+32 builds; speedups are not universal.
 [Benchmark script](experiments/benchmark_index_build.py) /
 [measurements and methodology](experiments/index_build_benchmark.json).
 
