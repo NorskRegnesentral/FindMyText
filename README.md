@@ -90,7 +90,9 @@ argument or CLI selector. Do not edit metadata to make an old index appear new.
 
 Compiled hashing, buffered compression and fewer unnecessary processes improve
 the build pipeline. Sequential posting reads avoid thread-pool overhead for
-many small reads.
+many small reads. [PR #3](https://github.com/NorskRegnesentral/FindMyText/pull/3)
+preserves the measurement methodology and links to archived scripts and raw
+results.
 
 ### Build speedup compared with original main
 
@@ -114,8 +116,6 @@ about **2.7x faster** and the single-worker API pipeline **1.33x faster**;
 four-worker API times are essentially unchanged. CLI/API differences are not
 startup alone because shard counts differ. Outputs were verified after all
 32 builds; speedups are not universal.
-[Benchmark script](experiments/benchmark_index_build.py) /
-[measurements and methodology](experiments/index_build_benchmark.json).
 
 ### Reading an existing index
 
@@ -130,8 +130,6 @@ runs per configuration:
 All timed results matched their references. These shared-host, warm-cache
 measurements are not cold-cache guarantees. Query timings exclude fingerprinting
 and passage clustering, and are **not index-build speedups**.
-[Benchmark script](experiments/benchmark_posting_reads.py) /
-[measurements and methodology](experiments/posting_read_benchmark.json).
 
 ### Additional metrics: build time, index size and query latency
 
@@ -155,8 +153,6 @@ passes using detector defaults. All 50 source documents were retrieved, all
 timed scores were stable, and no resource-safety exclusions were needed.
 These are **small-workload examples, not full-corpus paper results**; report
 the corpus size, settings, hardware, query workload and cache state with results.
-[Reproduce](experiments/benchmark_index_metrics.py) /
-[measurements and methodology](experiments/index_metrics.json).
 
 ## License
 
