@@ -1,0 +1,43 @@
+{
+  "original_main_commit": "8d032a8b30d515925e98f288d3dae4893ee1f41b",
+  "original_winnower_sha256": "8117eb813b65eaace09411ceb600684e826cb475482faf980c2cd252bb5a595d",
+  "documents": 100,
+  "winnowing_cases": 1600,
+  "settings_tested": {
+    "lengths": [
+      1,
+      4,
+      5,
+      7
+    ],
+    "window_size": 6,
+    "bases": [
+      256,
+      257
+    ],
+    "punctuation": [
+      false,
+      true
+    ]
+  },
+  "fingerprint_values_and_positions_identical": true,
+  "fingerprints_and_positions_sha256": "1cb95d916f5c884df3ef37667903e310e901a5a4b3855e8ee269fd0a0c7f7878",
+  "all_six_positional_index_payload_files_byte_identical": true,
+  "index_payload_sha256": {
+    "doc_name_bytes.npy": "1bba956e6e7d628d5ede273d7f200c47f3178e66c02a3cce55cfdc9a46fb8316",
+    "doc_name_offsets.npy": "3fb84a3ec0448125d43cf2696aef454cc463145084a67069135284132c63b659",
+    "fingerprints.npy": "b4205bf409ea2836de0f23b73616325ebce0a19d7d0357ee24ead4389928036f",
+    "lengths.npy": "bdced7f885a22bcbf152092dab9cd2d61d8070ccda0e31c625a8fa2f6f62f7a5",
+    "offsets.npy": "d5a12c9f22d5cc25c6fbae060845dd9945d4c31e54fb5c6002e42228aa2e1e3d",
+    "postings.dat": "56d317973f9ddc5757b548286132989fff25b0e88be3dc86a730bc0b1d0a267c"
+  },
+  "detector_score_configurations_identical": 8,
+  "both_detectors_and_both_rarity_modes_checked": true,
+  "old_unlabelled_index_scores_identical": true,
+  "notes": [
+    "Same 100 real Nynorsk records and same parameters on both implementations.",
+    "Only the new explicit legacy31 metadata label differs; raw index payloads are byte-identical.",
+    "Original main was executed with Linux fork under the shared workspace interpreter; this is a compatibility check, not a timing claim.",
+    "This is bounded implementation validation, not a rerun of the full paper evaluation."
+  ]
+}

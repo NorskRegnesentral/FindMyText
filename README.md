@@ -71,31 +71,70 @@ build's `.mpk.gz` files; use a fresh destination for a new build.
 
 ### Hashing and existing indexes
 
-The sole fingerprint implementation is **`polynomial64-fmix64`**:
+The default fingerprint implementation is **`polynomial64-fmix64`**:
 compiled UTF-8 token hashing using the inherited FNV-1a-style recurrence,
 an odd-base polynomial rolling hash modulo `2**64`, then MurmurHash3's
 `fmix64` output finalizer before winnowing. The inherited token-hash offset
 basis is `1469598103934665603`, not the standard FNV-1a-64 offset basis.
 This composition is non-cryptographic, not a standardized hash with a collision
 guarantee. Rightmost-minimum tie handling and tokenization are unchanged.
-There is **no hash-method argument or CLI selector**.
 
-The default base is `0x9E3779B185EBCA87`. Fingerprints preserve all unsigned
+Its default base is `0x9E3779B185EBCA87`. Fingerprints preserve all unsigned
 64 bits through shard serialization, index storage, detector scores and the
 web adapter. Metadata records the algorithm and parameters, and merging
 rejects incompatible shard settings before writing the output.
 
-**Indexes and intermediate shards produced by the old `main` must be rebuilt
-from source.** Its modulo-`2**31 - 1` hashes are incompatible. Changing hashes
-also changes which positions winnowing selects, so exact scores and matches
-can differ from the paper-era implementation. Changing a metadata label does
-not convert old fingerprints. The original implementation is retained in
-git history at [`8d032a8`](https://github.com/NorskRegnesentral/FindMyText/commit/8d032a8b30d515925e98f288d3dae4893ee1f41b).
+For paper-era reproduction, explicitly choose **`legacy31`**. This restores the
+original token hashing and signed rolling kernel modulo `2**31 - 1`, including
+the default base **256**, from
+[`8d032a8`](https://github.com/NorskRegnesentral/FindMyText/commit/8d032a8b30d515925e98f288d3dae4893ee1f41b).
+It is a compatibility option, not the recommended method for new indexes:
+its much smaller effective hash space retains the original collision behavior.
+
+| Method | Default? | Default base | Intended use |
+|---|---|---|---|
+| `polynomial64-fmix64` | Yes | `0x9E3779B185EBCA87` | New builds with full-width hashes |
+| `legacy31` | No; explicit opt-in | `256` | Original-main/paper hash reproduction |
+
+```bash
+python -m findmytext.index_builder index corpus.jsonl paper_fingerprints \
+  --hash-method legacy31 --length 4 --window_size 6 --nb_workers 1
+python -m findmytext.index_builder merge paper_fingerprints paper_index
+```
+
+The equivalent API option is
+`index_builder.index_file("corpus.jsonl", "paper_fingerprints", hash_method="legacy31")`.
+Standalone fingerprinting also accepts
+`Winnower(length=4, window_size=6, hash_method="legacy31")`.
+Select the k-gram/window settings, exact input records, filters, seeds and scoring
+parameters of the experiment being reproduced; selecting a hash method alone
+does not recreate an entire evaluation.
+
+**Readers automatically use the method recorded in the index.** Detectors and
+the web adapter propagate it to their runtime winnower; no separate query-side
+choice is needed. Old-main interleaved indexes and MsgPack shards without a
+`hash_method` field are recognized as `legacy31`, so they can be used without
+rebuilding. New builds explicitly label their method. Unknown method labels
+are errors, and merging different methods or incompatible parameters is rejected.
+
+Switching an existing index from legacy hashes to the new method still
+**requires rebuilding from source**. Hashing changes which positions winnowing
+selects, so scores and matches can differ between methods. Changing a metadata
+label does not convert fingerprints.
 
 The research branch's name `rolling64-v1` denotes the identical 64-bit algorithm;
-readers accept that metadata spelling for compatibility, but new builds always
-write `polynomial64-fmix64`. This is a metadata alias, not a second hash method.
+readers accept that metadata spelling for compatibility, while new 64-bit builds
+write `polynomial64-fmix64`. This is a metadata alias, not a third hash method.
 Only interleaved `(doc_id:uint32, position:uint32)` postings are supported.
+
+The restored legacy mode was compared with the actual original-main code on
+100 Nynorsk documents: **1,600 fingerprint/position cases** across k-gram
+lengths 1/4/5/7, bases 256/257 and both punctuation settings matched. All six
+positional-index payload files were byte-identical; both detectors in both
+rarity modes returned identical scores, including when reading the original
+unlabelled index. The metadata label is intentionally new. The bounded check,
+not a full-paper rerun, is recorded in
+[`experiments/legacy_hash_compatibility.json`](experiments/legacy_hash_compatibility.json).
 
 ### Build-time comparison
 
@@ -103,8 +142,10 @@ Small same-machine comparison against the original `main` commit above:
 **5,000 identical Nynorsk documents**, k=4/window=6, three timing runs per
 implementation/configuration with alternating old/new order, warmed JIT,
 and 2,000 documents per flush (three shards). Times are medians, in seconds.
-These build measurements were collected at `1bcd60c`, before the separate
-posting-read default change described below.
+These build measurements compare old main's legacy hashes with the new 64-bit
+default at `1bcd60c`, before the separate posting-read default change and before
+the legacy option was restored. They are not timings of legacy mode in the
+updated builder.
 The host was a shared Intel Xeon 6761P machine running Linux/Python 3.14.0,
 NumPy 2.5.3, Numba 0.68.0 and optional ISA-L GZip.
 
