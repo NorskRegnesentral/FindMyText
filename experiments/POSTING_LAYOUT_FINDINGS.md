@@ -7,7 +7,7 @@ postings only**. Columnar reader/writer support, layout-selection parameters
 and CLI flags, and the columnar conversion/benchmark script have been removed.
 
 This decision simplifies the implementation around the intended separation
-between the full positional index and a document-only screening sidecar.
+between the full positional index and a document-only overlap inverted index.
 It is **not** a claim that interleaved is universally faster, and no new
 columnar-versus-interleaved throughput comparison was run for this decision.
 The measured 50k build profiles in [HASHING_FINDINGS.md](HASHING_FINDINGS.md)
@@ -60,13 +60,15 @@ Build and retain:
 2. **Full forward index:** all unique selected fingerprints per document,
    including singletons.
 
-Then derive a separate **document-only screening inverted sidecar**:
+Then derive a separate **document-only overlap inverted index**:
 
 - retain only fingerprints in at least two distinct documents, `df >= 2`;
 - store each document ID once per fingerprint, with no positions;
 - order fingerprint records by `(document frequency, hash)`, ascending.
 
-The sidecar is still planned, not implemented by this layout migration.
+The overlap inverted index was not implemented by this layout migration;
+its subsequent implementation is in
+[overlap_inverted.py](../findmytext/overlap_inverted.py).
 Its document-ID payload is 4 bytes per unique document/fingerprint pair,
 plus its own fingerprint/offset metadata. It is additional data, not a
 replacement for the full positional index.
@@ -88,8 +90,8 @@ sidecar must not silently replace full-index external-query lookup.
 - Interleaved is the single canonical positional format.
 - Document-only lookup remains correct, but reads position bytes along with
   document IDs and then selects the ID field.
-- The future sidecar avoids position reads and occurrence duplicates for
-  self-join screening. This should be benchmarked when implemented.
+- The overlap inverted index avoids position reads and occurrence duplicates
+  for self-join candidate generation. End-to-end performance remains to be benchmarked.
 - External-query document-only reads may lose the old columnar I/O advantage.
   That is an explicit trade-off for fewer formats and simpler maintenance.
 - No hash-width or position-width change was made. Fingerprints remain uint64,

@@ -1,7 +1,312 @@
 # Document Similarity Join: Discussion Plan
 
-**Status:** Draft with an agreed index/scoring contract. The derived join index
-and optimized join described below are not implemented yet.
+**Status:** Agreed index/scoring contract. The single-worker overlap inverted
+builder and resumable rolling64 Nynorsk rebuild command are implemented.
+The full Nynorsk corpus was rebuilt and verified on 23 October 2026:
+1,028,632 documents, 96,496,752 positional fingerprint records, and 18,718,065
+overlap inverted fingerprint records. All three representations passed full
+membership/order/accounting checks, 256 sampled exact overlap comparisons, and
+source-text/hash/position checks on 20 documents across all five shards.
+The three indexes were also built and verified for Icelandic, Latvian, and
+Bokmal by 25 October. The single-worker overlap join now has a tested,
+bounded-subset Nynorsk prototype with both candidate schedulers and output
+modes. The next path adds streamed document-owned results, early safe length
+pruning, an external independent reference, atomic probe checkpoints/recovery,
+and bounded explicit-pair passage inspection. A gated full-corpus execution
+path now adds lossless rarity-prefix filtering, source-payload reuse, full-
+partner pilots and a 32 GiB working allowance. Complete K=50/30/20 Nynorsk
+candidate components and bounded default-detector graph/passage review are now
+implemented. Production time-budget policies and calibrated passage acceptance
+remain unimplemented.
+
+Current entry point: `.venv/bin/python hplt_nynorsk.py --build --nb-workers 8`.
+Build/run details and the sidecar format are in [README.md](./README.md).
+
+## Nynorsk group/passage baseline (26 October 2026)
+
+The executed [review notebook](./nynorsk_group_review.ipynb) presents complete
+components, bounded graph views, paired passages and full-JSON batch retrieval.
+[overlap_groups.py](./findmytext/overlap_groups.py) streams verified exact edges
+into union-find, retaining isolates, stable minimum-document group IDs, degrees
+and membership arrays. All document labels/degrees at each K also matched an
+independent full-edge SciPy sparse-graph calculation.
+
+| K | Nontrivial groups | Largest component documents |
+| ---: | ---: | ---: |
+| 50 | 39,299 | 27,691 |
+| 30 | 55,289 | 48,112 |
+| 20 | 66,445 | 76,596 |
+
+Selection/display limits never change those full-corpus components. The
+largest components are chains of candidate overlap, not cliques or assertions
+of a passage common to every document.
+
+[review_overlap_groups.py](./experiments/review_overlap_groups.py) reviewed
+149 unique pairs from 239 documents, including 104 random-priority selections
+across overlap/fingerprint-set-size strata, plus purposive strongest and group
+examples. It uses `FingerprintChainDetector` constructor defaults and explicit
+indexed pairs: rectangle thresholds 30, minimum distinct support 5, no rarity
+weighting; stored length=4/window=6, no external-query top-k loss. It reports
+the best surviving cluster, not every passage.
+
+148 pairs formed a default cluster; one exceeded the alignment-point safety
+limit and is unresolved. Original forward sets and every returned aligned
+position/exact normalized k-gram were checked. The raw cluster rate is not
+precision or a population estimate; human labels are intentionally blank,
+and true template alignment is not automatically substantive reuse. Support,
+spans and longest exact runs are evidence/diagnostics, not newly calibrated
+acceptance thresholds.
+
+The complete K=50 giant-component follow-up
+([analyze_overlap_component.py](./experiments/analyze_overlap_component.py))
+found 20,520 Docplayer members (74.1% of nodes), with Docplayer-to-Docplayer
+pairs constituting 99.61% of its edges. Many raw records contain repeated
+`Detaljer` excerpt lists. Removing Docplayer vertices leaves a largest component
+of 983; removing the 899 hashes with component df>1,000 reduces edges by 69.01%
+but retains a 27,654-document component. No hash is shared by every member.
+These exact counterfactuals and bounded passage evidence motivate investigation
+of extraction/content regions, not an automatic host ban, common-hash cap or
+new passage threshold. Details and caveats are in notebook section 7 and the
+local `giant-k50/report.json` beside the review outputs.
+
+[document_store.py](./findmytext/document_store.py) adds resumable one-pass
+SQLite ingestion of complete raw JSON, preserving metadata that the normalized
+ingestion stream omits. Nynorsk has 1,034,804 raw records, with all 1,028,632
+indexed IDs checked. Later batched external/internal-ID retrieval uses a
+document-ID index, not repeated compressed-corpus scans; metadata-only queries
+avoid text/XML decompression.
+
+Results and the blank human-review worksheet are under
+`hplt_nynorsk/group_review/2026-10-26-defaults/`. The metadata store is outside
+the fingerprint index at `hplt_nynorsk/document_store/corpus.sqlite`.
+Graphs stay undirected: crawl `ts` is not an established publication/creation
+date. Research additional metadata before assigning copying direction.
+
+**Deferred experiment, note only:** rehash selected documents with winnowing
+window **1**, retaining every 4-gram, to compare passage coverage with this
+stored-window-6 baseline. It has not been run and no all-k-gram index has been
+built. First obtain human labels before exploring support/span/tolerance
+calibration; no further fingerprint rebuild is needed for the current review.
+
+## Initial Nynorsk subset benchmark (25 October 2026)
+
+Implementation: [overlap_join.py](./findmytext/overlap_join.py).
+Reproducible benchmark: [benchmark_overlap_join.py](./experiments/benchmark_overlap_join.py).
+
+- Uniform 10,000-document subset, seed 41; original source IDs preserved.
+- Eligible lengths exclude fingerprints unique within that subset; rarity and
+  candidate-frequency caps retain full-corpus df. The tighter subset length
+  bound is safe because such fingerprints cannot participate in a subset pair.
+- K sweep: **50, 30, 20, 10, 5**. No benchmark deadline was requested.
+- An 8 GiB working-array allowance was selected conservatively from about
+  958 GiB host-available RAM. Process-lifetime peak RSS was about 1.42 GiB.
+- The independent full-forward grouped-count reference found **232,687**
+  positive-overlap pairs and **505,937** pair contributions.
+- Both schedulers and both output modes matched every uncapped reference
+  result. All 40 configurations were run three times, validating every result.
+- The fingerprint scheduler used a dense triangular byte-per-pair checked
+  table (49,995,000 bytes); document probing used 40,000 bytes of epoch markers.
+  This is subset-only state, not a selected production global-cache backend.
+- The separate full-corpus-`df <= 1000` discovery cap retained 1,437/1,464
+  qualifying pairs at K=50 (98.16%), but only 5,828/8,946 at K=5 (65.15%).
+  Returned counts remained exact; cap-induced omissions were measured, not
+  hidden. Do not call common fingerprints useless or the cap lossless.
+- Median uncapped exact-count timings were about 0.20-0.80 s across K for
+  either scheduler. Prepared arrays were in RAM and timings excluded JIT;
+  these measurements do not establish a full-corpus scheduler winner.
+- Exact-count reuse computed every discovered pair once in about 0.97 s;
+  filtering for each K took roughly 0.5 ms including reference checks.
+
+Local report:
+`/nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/overlap_experiments/2026-10-25-seed41-10000-final/report.json`.
+The experiment used no source-text positions and left source indexes unchanged.
+This initial benchmark is followed by the Nynorsk streaming/scaling path below;
+it remains evidence about a small in-RAM subset, not full-corpus performance.
+
+## Streaming/scaling implementation
+
+[overlap_stream.py](./findmytext/overlap_stream.py) implements document-owned
+output chunks and atomic checkpointed probe ranges. It uses per-probe markers,
+not global quadratic history, and moves eligible-length pruning before posting
+enumeration. Its independent full-forward reference spills/aggregates bounded
+pair-count batches using the existing external aggregation helper.
+
+[scale_overlap_join.py](./experiments/scale_overlap_join.py) runs nested
+25k/50k/100k subsets, both output modes, all five K values, uncapped and
+full-corpus-df-capped discovery, and real source-forward memmap access. The
+smallest stage retains bounded fingerprint-driven controls and late-pruning
+controls. Configuration timings include output/checkpoint I/O and may include
+first signature compilation; cache conditions and shared-host effects prevent
+cold-throughput or isolated-kernel claims.
+
+[inspect_overlap_passages.py](./experiments/inspect_overlap_passages.py) selects
+high-overlap, near-K and cap-omitted pairs for explicit-pair chain evidence,
+without candidate top-k loss. It checks source hashes and positions, enforces
+bounded alignment resources, and includes aligned, scattered-overlap and
+contiguous-template controls. Distinct-hash support and source token spans are
+reported; parameters and any inspection labels remain exploratory, not
+production acceptance decisions.
+
+### Measured progressive results
+
+All three stages completed on 25 October 2026. Each ran the five K values,
+both output modes and uncapped/df-capped discovery: **60 validated main
+configurations**, plus the smallest-stage scheduler/pruning controls.
+
+| Subset documents | Positive-overlap reference pairs | Reference pair contributions | Process-lifetime peak RSS |
+| ---: | ---: | ---: | ---: |
+| 25,000 | 1,399,779 | 2,626,871 | 1.67 GiB |
+| 50,000 | 5,765,842 | 11,414,967 | 1.95 GiB |
+| 100,000 | 23,179,805 | 46,424,444 | 2.15 GiB |
+
+The 100k prepared views occupied 161.1 MiB, the reported join-owned estimate
+was 185.1 MiB, and marker state was 400,000 bytes. These are different from
+process RSS, which also includes maps, compilation and libraries. All remained
+within the selected resource allowance. Main-suite session wall time was
+about 31.3 minutes, including references, validation and controls.
+
+| K | 100k exact pairs | df <= 1000 pairs | Capped subset recall | Uncapped exact join time |
+| ---: | ---: | ---: | ---: | ---: |
+| 50 | 119,988 | 118,018 | 98.36% | 46.2 s |
+| 30 | 205,713 | 197,595 | 96.05% | 64.4 s |
+| 20 | 286,277 | 268,193 | 93.68% | 81.4 s |
+| 10 | 503,803 | 392,471 | 77.90% | 105.2 s |
+| 5 | 814,981 | 528,239 | 64.82% | 115.6 s |
+
+These single-run join times are not isolated/cold-cache throughput. The source
+memmap reads reported zero major faults/read_bytes in these configurations:
+the naturally warm OS/NFS cache must not be mistaken for a cold storage test.
+I/O counter coverage for NFS is also platform-dependent.
+
+Earlier safe length pruning reduced 25k K=50 candidate visits from 5,764,949 to
+2,551,651 with identical pairs; K=5 visits fell from 5,764,949 to 5,317,587.
+Time gains were modest, so candidate-visit reduction alone is not an end-to-end
+speed claim. At 100k K=5 the join still performed 21,901,383 full verifications
+for 814,981 accepted pairs: reducing low-information candidate work remains
+worth investigating before full-corpus joining.
+
+The real-data checkpoint demonstration paused with 2,624 accepted pairs
+committed and resumed to exactly the uninterrupted 10,905-pair sequence
+(25k, K=30, cap=1000). All eight controlled scheduler pair sets matched,
+including capped modes. Unit tests also interrupted after output creation but
+before checkpoint publication and verified lossless/deduplicated recovery.
+
+For this known sweep, storing exact **accepted counts at the minimum K=5**
+was sufficient. The 100k cache occupied about 9.6 MiB including part headers,
+versus 265 MiB of payload for all positive-overlap counts. Filtering it into
+all five result arrays took 4.9 s including writes, with pair sequences and
+counts matching fresh joins and the independent reference. K below the cache
+floor is explicitly unsupported; source/subset/coverage identity still applies.
+
+Bounded real passage inspection used 26 purposively selected pairs from the
+completed 25k stage and 42 source documents. Twenty-two had a surviving
+cluster, four did not, and none hit resource limits. Retained positions and
+normalized k-grams matched the source texts. High-overlap examples contained
+exact normalized runs up to 5,091 tokens; cap-omitted examples also contained
+32-36-token exact runs. This is evidence inspection, not a precision estimate
+or a calibrated acceptance decision. Synthetic scattered-overlap negatives
+were rejected; contiguous template negatives still formed real aligned chains.
+
+Reports are under
+`/nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/overlap_experiments/2026-10-25-progressive/`:
+`report.json`, `resume_validation.json`, `control_validation.json`,
+`count_cache_validation.json`, and `passage-inspection-25000/report.json`.
+Source indexes stayed unchanged; no full-corpus join, graph construction,
+parallel tuning or production deadline policy was run.
+
+## Exact prefixes and the full-corpus path
+
+The working-array default is now **32 GiB**, not an OS-level RSS cap. Historical
+subset reports retain their original 8 GiB settings.
+
+Both candidate schedulers already suppress repeated expensive verification
+within a fixed-K run, including rejected pairs. For example, the earlier 100k
+K=5 run skipped 23,191,015 duplicate discoveries. Separate benchmark/K runs
+and interrupted uncommitted probes can repeat work; a minimum-K exact cache
+avoids separate intersections for a known higher-K sweep.
+
+The new `prefix_filter=True` path restricts both document prefixes to
+`L - K + 1` under the same global `(df, hash)` order. It is lossless for uncapped
+candidate generation, while verification still uses the complete numeric-hash
+forward sets. Combining prefixes and caps changes approximate discovery
+coverage and must be measured separately.
+
+All five thresholds and both output modes matched the existing 100k independent
+reference exactly:
+
+| K | Unfiltered verifications | Prefix verifications | Earlier time | Prefix time |
+| ---: | ---: | ---: | ---: | ---: |
+| 50 | 3,807,497 | 536,235 | 46.2 s | 15.4 s |
+| 30 | 7,530,414 | 748,200 | 64.4 s | 19.9 s |
+| 20 | 11,672,763 | 1,036,685 | 81.4 s | 21.7 s |
+| 10 | 18,182,990 | 2,043,816 | 105.2 s | 31.2 s |
+| 5 | 21,901,383 | 4,021,706 | 115.6 s | 44.5 s |
+
+Counts/pair sets were equal; timing comparisons are warm/shared-host
+observations, not controlled cold-cache speed guarantees.
+
+[overlap_full.py](./findmytext/overlap_full.py) reuses the original full forward
+and overlap arrays and stores only K-independent document-rank helpers. The
+Nynorsk logical view is 2.154 GiB, helper arrays occupy 443.64 MiB, and first
+preparation took about 69 s. There is no normal index rebuild or payload copy.
+
+[run_full_overlap_join.py](./experiments/run_full_overlap_join.py) gates the
+complete run on subset-prefix equality and independent full-partner pilot
+checks. Pilots cover short/medium/long owner ranges, compare prefix and
+unfiltered outputs with an unfiltered posting-count oracle, and cross-check
+sample counts using original forward sets. Explicit pilot ranges are never
+advertised as exhaustive corpus joins.
+
+The complete job uses uncapped exact counts at K=5 once, then derives
+K=50,30,20,10,5. Full-output checks cover all checksums, ID/count bounds,
+ownership and duplicates, plus sampled numeric-forward intersections. An
+independent exhaustive full-corpus oracle is not claimed.
+
+The frozen-source persistent run and its machine-readable reports are under
+`/nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/overlap_experiments/2026-10-25-prefix-full/`.
+Its tmux session is `nynorsk-overlap-full` on socket `findmytext-builds`.
+
+### Verified complete Nynorsk result
+
+The full uncapped, single-worker join completed for **all 1,028,632 documents**.
+K=5 was computed once; all higher thresholds were derived from its exact
+accepted counts:
+
+| K | Full-corpus qualifying document pairs |
+| ---: | ---: |
+| 50 | 12,425,346 |
+| 30 | 21,685,303 |
+| 20 | 30,313,569 |
+| 10 | 53,966,431 |
+| 5 | 87,326,219 |
+
+The join took about **73.4 minutes**; the gated pipeline including initial
+validation/preparation/pilots, primary output checks and K-file generation took
+94.9 minutes. An additional independent completion check took about 10 minutes.
+The main process peaked at **4.81 GiB RSS** and the independent checker at
+4.71 GiB, under the 32 GiB working allowance in this run.
+
+There were 436,127,976 unique overlap verifications and **2,086,355,050 duplicate
+discoveries skipped**. These are distinct counters: repeat discoveries did
+not cause repeat full intersections within this failure-free run.
+
+Checks covered every output checksum, pair/count bounds, ownership and duplicate
+suppression. Independently recomputing **10,000** sampled counts with
+`numpy.intersect1d` matched, and all **205,716,868 derived threshold rows** were
+compared with filtered exact K=5 output. Source indexes remained unchanged.
+Completeness uses the lossless prefix proof plus independent subset and
+full-partner oracle checks; no independent exhaustive full-corpus oracle was run.
+
+The K=5 streamed result occupied about 1.06 GB across **79,918 parts**. Many
+small result files and repeated manifest/checksum work are concrete I/O
+engineering targets; they are not necessary consequences of exact overlap.
+Long-document intersections remain substantial CPU work as well. Production
+can reuse these counts rather than rerunning all old pairs, but a fresh
+uncapped complete join with the same algorithm remains expensive.
+
+These are fingerprint-overlap candidate pairs, not 87 million verified passages
+or legal findings. Graph construction and calibrated passage acceptance remain
+separate next stages.
 
 ## Agreed build and post-processing contract
 
@@ -13,7 +318,7 @@ and optimized join described below are not implemented yet.
    Both full indexes retain singletons; filtering applies only to the sidecar.
    "Full forward" means all unique selected fingerprint values, not every
    occurrence or every pre-winnowing k-gram.
-2. **After the normal build, create a separate screening inverted index.**
+2. **After the normal build, create a separate overlap inverted index.**
    Retain a fingerprint if and only if it occurs in **at least two distinct
    documents**, `df(f) >= 2`. This means more than one document, not more than
    two: fingerprints occurring in exactly two documents must be retained.
@@ -64,8 +369,8 @@ overlap count: a singleton cannot belong to the intersection of two documents.
 The original positional index remains available for final text verification.
 The value of K and the final text-match acceptance rule remain to be chosen.
 
-The execution and data-structure choices below are recommendations to prototype
-and benchmark, not claims that the optimized join already exists.
+The join execution and data-structure choices below remain recommendations to
+prototype and benchmark, not claims that the optimized join already exists.
 
 ## Goal
 
@@ -79,7 +384,7 @@ two documents.
 The proposal in the shared sketch is a good starting point:
 
 1. Build the normal inverted and forward indexes without changing their
-   current behavior, then derive a position-free screening inverted index.
+   current behavior, then derive a position-free overlap inverted index.
 2. Rank fingerprints by document frequency, and avoid spending work on
    fingerprints that cannot help identify a pair.
 3. Propose pairs from the derived inverted index, then count shared fingerprints
@@ -126,7 +431,7 @@ The intended lookup routes are:
 |---|---|---|
 | External text query | Fingerprint the query text | Full positional inverted index, including singletons |
 | Existing `get_document_candidates(id)` | Full forward set for that indexed document | Full inverted index; this API is not silently redirected |
-| New indexed-document screening join | Selected indexed-document fingerprints | Derived `df >= 2` document-only sidecar for candidate generation |
+| New indexed-document overlap join | Selected indexed-document fingerprints | Derived `df >= 2` document-only overlap inverted index for candidate generation |
 | Exact overlap verification of an indexed pair | Both full forward sets | Sorted set intersection |
 | Positional passage verification | Selected pair and shared hashes | Full positional inverted index and source texts |
 
@@ -185,7 +490,7 @@ also does not replace the later positional text verification.
 ### Stage 1 — build normally and establish an exact baseline
 
 Normal corpus ingestion, fingerprint extraction, merging, and forward-index
-construction are unchanged. All screening structures below are post-processing
+construction are unchanged. All overlap-join structures below are post-processing
 outputs in a separate directory; they must not overwrite source index files.
 
 Use the existing inverted-index pair counting as the reference implementation.
@@ -202,7 +507,12 @@ high-frequency fingerprints can remove true qualifying pairs.
 Compute document frequency `df(f)` as the number of distinct documents
 containing fingerprint `f`, not its number of positional posting occurrences.
 The existing `iter_unique_posting_batches` iterator already yields unique
-`(fingerprint, doc_id)` pairs and is suitable as the source.
+`(fingerprint, doc_id)` pairs, but its batch size is a soft target and it
+allocates corpus-wide fingerprint bookkeeping. The implemented
+[overlap_inverted.py](./findmytext/overlap_inverted.py) uses compiled document epoch markers
+instead, bounding its working arrays by the document count plus batch target
+even for an individual very large posting list. It sorts bounded runs and
+uses on-disk two-way compiled merges to establish global rare-first order.
 
 For each fingerprint:
 
@@ -362,6 +672,22 @@ Cache validity is tied to the source-index snapshot, fingerprint semantics,
 K, and output mode. In particular, a rejection at a previous K is not reusable
 at a lower K without additional evidence. Record these settings in persistent
 cache/checkpoint metadata.
+
+For a K sweep, a separate exact-count cache can instead retain the full count
+for **every discovered pair**, including pairs below the current K. Counts are
+K-independent; filters may then lower K without repeating those intersections.
+This does not discover pairs omitted by a frequency cap or an unfinished
+traversal. Store source, subset, semantics and discovery coverage with the cache.
+An early-rejection decision alone is not an exact count; recheck it at a lower
+K unless a retained bound settles the new decision.
+
+Production anytime operation may prioritize rare-first discoveries and publish
+results at a high K before lowering it, but this is a scheduling/UX policy,
+not an exhaustive-result guarantee. A high K does not itself reduce posting-list
+pair enumeration. Use bounded committed batches, record processed coverage and
+the candidate cap, and explicitly mark a deadline-limited result non-exhaustive.
+Choose an adaptive K/deadline policy after measuring work/recall curves; the
+initial prototype intentionally imposes no time budget.
 
 For a small prototype, an exact in-RAM table is appropriate if it fits a
 measured budget. Count distinct checked pairs, rejection/acceptance rates,
@@ -669,7 +995,7 @@ changes graph connectivity and may change which component is largest.
 
 Load the selected documents through a source-text loader keyed by their
 original IDs, with bounded caching. Retrieve positional evidence from the
-original index, not the position-free screening sidecar.
+original index, not the position-free overlap inverted index.
 
 Reuse/refactor [FingerprintChainDetector](./findmytext/detectors.py) rather
 than writing an unrelated chain-clustering algorithm. Its current
@@ -864,7 +1190,7 @@ and tokenization/winnowing settings in new index metadata. Reject incompatible
 index comparisons or mixed old/new fingerprints. Test fingerprint/rank array
 widths and sentinel values at the potentially larger distinct-value counts,
 and do not modify the current hash implementation merely as part of the
-screening-index work.
+overlap inverted index work.
 
 ## Research ideas to evaluate
 
@@ -938,7 +1264,7 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
   tolerance, and treatment of repeated occurrences.
 - [ ] Specify whether output is exhaustive, top-k, or both (as separate modes).
 - [x] Preserve normal index construction and the original positional index.
-- [x] Build a separate position-free inverted screening index with `df >= 2`,
+- [x] Build a separate position-free overlap inverted index with `df >= 2`,
   unique sorted document IDs, and fingerprint records ordered by `(df, hash)`.
 - [x] Preserve numeric-hash ordering within the original forward index.
 - [x] Support explicit `threshold_only` and `exact_counts` modes with the same
@@ -960,51 +1286,56 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
 
 ### 1. Measure and lock down the baseline
 
-- [ ] Add small correctness fixtures covering duplicate occurrences, singleton
+- [x] Add small correctness fixtures covering duplicate occurrences, singleton
   fingerprints, fingerprints in exactly two documents, empty documents, and
   pairs exactly at K.
-- [ ] Capture exact pairs/counts from the current inverted method.
-- [ ] Record per-fingerprint `df`, posting-entry volume, candidate-pair updates,
-  peak temporary storage, and elapsed time on representative data.
-- [ ] Record verification calls, repeated discoveries skipped, and forward
-  elements inspected separately from pair-count contributions.
+- [x] Capture exact pairs/counts from the current inverted method on fixtures.
+- [x] Record per-fingerprint `df`, posting-entry volume, pair contributions,
+  output/reference storage and elapsed time on representative subsets.
+- [x] Record verification calls, repeated discoveries skipped and hash
+  comparisons separately from pair-count contributions.
+- [ ] Measure true peak temporary disk and full-corpus/cold-cache I/O, rather
+  than treating final disk size or comparison counts as those measurements.
 
-### 2. Build the screening sidecar and prototype exact candidate pruning
+### 2. Build the overlap inverted index and prototype exact candidate pruning
 
-- [ ] Derive position-free unique document lists with `df >= 2`.
-- [ ] Sort derived fingerprint records by `(df, hash)` and preserve source IDs.
-- [ ] Verify the source indexes remain unchanged, singletons are absent only
-  from the sidecar, and exact pair overlaps are preserved.
-- [ ] Print and persist build-removal/de-duplication/storage accounting, phase
+- [x] Derive position-free unique document lists with `df >= 2`.
+- [x] Sort derived fingerprint records by `(df, hash)` and preserve source IDs.
+- [x] Verify on fixtures and the full Nynorsk corpus that source indexes remain
+  unchanged and singletons are absent only from the overlap inverted index.
+  Check full representation membership equality and sampled exact pair counts.
+- [x] Print and persist build-removal/de-duplication/storage accounting, phase
   progress, and eligible document lengths.
-- [ ] Implement a first exact candidate strategy and compare output pair sets
+- [x] Implement a first exact candidate strategy and compare output pair sets
   and counts against Milestone 1.
-- [ ] Prototype global rare-first fingerprint traversal, bounded pair blocks,
+- [x] Prototype global rare-first fingerprint traversal, bounded pair blocks,
   and an exact checked-pair table storing both accepted and rejected decisions.
 - [ ] Measure cache cardinality/bytes/hit rate and pair-attempt volume before
   selecting a full-corpus global-state backend.
-- [ ] Benchmark smaller-to-larger document-owned probing with per-worker epoch
+- [x] Benchmark on the bounded subset smaller-to-larger document-owned probing with per-worker epoch
   markers against fingerprint-driven execution, under identical semantics.
 - [ ] If global disk state is needed, benchmark deterministic range-tile or
   triangular-page routing, compression, buffered updates, and exact lookups.
-- [ ] Implement/test a Numba merge verifier for both output modes, including
+- [x] Implement/test a Numba merge verifier for both output modes, including
   early success, impossible remaining overlap, exact-K boundaries, empty sets,
   asymmetric set sizes, disjoint suffix ranges, equal endpoint values, and
   exact stopping when a list is exhausted.
 - [ ] Test repeated discoveries of accepted and rejected pairs across distant
   fingerprint records, canonical key encoding, concurrent claims/retries, and
   cache validity for source/K/mode changes.
-- [ ] For the document-driven alternative, test epoch rollover and deterministic
+- [x] Test sequential probe checkpoint source/subset/K/mode/cap validation,
+  uncommitted-output recovery, and real-data pause/resume pair equality.
+- [x] For the document-driven alternative, test epoch rollover and deterministic
   pair ownership.
-- [ ] Test capped candidate generation separately: discovered-pair exact counts
+- [x] Test capped candidate generation separately: discovered-pair exact counts
   include above-cap fingerprints; above-cap-only qualifying pairs may be absent
   and the output must declare that limitation.
-- [ ] Measure the agreed rare-first order; do not discard frequent fingerprints
+- [x] Measure the agreed rare-first order on the subset; do not discard frequent fingerprints
   in exact mode.
 - [ ] Benchmark original-ID versus eligible-set-length posting/probe order
   without applying Jaccard length bounds or changing source IDs.
-- [ ] Measure candidate counts, verification work, I/O, peak memory, and total
-  end-to-end time.
+- [x] Measure candidate counts, verification work, I/O counters, process peak
+  memory and overall session time on 25k/50k/100k Nynorsk subsets.
 
 ### 3. Add candidate graph selection and positional passage verification
 
@@ -1014,15 +1345,17 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
   testing exact size boundaries, ties, empty graphs, and isolated documents.
 - [ ] Test A-B/B-C connectivity without A-C; do not require clique membership
   or expand each component into an unrequested all-pairs verification task.
-- [ ] Expose/reuse explicit-pair FingerprintChainDetector clustering without
+- [x] Expose/reuse explicit-pair FingerprintChainDetector clustering without
   top-k candidate loss, returning best qualifying passage evidence.
 - [ ] Define passage score units and minimum support/span independently of
   overlap K and graph-component size.
-- [ ] Return aligned positions/spans, distinct fingerprint support, score,
-  parameters, and pair status; test repeated occurrences and load errors.
-- [ ] Test multiple surviving passage clusters, retaining only the
+- [x] Return aligned positions/spans, distinct fingerprint support, score,
+  parameters, pair status and explicit resource-limit errors; verify retained
+  evidence against source tokens and test repeated occurrences.
+- [x] Test multiple surviving passage clusters, retaining only the
   highest-scoring qualifying one, and test no qualifying cluster.
-- [ ] Test scattered shared fingerprints versus genuinely aligned segments.
+- [x] Test scattered shared fingerprints versus genuinely aligned segments,
+  including contiguous template text as a semantic negative.
 - [ ] Build separate candidate and verified graph views, including components
   that split when unsupported edges are removed.
 - [ ] Display bounded document graphs and side-by-side highlighted passages,
@@ -1103,7 +1436,7 @@ the exact-mode contract.
 3. Should the initial exact join produce every qualifying pair, or is top-k
    per document sufficient for the intended workflow?
 4. What build-time and storage budget is available for the agreed derived
-   position-free screening index and any optional rarity-ordered forward view?
+   position-free overlap inverted index and any optional rarity-ordered forward view?
 5. Which known aligned matches and boilerplate negatives should accompany the
    agreed Nynorsk-first benchmark?
 6. Should the next implementation stop after exact ranked-prefix filtering, or
