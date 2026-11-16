@@ -1,5 +1,6 @@
 """Build and inspect the HPLT Nynorsk fingerprint index."""
 
+import argparse
 import io
 import json
 from pathlib import Path
@@ -9,7 +10,8 @@ import plotly.graph_objects as go
 import polars as pl
 import zstandard as zstd
 
-from findmytext import index_builder, indexing, similarity, utils, winnower
+from findmytext import indexing, similarity, utils, winnower
+from hplt_build import build_index as build_hplt_index, build_overlap_inverted
 
 # Paths for the HPLT Nynorsk dataset and the index build directory.
 DATA_PATH = Path("/nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk")
@@ -17,39 +19,13 @@ BUILD_PATH = DATA_PATH / "findmytext_build"
 INDEX_PATH = BUILD_PATH / "index"
 
 
-def build_index():
-    if INDEX_PATH.is_dir():
-        winnower.Winnower.from_metadata(json.loads((INDEX_PATH / "meta.json").read_text()))
-        if not all(
-            (INDEX_PATH / name).is_file()
-            for name in ("forward_offsets.npy", "forward_fingerprints.npy")
-        ):
-            index_builder.build_forward_index(str(INDEX_PATH))
-        print(f"Using existing index: {INDEX_PATH}")
-        return
-
-    corpus_files = sorted((DATA_PATH / "nno_Latn").glob("*.jsonl.zst"))
-    if not corpus_files:
-        raise FileNotFoundError(f"No corpus shards found in {DATA_PATH / 'nno_Latn'}")
-
-    intermediate_files = []
-    for corpus_file in corpus_files:
-        shard_name = corpus_file.name.removesuffix(".jsonl.zst")
-        intermediate_files.extend(
-            index_builder.index_file(
-                str(corpus_file),
-                str(BUILD_PATH / "shards" / shard_name),
-                delete_existing=True,
-                nb_workers=8,
-                length=4,
-                window_size=6,
-                min_length=100,
-                max_length=100_000,
-            )
-        )
-
-    index_builder.merge_indexes(intermediate_files, str(INDEX_PATH))
-    print(f"Built index: {INDEX_PATH}")
+def build_index(nb_workers=8, batch_entries=1_000_000, max_documents_before_flush=100_000):
+    if batch_entries < 1:
+        raise ValueError("batch_entries must be positive")
+    index_path = build_hplt_index(
+        DATA_PATH / "nno_Latn", BUILD_PATH, nb_workers, max_documents_before_flush
+    )
+    return build_overlap_inverted(index_path, BUILD_PATH, batch_entries)
 
 
 def inspect_metadata(disk_index):
@@ -539,8 +515,17 @@ def inspect_corpus_document(external_doc_id, output_directory=Path("json")):
 
 
 def main():
-    # Build the index if it doesn't exist
-    # build_index()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build", action="store_true", help="Build positional inverted, forward, and overlap inverted indexes; do not run inspection/plots.")
+    parser.add_argument("--nb-workers", type=int, default=8)
+    parser.add_argument("--batch-entries", type=int, default=1_000_000)
+    parser.add_argument("--max-documents-before-flush", type=int, default=100_000)
+    args = parser.parse_args()
+    if min(args.nb_workers, args.batch_entries, args.max_documents_before_flush) < 1:
+        parser.error("Worker, flush-document, and batch-entry counts must be positive.")
+    if args.build:
+        build_index(args.nb_workers, args.batch_entries, args.max_documents_before_flush)
+        return
 
     # Inspect the index metadata before verifying the forward and inverted indices
     disk_index = indexing.DiskBasedIndex(

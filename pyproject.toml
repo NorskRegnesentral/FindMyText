@@ -17,6 +17,7 @@ dependencies = [
     "polars",
     "scipy",
     "tqdm",
+    "zstandard",
 ]
 
 [project.optional-dependencies]
