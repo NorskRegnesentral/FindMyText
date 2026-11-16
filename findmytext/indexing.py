@@ -3,6 +3,7 @@ fingerprints."""
 
 import gzip
 import heapq
+import io
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -36,6 +37,7 @@ class MemoryBasedIndex:
     _CHUNK = 10_000_000  # grow in 10 M-entry (~160 MB) steps
 
     def __init__(self, meta: Dict[str, Any]):
+        winnower.Winnower.from_metadata(meta)
         self.doc_id_map: Dict[str, int] = {}
         self.to_external: List[str] = []
         self.meta = meta
@@ -158,7 +160,10 @@ class MemoryBasedIndex:
         fp_changes = np.flatnonzero(fps[:-1] != fps[1:]) + 1
 
         packer = msgpack.Packer()
-        with gzip.open(path, "wb", compresslevel=1) as f:
+        # Compress bounded blocks instead of invoking gzip for every scalar/blob.
+        with gzip.open(path, "wb", compresslevel=1) as compressed, io.BufferedWriter(
+            compressed, buffer_size=1024 * 1024
+        ) as f:
             f.write(packer.pack(self.meta))
             f.write(packer.pack(len(self.to_external)))
             for doc_id in self.to_external:
@@ -225,12 +230,9 @@ class DiskBasedIndex:
         files from the specified index directory."""
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
-            self.winnower = winnower.Winnower(
-                length=meta["length"],
-                window_size=meta["window_size"],
-                base=meta["base"],
-                punctuation=meta["punctuation"],
-            )
+            self.winnower = winnower.Winnower.from_metadata(meta)
+            if meta.get("postings_layout", "interleaved") != "interleaved":
+                raise ValueError("Unsupported postings layout; rebuild an interleaved positional index")
 
         # Load index arrays as memory-mapped files (zero RAM cost; served from OS page cache)
         self.fingerprints = np.load(

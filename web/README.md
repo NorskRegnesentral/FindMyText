@@ -100,7 +100,7 @@ export FINDMYTEXT_CONFIG=/srv/findmytext/config.json
 
 Each corpus needs a prebuilt `DiskBasedIndex` directory (`meta.json`,
 `fingerprints.npy`, `postings.dat`, …), built with
-[`index_builder.py`](../index_builder.py). Set `doc_url_template` to turn a
+[`index_builder.py`](../findmytext/index_builder.py). Set `doc_url_template` to turn a
 matched doc id into a link (e.g. `https://arxiv.org/abs/{doc_id}`), or leave it
 empty for ids with no public URL (e.g. the Wikipedia index uses internal ids).
 

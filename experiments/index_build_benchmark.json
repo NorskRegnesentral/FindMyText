@@ -1,0 +1,253 @@
+{
+  "baseline_commit": "8d032a8b30d515925e98f288d3dae4893ee1f41b",
+  "candidate_hash_method": "polynomial64-fmix64",
+  "date": "2026-11-16",
+  "cpu": "Intel Xeon 6761P",
+  "dependencies": {
+    "numpy": "2.5.3",
+    "numba": "0.68.0",
+    "msgpack": "1.2.3",
+    "isal": "1.8.0"
+  },
+  "source": "First 5000 eligible records of the frozen seeded 50000-document Nynorsk sample from 2026-10-23; id/text only, input checksum below. Corpus text is not included.",
+  "single_worker_argument": {
+    "documents": 5000,
+    "workers_argument": 1,
+    "start_method": "fork",
+    "python": "3.14.0",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "input_sha256": "13054f7002c92ba177596729fdba8fe1a9a4c045047225e10d356adfb8ea67de",
+    "scope": "Extraction + positional merge only; no forward index or document similarity.",
+    "timing": "Fresh child per build, warmed parent JIT; alternate old/new order. Input sampling, occurrence verification and separate hashing loop excluded.",
+    "runs": [
+      {
+        "label": "baseline",
+        "repeat": 1,
+        "extraction_seconds": 4.220208000391722,
+        "total_seconds": 6.084719433449209,
+        "merge_seconds": 1.864511433057487,
+        "documents": 5000,
+        "fingerprints": 610364,
+        "occurrences": 744253,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18362011,
+        "intermediate_bytes": 6680411,
+        "tokenization_to_winnowing_seconds": 1.8617051411420107,
+        "jit_warmup_seconds_excluded": 0.7434835620224476
+      },
+      {
+        "label": "candidate",
+        "repeat": 1,
+        "extraction_seconds": 2.629908138886094,
+        "total_seconds": 4.606720293872058,
+        "merge_seconds": 1.9768121549859643,
+        "documents": 5000,
+        "fingerprints": 610596,
+        "occurrences": 743296,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18359048,
+        "intermediate_bytes": 9653805,
+        "tokenization_to_winnowing_seconds": 0.6870048372074962,
+        "jit_warmup_seconds_excluded": 1.022721634246409
+      },
+      {
+        "label": "candidate",
+        "repeat": 2,
+        "extraction_seconds": 2.629505324177444,
+        "total_seconds": 4.660781990736723,
+        "merge_seconds": 2.031276666559279,
+        "documents": 5000,
+        "fingerprints": 610596,
+        "occurrences": 743296,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18359048,
+        "intermediate_bytes": 9653805,
+        "tokenization_to_winnowing_seconds": 0.6870441874489188,
+        "jit_warmup_seconds_excluded": 0.48180787079036236
+      },
+      {
+        "label": "baseline",
+        "repeat": 2,
+        "extraction_seconds": 4.082222202792764,
+        "total_seconds": 5.971577969379723,
+        "merge_seconds": 1.8893557665869594,
+        "documents": 5000,
+        "fingerprints": 610364,
+        "occurrences": 744253,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18362011,
+        "intermediate_bytes": 6680411,
+        "tokenization_to_winnowing_seconds": 1.8763291584327817,
+        "jit_warmup_seconds_excluded": 0.825763389468193
+      },
+      {
+        "label": "baseline",
+        "repeat": 3,
+        "extraction_seconds": 4.4908574325963855,
+        "total_seconds": 6.353045188821852,
+        "merge_seconds": 1.8621877562254667,
+        "documents": 5000,
+        "fingerprints": 610364,
+        "occurrences": 744253,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18362011,
+        "intermediate_bytes": 6680411,
+        "tokenization_to_winnowing_seconds": 1.8779958672821522,
+        "jit_warmup_seconds_excluded": 0.8092147540301085
+      },
+      {
+        "label": "candidate",
+        "repeat": 3,
+        "extraction_seconds": 2.6236504772678018,
+        "total_seconds": 4.692013829015195,
+        "merge_seconds": 2.0683633517473936,
+        "documents": 5000,
+        "fingerprints": 610596,
+        "occurrences": 743296,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18359048,
+        "intermediate_bytes": 9653805,
+        "tokenization_to_winnowing_seconds": 0.681903975084424,
+        "jit_warmup_seconds_excluded": 0.5804190319031477
+      }
+    ],
+    "medians": {
+      "baseline": {
+        "extraction_seconds": 4.220208000391722,
+        "merge_seconds": 1.864511433057487,
+        "total_seconds": 6.084719433449209,
+        "tokenization_to_winnowing_seconds": 1.8763291584327817
+      },
+      "candidate": {
+        "extraction_seconds": 2.629505324177444,
+        "merge_seconds": 2.031276666559279,
+        "total_seconds": 4.660781990736723,
+        "tokenization_to_winnowing_seconds": 0.6870048372074962
+      }
+    }
+  },
+  "four_worker_argument": {
+    "documents": 5000,
+    "workers_argument": 4,
+    "start_method": "fork",
+    "python": "3.14.0",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "input_sha256": "13054f7002c92ba177596729fdba8fe1a9a4c045047225e10d356adfb8ea67de",
+    "scope": "Extraction + positional merge only; no forward index or document similarity.",
+    "timing": "Fresh child per build, warmed parent JIT; alternate old/new order. Input sampling, occurrence verification and separate hashing loop excluded.",
+    "runs": [
+      {
+        "label": "baseline",
+        "repeat": 1,
+        "extraction_seconds": 2.8982834108173847,
+        "total_seconds": 4.791263016872108,
+        "merge_seconds": 1.8929796060547233,
+        "documents": 5000,
+        "fingerprints": 610364,
+        "occurrences": 744253,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18362011,
+        "intermediate_bytes": 6680411,
+        "tokenization_to_winnowing_seconds": 1.860173225402832,
+        "jit_warmup_seconds_excluded": 1.3223410854116082
+      },
+      {
+        "label": "candidate",
+        "repeat": 1,
+        "extraction_seconds": 3.0568169290199876,
+        "total_seconds": 5.0970280626788735,
+        "merge_seconds": 2.040211133658886,
+        "documents": 5000,
+        "fingerprints": 610596,
+        "occurrences": 743296,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18359048,
+        "intermediate_bytes": 9653805,
+        "tokenization_to_winnowing_seconds": 0.6843307893723249,
+        "jit_warmup_seconds_excluded": 0.8178385253995657
+      },
+      {
+        "label": "candidate",
+        "repeat": 2,
+        "extraction_seconds": 2.9206651486456394,
+        "total_seconds": 4.915073696523905,
+        "merge_seconds": 1.9944085478782654,
+        "documents": 5000,
+        "fingerprints": 610596,
+        "occurrences": 743296,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18359048,
+        "intermediate_bytes": 9653805,
+        "tokenization_to_winnowing_seconds": 0.6852514976635575,
+        "jit_warmup_seconds_excluded": 0.4343471694737673
+      },
+      {
+        "label": "baseline",
+        "repeat": 2,
+        "extraction_seconds": 2.8751029735431075,
+        "total_seconds": 4.830788183026016,
+        "merge_seconds": 1.9556852094829082,
+        "documents": 5000,
+        "fingerprints": 610364,
+        "occurrences": 744253,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18362011,
+        "intermediate_bytes": 6680411,
+        "tokenization_to_winnowing_seconds": 1.8581066289916635,
+        "jit_warmup_seconds_excluded": 0.7486624754965305
+      },
+      {
+        "label": "baseline",
+        "repeat": 3,
+        "extraction_seconds": 2.8713114811107516,
+        "total_seconds": 4.77755381911993,
+        "merge_seconds": 1.9062423380091786,
+        "documents": 5000,
+        "fingerprints": 610364,
+        "occurrences": 744253,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18362011,
+        "intermediate_bytes": 6680411,
+        "tokenization_to_winnowing_seconds": 1.8762801075354218,
+        "jit_warmup_seconds_excluded": 0.8833273146301508
+      },
+      {
+        "label": "candidate",
+        "repeat": 3,
+        "extraction_seconds": 2.9999495688825846,
+        "total_seconds": 4.997437886893749,
+        "merge_seconds": 1.9974883180111647,
+        "documents": 5000,
+        "fingerprints": 610596,
+        "occurrences": 743296,
+        "all_source_occurrences_verified": true,
+        "index_bytes": 18359048,
+        "intermediate_bytes": 9653805,
+        "tokenization_to_winnowing_seconds": 0.6818198654800653,
+        "jit_warmup_seconds_excluded": 1.2346274927258492
+      }
+    ],
+    "medians": {
+      "baseline": {
+        "extraction_seconds": 2.8751029735431075,
+        "merge_seconds": 1.9062423380091786,
+        "total_seconds": 4.791263016872108,
+        "tokenization_to_winnowing_seconds": 1.860173225402832
+      },
+      "candidate": {
+        "extraction_seconds": 2.9999495688825846,
+        "merge_seconds": 1.9974883180111647,
+        "total_seconds": 4.997437886893749,
+        "tokenization_to_winnowing_seconds": 0.6843307893723249
+      }
+    }
+  },
+  "candidate_source_sha256": {
+    "findmytext/winnower.py": "28c9eb6b72c70708b641899e5780c53eee006b33e8a4fbbbc06687830aa69b5f",
+    "findmytext/index_builder.py": "8e11fa149b0f4a99049a29ca5f447e187ccc2efe380ae8caeae8f0debf16ef47",
+    "findmytext/indexing.py": "d6260be0dfc3230c5ab27e86abaeed04187c0f5874a381f8d1057f84d8869379",
+    "findmytext/detectors.py": "ce9a045869528fbd6055b6d28d8536b4610c4b9ef7c6e52322b7cd1960ce95ee",
+    "findmytext/web.py": "db2ed2dd43348b86932a126d332b1ada17da04dc8cb68f92b49791f07c42ccb8",
+    "findmytext/utils.py": "e74c15324361b5827c9f81d51b965988f41c45f8984d51377b7384fd962337b3"
+  }
+}
