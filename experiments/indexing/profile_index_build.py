@@ -30,7 +30,7 @@ import orjson
 import plotly.graph_objects as go
 import zstandard as zstd
 
-from experiments.hash_collision_study import ROOT, sample_documents
+from experiments.indexing.hash_collision_study import ROOT, sample_documents
 from findmytext import index_builder, indexing
 from findmytext.winnower import ROLLING64_HASH, Winnower
 
@@ -129,7 +129,7 @@ def execute_build(config):
     mp.set_start_method("fork", force=True)
     if config.get("hash_method", ROLLING64_HASH) != ROLLING64_HASH:
         raise ValueError("Legacy profiling is retired; only rolling64-v1 builds are supported. "
-                         "See experiments/HASHING_FINDINGS.md for frozen comparisons.")
+                         "See docs/HASHING_FINDINGS.md for frozen comparisons.")
     directory = Path(config["directory"])
     directory.mkdir(parents=True, exist_ok=False)
     _DIRECTORY = directory / "profiles"
@@ -390,7 +390,7 @@ def main():
             print(f"Starting {label} build: {method}", flush=True)
             with (args.output_dir / f"{label}_{method}.log").open("w") as log:
                 subprocess.run(
-                    [sys.executable, "-m", "experiments.profile_index_build",
+                    [sys.executable, "-m", "experiments.indexing.profile_index_build",
                      "--run-config", str(config_path)],
                     stdout=log, stderr=subprocess.STDOUT, check=True,
                 )

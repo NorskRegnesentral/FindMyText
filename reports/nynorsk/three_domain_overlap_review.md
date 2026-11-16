@@ -18,9 +18,9 @@ The three hosts have **different mechanisms**, not one common data-cleaning fail
 
 These files contain both complete original corpus text fields, not just the excerpts below:
 
-1. [Helsetilsynet: two inspection reports](./host_overlap_examples/helsetilsynet_template.md).
-2. [Skogholt: monthly archive versus individual article](./host_overlap_examples/skogholt_archive_and_article.md).
-3. [Regjeringen: recurring explanations in annual reports](./host_overlap_examples/regjeringen_annual_report.md).
+1. [Helsetilsynet: two inspection reports](host_overlap_examples/helsetilsynet_template.md).
+2. [Skogholt: monthly archive versus individual article](host_overlap_examples/skogholt_archive_and_article.md).
+3. [Regjeringen: recurring explanations in annual reports](host_overlap_examples/regjeringen_annual_report.md).
 
 Use **Markdown Preview** (`Ctrl+Shift+V` in VS Code). Yellow marks the source ranges supporting shared stored fingerprints; bold yellow identifies the detector's best cluster. Links at the top jump to that cluster in either text. Original punctuation and whitespace are preserved.
 
@@ -75,7 +75,7 @@ These are statements about the captured text. They do not mean every report is i
 - **A, ID 250817:** [Meland kommune: services for young people / individual plans, 2013](https://www.helsetilsynet.no/tilsyn/tilsynsrapporter/hordaland/2013/meland-kommune-tjenester-unge-individuell-plan-2013/).
 - **B, ID 726179:** [Haraldsplass Diakonale Sykehus: coordination when discharging patients, 2015](https://www.helsetilsynet.no/tilsyn/tilsynsrapporter/hordaland/2015/-haraldsplass-diakonale-sykehus-samhandling-om-utskriving-av-pasientar-fra-spesialisthelsetenesta-til-kommunen-2015/).
 - **50 shared fingerprints overall; best-cluster support 16.**
-- [Read both complete highlighted texts](./host_overlap_examples/helsetilsynet_template.md).
+- [Read both complete highlighted texts](host_overlap_examples/helsetilsynet_template.md).
 
 Shared wording includes:
 
@@ -148,7 +148,7 @@ There is no single hash shared by half these members. The most frequent selected
 - **A, ID 968240:** [August 2023 archive](https://www.skogholt.org/2023/08/).
 - **B, ID 1019443:** [“Ja, det går for tregt å ta vare på naturen”](https://www.skogholt.org/2023/08/ja-det-gar-for-tregt-a-ta-vare-pa-naturen/).
 - **104 shared fingerprints overall; best-cluster support 104.**
-- [Read both complete highlighted texts](./host_overlap_examples/skogholt_archive_and_article.md).
+- [Read both complete highlighted texts](host_overlap_examples/skogholt_archive_and_article.md).
 
 The matching article text includes:
 
@@ -220,7 +220,7 @@ These partner counts alone do not identify the mechanism; the examples below do.
 - **A, ID 566497:** [Meld. St. 3 (2010–2011), chapter 1](https://www.regjeringen.no/no/dokumenter/meld-st-3-20102011/id641561/?ch=1).
 - **B, ID 776811:** [Meld. St. 3 (2009–2010), chapter 1](https://www.regjeringen.no/no/dokumenter/Meld-St-3-2009--2010/id602886/?ch=1).
 - **362 shared fingerprints overall; best-cluster support 67.**
-- [Read both complete highlighted texts](./host_overlap_examples/regjeringen_annual_report.md).
+- [Read both complete highlighted texts](host_overlap_examples/regjeringen_annual_report.md).
 
 Shared explanatory text includes:
 
@@ -303,7 +303,7 @@ That near-threshold Helsetilsynet edge would disappear, but the filter has barel
 - The study does not inspect all passages of all edges, recover all original HTML, establish copying direction, or measure corpus-wide precision.
 - No original index, source record or production graph was changed.
 
-Implementation: [analyze_overlap_hosts.py](./experiments/analyze_overlap_hosts.py). Full-text export: [export_pair_review.py](./experiments/export_pair_review.py).
+Implementation: [analyze_overlap_hosts.py](../../experiments/review/analyze_overlap_hosts.py). Full-text export: [export_pair_review.py](../../experiments/review/export_pair_review.py).
 
 Detailed local evidence is stored at:
 

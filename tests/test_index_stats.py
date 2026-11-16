@@ -8,8 +8,8 @@ import pytest
 
 pytest.importorskip("plotly")
 
-from experiments.index_stats import index_statistics, resolve_indexes
-from experiments import index_stats
+from experiments.indexing.index_stats import index_statistics, resolve_indexes
+from experiments.indexing import index_stats
 from findmytext.indexing import POSTING_DTYPE
 
 
@@ -145,7 +145,7 @@ def test_folder_discovery_and_cli_reports(tmp_path):
     assert resolve_indexes([str(root / names[0])]) == [(names[0], index_dir)]
     assert resolve_indexes([f"nynorsk={index_dir}"]) == [("nynorsk", index_dir)]
     output = tmp_path / "report"
-    command = [sys.executable, "-m", "experiments.index_stats", str(root),
+    command = [sys.executable, "-m", "experiments.indexing.index_stats", str(root),
                "--output-dir", str(output), "--batch-entries", "2"]
     result = subprocess.run(command, capture_output=True, text=True, check=True,
                             cwd=Path(__file__).resolve().parents[1])

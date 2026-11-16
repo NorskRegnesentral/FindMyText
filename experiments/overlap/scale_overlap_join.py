@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from experiments.benchmark_overlap_join import _validate, choose_memory_budget
+from experiments.overlap.benchmark_overlap_join import _validate, choose_memory_budget
 from findmytext.overlap_inverted import _source_identity
 from findmytext.overlap_join import prepare_subset, run_join, warm_up
 from findmytext.overlap_stream import (

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from experiments.analyze_overlap_component import (
+from experiments.review.analyze_overlap_component import (
     _common_signatures, _excluded_shared, component_statistics, marker_regions,
     layout_census,
 )

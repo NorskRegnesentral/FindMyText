@@ -91,7 +91,7 @@ def run_stage(root: Path, config: dict, status: dict, job: dict, size: int) -> b
         logging.error("%s: %s", stage_name, job["error"])
         return False
     command = [
-        config["python"], "-u", "-m", "experiments.scale_overlap_join",
+        config["python"], "-u", "-m", "experiments.overlap.scale_overlap_join",
         job["index_dir"], job["overlap_dir"], str(output),
         "--sizes", str(size), "--seed", str(config["seed"]),
         "--k", *map(str, config["k_values"]),

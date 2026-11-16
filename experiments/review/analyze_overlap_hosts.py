@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from experiments.analyze_overlap_component import (
+from experiments.review.analyze_overlap_component import (
     _common_signatures, _excluded_shared, component_statistics,
 )
 from findmytext.detectors import FingerprintChainDetector

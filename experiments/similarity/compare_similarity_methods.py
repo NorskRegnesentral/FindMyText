@@ -8,11 +8,11 @@ and that every top-k count equals the exhaustive count.
 Examples::
 
     # Existing merged index (the forward index is built if missing)
-    python -m experiments.compare_similarity_methods --index-dir my_index
+    python -m experiments.similarity.compare_similarity_methods --index-dir my_index
 
     # Build a fresh index from a JSONL corpus, or from a synthetic corpus by default
-    python -m experiments.compare_similarity_methods --corpus corpus.jsonl
-    python -m experiments.compare_similarity_methods --n-documents 200
+    python -m experiments.similarity.compare_similarity_methods --corpus corpus.jsonl
+    python -m experiments.similarity.compare_similarity_methods --n-documents 200
 """
 
 from __future__ import annotations

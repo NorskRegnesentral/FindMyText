@@ -10,7 +10,7 @@ import hplt_nynorsk
 from findmytext import index_builder
 from findmytext.indexing import DiskBasedIndex
 from findmytext.overlap_inverted import OverlapInvertedIndex, _source_identity
-from experiments.verify_overlap_inverted import verify_indexes
+from experiments.indexing.verify_overlap_inverted import verify_indexes
 
 
 @pytest.fixture

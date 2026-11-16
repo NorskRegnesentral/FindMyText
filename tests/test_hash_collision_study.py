@@ -9,7 +9,7 @@ import sys
 
 pytest.importorskip("plotly")
 
-from experiments import hash_collision_study as study
+from experiments.indexing import hash_collision_study as study
 
 
 def test_wide_hash_uses_unambiguous_exact_token_encoding():
@@ -131,7 +131,7 @@ def test_legacy_collection_is_retired_and_frozen_reports_still_render(tmp_path):
     (tmp_path / "report.json").write_text(json.dumps(report))
     (tmp_path / "collision_examples.json").write_text(json.dumps({"old": examples, "wide": []}))
     subprocess.run(
-        [sys.executable, "-m", "experiments.hash_collision_study", "--report-dir", str(tmp_path)],
+        [sys.executable, "-m", "experiments.indexing.hash_collision_study", "--report-dir", str(tmp_path)],
         capture_output=True, text=True, check=True,
     )
     assert (tmp_path / "collision_study.html").is_file()

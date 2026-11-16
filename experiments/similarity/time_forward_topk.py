@@ -1,7 +1,7 @@
 """Time sample runs before full forward-top-k runs, preserving source indexes.
 
 Run from the repository root with PYTHONPATH=. .venv/bin/python
-experiments/time_forward_topk.py --output-dir /path/to/new/run-directory
+python -m experiments.similarity.time_forward_topk --output-dir /path/to/new/run-directory
 """
 
 import argparse

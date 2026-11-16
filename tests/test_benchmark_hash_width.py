@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from experiments.benchmark_hash_width import (
+from experiments.indexing.benchmark_hash_width import (
     ROLLING_BASE64,
     fingerprint_tokens,
     run_benchmark,
@@ -47,7 +47,7 @@ def test_rolling64_matches_independent_big_integer_reference(length, base):
 
 
 def test_benchmark_outputs_measured_timings_and_equivalence(tmp_path, monkeypatch):
-    from experiments import benchmark_hash_width
+    from experiments.indexing import benchmark_hash_width
 
     corpus = tmp_path / "corpus"
     corpus.mkdir()

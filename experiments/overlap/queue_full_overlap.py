@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from filelock import FileLock
 
-from experiments.overnight_prefix_benchmarks import (
+from experiments.overlap.overnight_prefix_benchmarks import (
     _available_memory, run_logged_command, timestamp,
 )
 from findmytext.overlap_inverted import _source_identity
@@ -148,7 +148,7 @@ def run_full_queue(run_dir: str | Path) -> dict:
                 environment.update(config["environment"])
                 environment["PYTHONPATH"] = str(root / "source_snapshot")
                 base = [
-                    config["python"], "-u", "-m", "experiments.run_full_overlap_join",
+                    config["python"], "-u", "-m", "experiments.overlap.run_full_overlap_join",
                     job["index_dir"], job["overlap_dir"], review["reference_stage"], str(output),
                     "--memory-gib", str(config["memory_budget_bytes"] / 2**30),
                 ]

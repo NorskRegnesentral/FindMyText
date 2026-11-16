@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from experiments.benchmark_overlap_join import benchmark
+from experiments.overlap.benchmark_overlap_join import benchmark
 from findmytext import index_builder, similarity, winnower
 from findmytext.indexing import POSTING_DTYPE
 from findmytext.overlap_inverted import build_overlap_inverted_index
@@ -387,7 +387,7 @@ def test_subset_persistence_and_changed_committed_output_are_rejected(source, tm
 
 
 def test_progressive_benchmark_resumes_and_checks_all_modes(source, tmp_path):
-    from experiments.scale_overlap_join import scale_benchmark
+    from experiments.overlap.scale_overlap_join import scale_benchmark
 
     root, overlap = source
     report = scale_benchmark(
@@ -444,7 +444,7 @@ def test_explicit_pair_passage_bypasses_topk_and_bounds_resources(source, monkey
 
 
 def test_synthetic_passage_controls_distinguish_scattered_and_aligned_text(tmp_path):
-    from experiments.inspect_overlap_passages import synthetic_controls
+    from experiments.overlap.inspect_overlap_passages import synthetic_controls
 
     result = synthetic_controls(tmp_path / "controls")
     assert result["aligned_positive"]["status"] == "cluster"
@@ -456,8 +456,8 @@ def test_synthetic_passage_controls_distinguish_scattered_and_aligned_text(tmp_p
 def test_real_source_passage_inspection_end_to_end(tmp_path):
     import zstandard
 
-    from experiments.inspect_overlap_passages import inspect_passages, synthetic_controls
-    from experiments.scale_overlap_join import scale_benchmark
+    from experiments.overlap.inspect_overlap_passages import inspect_passages, synthetic_controls
+    from experiments.overlap.scale_overlap_join import scale_benchmark
 
     setup = tmp_path / "setup"
     synthetic_controls(setup)
@@ -501,7 +501,7 @@ def test_stream_rejects_mixed_source_before_creating_output(source, tmp_path):
 
 
 def test_explicit_pair_keeps_only_the_highest_scoring_surviving_passage(tmp_path):
-    from experiments.compare_similarity_methods import build_index
+    from experiments.similarity.compare_similarity_methods import build_index
     from findmytext.detectors import FingerprintChainDetector
 
     short = " ".join(f"shortshared{i}" for i in range(60))
@@ -614,7 +614,7 @@ def test_prefix_checkpoint_and_partial_probe_coverage(source, tmp_path):
 def test_default_working_allowance_is_32_gib():
     from unittest.mock import patch
 
-    from experiments.benchmark_overlap_join import choose_memory_budget
+    from experiments.overlap.benchmark_overlap_join import choose_memory_budget
 
     with patch.object(Path, "read_text", return_value=f"MemAvailable: {128 * 2**20} kB\n"):
         budget, available = choose_memory_budget()
@@ -626,8 +626,8 @@ def test_default_working_allowance_is_32_gib():
 
 
 def test_prefix_full_pipeline_with_independent_pilot_and_sample_verification(source, tmp_path):
-    from experiments.run_full_overlap_join import finish_full_run, run_pipeline
-    from experiments.scale_overlap_join import scale_benchmark
+    from experiments.overlap.run_full_overlap_join import finish_full_run, run_pipeline
+    from experiments.overlap.scale_overlap_join import scale_benchmark
 
     root, overlap = source
     scale_benchmark(
@@ -662,7 +662,7 @@ def test_prefix_full_pipeline_with_independent_pilot_and_sample_verification(sou
 
 
 def test_full_output_verifier_rejects_a_complete_but_partial_document_subset(source, tmp_path):
-    from experiments.run_full_overlap_join import verify_full_output
+    from experiments.overlap.run_full_overlap_join import verify_full_output
     from findmytext.overlap_stream import run_document_stream
 
     root, overlap = source
@@ -674,7 +674,7 @@ def test_full_output_verifier_rejects_a_complete_but_partial_document_subset(sou
 
 
 def test_prefix_only_cross_corpus_benchmark_uses_oracle_without_extra_controls(source, tmp_path):
-    from experiments.scale_overlap_join import scale_benchmark
+    from experiments.overlap.scale_overlap_join import scale_benchmark
 
     root, overlap = source
     report = scale_benchmark(
@@ -694,7 +694,7 @@ def test_prefix_only_cross_corpus_benchmark_uses_oracle_without_extra_controls(s
 
 
 def test_overnight_workload_policy_selects_a_bounded_larger_stage():
-    from experiments.overnight_prefix_benchmarks import choose_larger_stage
+    from experiments.overlap.overnight_prefix_benchmarks import choose_larger_stage
 
     policy = {
         "larger_sizes_descending": [100000, 50000],
@@ -712,7 +712,7 @@ def test_overnight_workload_policy_selects_a_bounded_larger_stage():
 
 
 def test_overnight_queue_continues_other_languages_after_stage_failure(tmp_path, monkeypatch):
-    from experiments import overnight_prefix_benchmarks as overnight
+    from experiments.overlap import overnight_prefix_benchmarks as overnight
 
     root = tmp_path / "night"
     root.mkdir()
@@ -791,8 +791,8 @@ def test_buffered_output_flushes_before_pause_and_resumes_exactly(source, tmp_pa
 
 
 def test_full_followup_preflight_matches_logical_view_and_reviews_real_pilot(source, tmp_path):
-    from experiments.queue_full_overlap import full_working_bounds, review_pilot
-    from experiments.scale_overlap_join import scale_benchmark
+    from experiments.overlap.queue_full_overlap import full_working_bounds, review_pilot
+    from experiments.overlap.scale_overlap_join import scale_benchmark
     from findmytext.overlap_full import prepare_full_corpus
 
     root, overlap = source
@@ -820,7 +820,7 @@ def test_full_followup_preflight_matches_logical_view_and_reviews_real_pilot(sou
 
 
 def test_full_followup_queue_holds_a_corpus_exceeding_working_allowance(source, tmp_path):
-    from experiments.queue_full_overlap import run_full_queue
+    from experiments.overlap.queue_full_overlap import run_full_queue
 
     root, overlap = source
     queue = tmp_path / "full-queue"
@@ -845,7 +845,7 @@ def test_shared_logged_command_records_exit_and_releases_child_pid(tmp_path):
     import os
     import sys
 
-    from experiments.overnight_prefix_benchmarks import run_logged_command
+    from experiments.overlap.overnight_prefix_benchmarks import run_logged_command
 
     (tmp_path / "source_snapshot").mkdir()
     status = {"child_pid": None}

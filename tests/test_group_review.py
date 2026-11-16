@@ -3,7 +3,7 @@ import json
 import numpy as np
 import zstandard
 
-from experiments.review_overlap_groups import prepare_groups, review_groups, select_review_pairs
+from experiments.review.review_overlap_groups import prepare_groups, review_groups, select_review_pairs
 from findmytext.document_store import build_document_store
 from findmytext.overlap_inverted import _source_identity
 from hplt_build import build_index

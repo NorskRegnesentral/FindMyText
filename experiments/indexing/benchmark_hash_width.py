@@ -11,7 +11,7 @@ from pathlib import Path
 from statistics import median
 from time import perf_counter
 
-from experiments.hash_collision_study import ROOT, frame_tokens, wide_fingerprints, winnow_uint64
+from experiments.indexing.hash_collision_study import ROOT, frame_tokens, wide_fingerprints, winnow_uint64
 from findmytext import utils
 from findmytext.winnower import (
     ROLLING64_HASH, ROLLING_BASE64, Winnower,

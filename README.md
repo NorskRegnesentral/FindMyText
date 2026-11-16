@@ -69,7 +69,7 @@ fingerprints and hash DataFrame columns preserve the full UInt64 range, includin
 values above `2**63`. It is not intended for cryptographic/adversarial integrity
 checks, and collision/quality measurements remain corpus-specific.
 The full findings, historical comparisons, and migration decision are in
-[experiments/HASHING_FINDINGS.md](experiments/HASHING_FINDINGS.md).
+[docs/HASHING_FINDINGS.md](docs/HASHING_FINDINGS.md).
 
 #### Canonical interleaved positional index
 
@@ -86,7 +86,7 @@ interleaved rolling64 indexes remain usable.
 The `df >= 2` document-only overlap inverted index is built separately, as described
 below. Full indexes retain singletons for external queries.
 The trade-offs and migration details are recorded in
-[experiments/POSTING_LAYOUT_FINDINGS.md](experiments/POSTING_LAYOUT_FINDINGS.md).
+[docs/POSTING_LAYOUT_FINDINGS.md](docs/POSTING_LAYOUT_FINDINGS.md).
 
 #### Rebuild Nynorsk: positional inverted, forward, and overlap inverted
 
@@ -197,7 +197,7 @@ automatic relabeling of previously built sidecars are provided.
 To verify the persisted indexes and save a JSON report:
 
 ```bash
-.venv/bin/python -m experiments.verify_overlap_inverted \
+.venv/bin/python -m experiments.indexing.verify_overlap_inverted \
   /path/to/build/index /path/to/build/overlap_inverted \
   --corpus-dir /path/to/nno_Latn \
   --report /path/to/build/verification.json
@@ -221,7 +221,7 @@ graphs, and positional passage verification remain future work.
 #### Single-worker overlap-join prototype (Nynorsk first)
 
 ```bash
-.venv/bin/python -m experiments.benchmark_overlap_join \
+.venv/bin/python -m experiments.overlap.benchmark_overlap_join \
   /path/to/build/index /path/to/build/overlap_inverted \
   /path/to/new-experiment-output \
   --n-documents 10000 --seed 41 --k 50 30 20 10 5 \
@@ -315,7 +315,7 @@ has **no time limit**.
 The local measured report is
 `/nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/overlap_experiments/2026-10-25-seed41-10000-final/report.json`.
 The full contract and remaining work are in
-[SIMILARITY_JOIN_PLAN.md](SIMILARITY_JOIN_PLAN.md).
+[docs/SIMILARITY_JOIN_PLAN.md](docs/SIMILARITY_JOIN_PLAN.md).
 
 #### Streaming joins, checkpoints, and larger Nynorsk samples
 
@@ -324,7 +324,7 @@ disk, and uses independent **external pair-count aggregation**, rather than
 allocating an all-pairs reference matrix:
 
 ```bash
-.venv/bin/python -m experiments.scale_overlap_join \
+.venv/bin/python -m experiments.overlap.scale_overlap_join \
   /path/to/build/index /path/to/build/overlap_inverted \
   /path/to/experiment-output \
   --sizes 25000 50000 100000 --k 50 30 20 10 5 \
@@ -390,7 +390,7 @@ pair sequences and counts matched fresh joins and the independent reference.
 After a stage completes:
 
 ```bash
-.venv/bin/python -m experiments.inspect_overlap_passages \
+.venv/bin/python -m experiments.overlap.inspect_overlap_passages \
   /path/to/build/index /path/to/nno_Latn \
   /path/to/experiment-output/25000 \
   /path/to/new-inspection-output
@@ -430,7 +430,7 @@ The real-data pause/resume demonstration matched the uninterrupted output.
 Inspection of 26 selected pairs from the 25k stage found 22 surviving positional
 clusters and four without a cluster, with all retained source evidence verified.
 These samples do not establish passage precision. Detailed measurements,
-limits and remaining decisions are in [SIMILARITY_JOIN_PLAN.md](SIMILARITY_JOIN_PLAN.md).
+limits and remaining decisions are in [docs/SIMILARITY_JOIN_PLAN.md](docs/SIMILARITY_JOIN_PLAN.md).
 Local reports and output parts are under
 `/nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/overlap_experiments/2026-10-25-progressive/`.
 
@@ -454,7 +454,7 @@ prepares full-corpus views, validates representative owner probes against all
 earlier-owned corpus partners, and only then runs the uncapped exact join:
 
 ```bash
-.venv/bin/python -m experiments.run_full_overlap_join \
+.venv/bin/python -m experiments.overlap.run_full_overlap_join \
   /path/to/build/index /path/to/build/overlap_inverted \
   /path/to/progressive-experiment/100000 \
   /path/to/full-run-output --memory-gib 32
@@ -497,7 +497,7 @@ These are overlap candidates, not all positionally verified passages.
 
 #### Nynorsk groups, default passage review and document retrieval
 
-Open the executed [Nynorsk review notebook](nynorsk_group_review.ipynb) with the
+Open the executed [Nynorsk review notebook](notebooks/nynorsk_group_review.ipynb) with the
 workspace `.venv` kernel. It contains complete component summaries, bounded
 candidate-versus-passage-support graphs, paired text evidence, raw metadata
 and reusable batch retrieval examples.
@@ -538,7 +538,7 @@ crawl/version/extraction variants need a different interpretation from cross-sit
 copying.
 
 Follow-up analysis of the complete K=50 giant group is reproducible with
-[analyze_overlap_component.py](experiments/analyze_overlap_component.py) and
+[analyze_overlap_component.py](experiments/review/analyze_overlap_component.py) and
 appears in notebook section 7. Of its 27,691 documents, 20,520 (74.1%) are from
 `docplayer.me`; **99.61% of its edges are Docplayer-to-Docplayer**. Exact raw-text
 layout counts find 10,640 of those records with at least three standalone
@@ -551,16 +551,16 @@ These are diagnostic counterfactuals, not production filters or a full-corpus
 df-cap experiment. No fingerprint is present in every giant-group member.
 Investigate content regions before treating graph components as reuse groups.
 
-The [three-host follow-up](three_domain_overlap_review.md) separately examines
+The [three-host follow-up](reports/nynorsk/three_domain_overlap_review.md) separately examines
 Helsetilsynet, Skogholt and Regjeringen with exact member/edge counts and
 source-verified examples. It distinguishes inspection-report templates,
 article text repeated across archive/category pages, and recurring official
 document text or publication mirrors. The report links complete highlighted
 text pairs for all three hosts. Its reproducible evidence collection is
-[analyze_overlap_hosts.py](experiments/analyze_overlap_hosts.py); bounded
+[analyze_overlap_hosts.py](experiments/review/analyze_overlap_hosts.py); bounded
 sample interpretations are not automatic corpus-wide relevance labels.
 
-[export_pair_review.py](experiments/export_pair_review.py) exports two complete
+[export_pair_review.py](experiments/review/export_pair_review.py) exports two complete
 stored text fields to Markdown, using the existing token-to-character offset
 helper. Yellow highlights mark shared stored k-grams; bold yellow marks the
 best default-detector cluster. It preserves original punctuation/whitespace,
@@ -620,7 +620,7 @@ under `hplt_nynorsk/group_review/2026-10-26-defaults/`.
 To rerun the package into a **new** review destination:
 
 ```bash
-.venv/bin/python -m experiments.review_overlap_groups \
+.venv/bin/python -m experiments.review.review_overlap_groups \
   --index-dir /nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/findmytext_build/index \
   --join-dir /nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/overlap_experiments/2026-10-25-prefix-full \
   --store-file /nr/project/stat/COPY.AI/data/Lars/hplt_nynorsk/document_store/corpus.sqlite \
@@ -635,7 +635,7 @@ require rebuilding the existing fingerprint indexes.
 
 #### Safeguarded overnight cross-corpus prefix experiments
 
-[overnight_prefix_benchmarks.py](experiments/overnight_prefix_benchmarks.py)
+[overnight_prefix_benchmarks.py](experiments/overlap/overnight_prefix_benchmarks.py)
 uses existing Icelandic, Latvian and Bokmal indexes; it does not download,
 rebuild or blindly launch whole-corpus joins. It waits for Nynorsk's final
 independent checks, then runs one corpus stage at a time with a 32 GiB working
@@ -668,7 +668,7 @@ Attach without starting another queue:
 tmux -L findmytext-builds attach -t prefix-overlap-overnight
 ```
 
-After these pilots, [queue_full_overlap.py](experiments/queue_full_overlap.py)
+After these pilots, [queue_full_overlap.py](experiments/overlap/queue_full_overlap.py)
 rechecks independent results and source identities, checks working-memory and
 projected disk headroom, and runs eligible full corpora sequentially. Each full
 job is followed by independent numeric and complete derived-row validation.
@@ -728,7 +728,7 @@ To compare the runtime of both methods and check that `forward_topk` equals the
 exhaustive result truncated to each document's top-k neighbours:
 
 ```bash
-python -m experiments.compare_similarity_methods --index-dir my_index --top-k 50 --min-shared-fingerprints 5
+python -m experiments.similarity.compare_similarity_methods --index-dir my_index --top-k 50 --min-shared-fingerprints 5
 ```
 
 
@@ -738,7 +738,7 @@ Print index statistics and save interactive figures for the four HPLT corpora
 (Nynorsk, Bokmal, Icelandic, and Latvian) in a parent folder:
 
 ```bash
-.venv/bin/python -m experiments.index_stats /path/to/corpora --output-dir /path/to/analysis
+.venv/bin/python -m experiments.indexing.index_stats /path/to/corpora --output-dir /path/to/analysis
 ```
 
 With no arguments, it analyzes the four indexes at
@@ -747,7 +747,7 @@ With no arguments, it analyzes the four indexes at
 `/nr/project/stat/COPY.AI/data/Lars/index_analysis`:
 
 ```bash
-.venv/bin/python -m experiments.index_stats
+.venv/bin/python -m experiments.indexing.index_stats
 ```
 
 Explicit index arguments and `--output-dir` override these defaults.
@@ -756,7 +756,7 @@ the `hplt_<language>/findmytext_build/index` layout. It also accepts a single
 index/corpus folder, or explicitly named indexes:
 
 ```bash
-.venv/bin/python -m experiments.index_stats \
+.venv/bin/python -m experiments.indexing.index_stats \
   nynorsk=/path/to/hplt_nynorsk/findmytext_build/index \
   bokmal=/path/to/hplt_bokmal/findmytext_build/index \
   icelandic=/path/to/hplt_icelandic/findmytext_build/index \
@@ -794,7 +794,7 @@ To fix previously generated histogram axes and produce this comparison without
 rescanning any index:
 
 ```bash
-.venv/bin/python -m experiments.index_stats --repair-plots
+.venv/bin/python -m experiments.indexing.index_stats --repair-plots
 # Or: --repair-plots --output-dir /path/to/analysis
 ```
 
@@ -814,12 +814,12 @@ shared text, or both; these aggregate reports cannot separate the causes.
 
 Legacy31-dependent experiment execution is retired. The completed Nynorsk
 and Latvian comparisons are preserved and explained in
-[experiments/HASHING_FINDINGS.md](experiments/HASHING_FINDINGS.md), including
+[docs/HASHING_FINDINGS.md](docs/HASHING_FINDINGS.md), including
 their output locations. Existing reports can be rendered without loading old
 indexes or implementing legacy hashing:
 
 ```bash
-.venv/bin/python -m experiments.hash_collision_study \
+.venv/bin/python -m experiments.indexing.hash_collision_study \
   --report-dir /path/to/existing/completed_study
 ```
 
@@ -833,7 +833,7 @@ The throughput benchmark now compares production rolling64 with an independent
 BLAKE2b-64 reference, not with a retained legacy implementation:
 
 ```bash
-.venv/bin/python -m experiments.benchmark_hash_width --documents 5000 --repeats 5 \
+.venv/bin/python -m experiments.indexing.benchmark_hash_width --documents 5000 --repeats 5 \
   --output /path/to/new/hash_width_speed.json
 ```
 
@@ -854,7 +854,7 @@ legacy/rolling64 comparison is frozen; legacy build configurations are rejected.
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 POLARS_MAX_THREADS=1 NUMBA_NUM_THREADS=1 \
-  .venv/bin/python -m experiments.profile_index_build \
+  .venv/bin/python -m experiments.indexing.profile_index_build \
   --documents 50000 --nb-workers 4 --output-dir /path/to/new/build_profile
 ```
 
@@ -997,7 +997,7 @@ To stress the complete merge path with many intermediate indexes, two-pair
 similarity chunks, and fan-in-two compaction, run:
 
 ```bash
-python -m experiments.verify_multifile_similarity
+python -m experiments.similarity.verify_multifile_similarity
 ```
 
 The experiment independently re-winnows every generated document and requires

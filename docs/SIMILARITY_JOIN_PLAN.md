@@ -20,13 +20,13 @@ implemented. Production time-budget policies and calibrated passage acceptance
 remain unimplemented.
 
 Current entry point: `.venv/bin/python hplt_nynorsk.py --build --nb-workers 8`.
-Build/run details and the sidecar format are in [README.md](./README.md).
+Build/run details and the sidecar format are in [README.md](../README.md).
 
 ## Nynorsk group/passage baseline (26 October 2026)
 
-The executed [review notebook](./nynorsk_group_review.ipynb) presents complete
+The executed [review notebook](../notebooks/nynorsk_group_review.ipynb) presents complete
 components, bounded graph views, paired passages and full-JSON batch retrieval.
-[overlap_groups.py](./findmytext/overlap_groups.py) streams verified exact edges
+[overlap_groups.py](../findmytext/overlap_groups.py) streams verified exact edges
 into union-find, retaining isolates, stable minimum-document group IDs, degrees
 and membership arrays. All document labels/degrees at each K also matched an
 independent full-edge SciPy sparse-graph calculation.
@@ -41,7 +41,7 @@ Selection/display limits never change those full-corpus components. The
 largest components are chains of candidate overlap, not cliques or assertions
 of a passage common to every document.
 
-[review_overlap_groups.py](./experiments/review_overlap_groups.py) reviewed
+[review_overlap_groups.py](../experiments/review/review_overlap_groups.py) reviewed
 149 unique pairs from 239 documents, including 104 random-priority selections
 across overlap/fingerprint-set-size strata, plus purposive strongest and group
 examples. It uses `FingerprintChainDetector` constructor defaults and explicit
@@ -58,7 +58,7 @@ spans and longest exact runs are evidence/diagnostics, not newly calibrated
 acceptance thresholds.
 
 The complete K=50 giant-component follow-up
-([analyze_overlap_component.py](./experiments/analyze_overlap_component.py))
+([analyze_overlap_component.py](../experiments/review/analyze_overlap_component.py))
 found 20,520 Docplayer members (74.1% of nodes), with Docplayer-to-Docplayer
 pairs constituting 99.61% of its edges. Many raw records contain repeated
 `Detaljer` excerpt lists. Removing Docplayer vertices leaves a largest component
@@ -69,7 +69,7 @@ of extraction/content regions, not an automatic host ban, common-hash cap or
 new passage threshold. Details and caveats are in notebook section 7 and the
 local `giant-k50/report.json` beside the review outputs.
 
-[document_store.py](./findmytext/document_store.py) adds resumable one-pass
+[document_store.py](../findmytext/document_store.py) adds resumable one-pass
 SQLite ingestion of complete raw JSON, preserving metadata that the normalized
 ingestion stream omits. Nynorsk has 1,034,804 raw records, with all 1,028,632
 indexed IDs checked. Later batched external/internal-ID retrieval uses a
@@ -90,8 +90,8 @@ calibration; no further fingerprint rebuild is needed for the current review.
 
 ## Initial Nynorsk subset benchmark (25 October 2026)
 
-Implementation: [overlap_join.py](./findmytext/overlap_join.py).
-Reproducible benchmark: [benchmark_overlap_join.py](./experiments/benchmark_overlap_join.py).
+Implementation: [overlap_join.py](../findmytext/overlap_join.py).
+Reproducible benchmark: [benchmark_overlap_join.py](../experiments/overlap/benchmark_overlap_join.py).
 
 - Uniform 10,000-document subset, seed 41; original source IDs preserved.
 - Eligible lengths exclude fingerprints unique within that subset; rarity and
@@ -125,13 +125,13 @@ it remains evidence about a small in-RAM subset, not full-corpus performance.
 
 ## Streaming/scaling implementation
 
-[overlap_stream.py](./findmytext/overlap_stream.py) implements document-owned
+[overlap_stream.py](../findmytext/overlap_stream.py) implements document-owned
 output chunks and atomic checkpointed probe ranges. It uses per-probe markers,
 not global quadratic history, and moves eligible-length pruning before posting
 enumeration. Its independent full-forward reference spills/aggregates bounded
 pair-count batches using the existing external aggregation helper.
 
-[scale_overlap_join.py](./experiments/scale_overlap_join.py) runs nested
+[scale_overlap_join.py](../experiments/overlap/scale_overlap_join.py) runs nested
 25k/50k/100k subsets, both output modes, all five K values, uncapped and
 full-corpus-df-capped discovery, and real source-forward memmap access. The
 smallest stage retains bounded fingerprint-driven controls and late-pruning
@@ -139,7 +139,7 @@ controls. Configuration timings include output/checkpoint I/O and may include
 first signature compilation; cache conditions and shared-host effects prevent
 cold-throughput or isolated-kernel claims.
 
-[inspect_overlap_passages.py](./experiments/inspect_overlap_passages.py) selects
+[inspect_overlap_passages.py](../experiments/overlap/inspect_overlap_passages.py) selects
 high-overlap, near-K and cap-omitted pairs for explicit-pair chain evidence,
 without candidate top-k loss. It checks source hashes and positions, enforces
 bounded alignment resources, and includes aligned, scattered-overlap and
@@ -245,12 +245,12 @@ reference exactly:
 Counts/pair sets were equal; timing comparisons are warm/shared-host
 observations, not controlled cold-cache speed guarantees.
 
-[overlap_full.py](./findmytext/overlap_full.py) reuses the original full forward
+[overlap_full.py](../findmytext/overlap_full.py) reuses the original full forward
 and overlap arrays and stores only K-independent document-rank helpers. The
 Nynorsk logical view is 2.154 GiB, helper arrays occupy 443.64 MiB, and first
 preparation took about 69 s. There is no normal index rebuild or payload copy.
 
-[run_full_overlap_join.py](./experiments/run_full_overlap_join.py) gates the
+[run_full_overlap_join.py](../experiments/overlap/run_full_overlap_join.py) gates the
 complete run on subset-prefix equality and independent full-partner pilot
 checks. Pilots cover short/medium/long owner ranges, compare prefix and
 unfiltered outputs with an unfiltered posting-count oracle, and cross-check
@@ -354,7 +354,7 @@ separate next stages.
 10. **Start with Nynorsk and visible, incremental deliverables.** Establish a
     correct single-worker structure before exploring parallel speedups.
 11. **Preserve the hashing findings separately.** The completed experiments
-    are frozen in [experiments/HASHING_FINDINGS.md](./experiments/HASHING_FINDINGS.md).
+    are frozen in [docs/HASHING_FINDINGS.md](HASHING_FINDINGS.md).
     Production now uses rolling64 only; no old index was overwritten or relabeled.
 12. **Use a candidate document graph for downstream inspection.** Documents
     are nodes and qualifying overlap pairs are undirected edges. Group them
@@ -454,11 +454,11 @@ avoid this cost: doing so can lose legitimate singleton-based matches.
 
 The decision prioritizes one canonical format and simpler code, not a claim
 that interleaved won a new matched layout benchmark. The writeup is
-[experiments/POSTING_LAYOUT_FINDINGS.md](./experiments/POSTING_LAYOUT_FINDINGS.md).
+[docs/POSTING_LAYOUT_FINDINGS.md](POSTING_LAYOUT_FINDINGS.md).
 
-Relevant code: [index_builder.py](./findmytext/index_builder.py),
-[indexing.py](./findmytext/indexing.py), and
-[similarity.py](./findmytext/similarity.py).
+Relevant code: [index_builder.py](../findmytext/index_builder.py),
+[indexing.py](../findmytext/indexing.py), and
+[similarity.py](../findmytext/similarity.py).
 
 ## Agreed overlap semantics
 
@@ -509,7 +509,7 @@ containing fingerprint `f`, not its number of positional posting occurrences.
 The existing `iter_unique_posting_batches` iterator already yields unique
 `(fingerprint, doc_id)` pairs, but its batch size is a soft target and it
 allocates corpus-wide fingerprint bookkeeping. The implemented
-[overlap_inverted.py](./findmytext/overlap_inverted.py) uses compiled document epoch markers
+[overlap_inverted.py](../findmytext/overlap_inverted.py) uses compiled document epoch markers
 instead, bounding its working arrays by the document count plus batch target
 even for an individual very large posting list. It sorts bounded runs and
 uses on-disk two-way compiled merges to establish global rare-first order.
@@ -997,7 +997,7 @@ Load the selected documents through a source-text loader keyed by their
 original IDs, with bounded caching. Retrieve positional evidence from the
 original index, not the position-free overlap inverted index.
 
-Reuse/refactor [FingerprintChainDetector](./findmytext/detectors.py) rather
+Reuse/refactor [FingerprintChainDetector](../findmytext/detectors.py) rather
 than writing an unrelated chain-clustering algorithm. Its current
 `_score_doc` already takes the maximum surviving cluster score, but its public
 query path retrieves its own top-k candidates and returns containment scores,
@@ -1054,10 +1054,10 @@ For each selected group, display:
   comparison of selected groups without assuming one passage is common to
   every member or inferring a copying direction from graph connectivity.
 
-Reuse [visualization.py](./findmytext/visualization.py) graph and alignment
+Reuse [visualization.py](../findmytext/visualization.py) graph and alignment
 helpers where appropriate. Existing `locate_shared_passage` also depends on
 top-k retrieval, so it must not be used unchanged as exhaustive verification
-of supplied graph edges. Inspect [multi_document.py](./findmytext/multi_document.py)
+of supplied graph edges. Inspect [multi_document.py](../findmytext/multi_document.py)
 for optional passage-support comparison among selected documents; do not
 require an all-member common passage merely because a graph is connected.
 
@@ -1150,7 +1150,7 @@ The completed full Latvian study observed zero rolling64 collisions among
 897,868,933 distinct selected k-grams. The full Nynorsk wide-hash study used
 BLAKE2b-64; rolling64 was checked on its matched 50,000-document sample.
 The historical comparisons, storage findings and complete-build profiling
-are frozen in [experiments/HASHING_FINDINGS.md](./experiments/HASHING_FINDINGS.md).
+are frozen in [docs/HASHING_FINDINGS.md](HASHING_FINDINGS.md).
 Legacy-dependent experiment runs are retired by choice. This migration does
 not implement the similarity-join sidecar. A subsequent storage change removes
 columnar support and makes interleaved canonical, as described above.

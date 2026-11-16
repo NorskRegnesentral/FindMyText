@@ -1,7 +1,7 @@
 """Check all three persisted indexes and compare exact sampled pair overlaps.
 
 Example:
-    .venv/bin/python -m experiments.verify_overlap_inverted \
+    .venv/bin/python -m experiments.indexing.verify_overlap_inverted \
         /path/to/build/index /path/to/build/overlap_inverted \
         --report /path/to/build/verification.json
 """

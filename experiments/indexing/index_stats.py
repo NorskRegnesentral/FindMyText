@@ -5,10 +5,10 @@ histograms stay cheap even for billions of fingerprints.  One sequential pass ov
 ``postings.dat`` is needed for the number of distinct documents per fingerprint.
 
 Run from the repository root:
-    python -m experiments.index_stats
-    python -m experiments.index_stats --repair-plots
-    python -m experiments.index_stats /path/to/corpora --output-dir /path/to/analysis
-    python -m experiments.index_stats nynorsk=/path/to/index bokmal=/path/to/index \
+    python -m experiments.indexing.index_stats
+    python -m experiments.indexing.index_stats --repair-plots
+    python -m experiments.indexing.index_stats /path/to/corpora --output-dir /path/to/analysis
+    python -m experiments.indexing.index_stats nynorsk=/path/to/index bokmal=/path/to/index \
         --output-dir /path/to/analysis
 """
 

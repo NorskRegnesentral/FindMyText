@@ -4,7 +4,7 @@ With ``--profile-documents N`` it also times ``get_document_candidates`` for N r
 documents per configuration, to show how posting-list volume affects read time.
 
 Example:
-    python experiments/benchmark_posting_threads.py \
+    python -m experiments.similarity.benchmark_posting_threads \
         /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/index \
         --threads 1 2 4 8 16 32 --max-documents 100000 --profile-documents 2000
 """

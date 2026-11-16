@@ -8,7 +8,7 @@ import zstandard as zstd
 
 pytest.importorskip("plotly")
 
-from experiments.profile_index_build import analyze_profiles, execute_build, write_report
+from experiments.indexing.profile_index_build import analyze_profiles, execute_build, write_report
 
 
 @pytest.mark.parametrize("diagnostic", [False, True])
@@ -30,7 +30,7 @@ def test_fresh_process_build_profiles_and_validates_all_stages(tmp_path, diagnos
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config))
     subprocess.run(
-        [sys.executable, "-m", "experiments.profile_index_build", "--run-config", str(config_path)],
+        [sys.executable, "-m", "experiments.indexing.profile_index_build", "--run-config", str(config_path)],
         cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=True,
     )
     result = json.loads((directory / "build_result.json").read_text())

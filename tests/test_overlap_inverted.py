@@ -10,7 +10,7 @@ from findmytext import index_builder, similarity, winnower
 from findmytext import overlap_inverted
 from findmytext.indexing import DiskBasedIndex, POSTING_DTYPE
 from findmytext.overlap_inverted import OverlapInvertedIndex, build_overlap_inverted_index
-from experiments.verify_overlap_inverted import verify_indexes
+from experiments.indexing.verify_overlap_inverted import verify_indexes
 
 
 def write_source(root, lists, n_docs=5):

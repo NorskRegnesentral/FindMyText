@@ -2,7 +2,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-from experiments.export_pair_review import highlight_text
+from experiments.review.export_pair_review import highlight_text
 from findmytext.web import tokenize_with_offsets
 from findmytext.winnower import Winnower
 

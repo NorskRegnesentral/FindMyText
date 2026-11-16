@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from experiments.compare_similarity_methods import build_index
+from experiments.similarity.compare_similarity_methods import build_index
 from findmytext import utils
 from findmytext.detectors import FingerprintChainDetector
 from findmytext.overlap_inverted import _source_identity

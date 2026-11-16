@@ -1,6 +1,6 @@
 import numpy as np
 
-from experiments.analyze_overlap_hosts import choose_edges, repeated_lines, skogholt_page_role
+from experiments.review.analyze_overlap_hosts import choose_edges, repeated_lines, skogholt_page_role
 
 
 def test_host_pair_selection_is_deterministic_and_keeps_selection_provenance():

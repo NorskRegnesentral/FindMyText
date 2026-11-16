@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from experiments.compare_similarity_methods import (
+from experiments.similarity.compare_similarity_methods import (
     build_index,
     compare_methods,
     write_synthetic_corpus,
