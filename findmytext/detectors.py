@@ -445,15 +445,7 @@ class FingerprintChainDetector(_BaseDetector):
         if df_shared.height == 0:
             return 0.0
 
-        if self.method == "rectangle":
-            df_clustered = self._get_df_hash_cluster_rectangle(df_shared)
-        elif self.method in {"euclidean", "cityblock", "chebyshev"}:
-            df_clustered = self._get_df_hash_cluster_linkage(df_shared)
-        else:
-            raise ValueError(
-                f"Unknown clustering method '{self.method}'; must be one of "
-                "'rectangle', 'euclidean', 'cityblock', or 'chebyshev'."
-            )
+        df_clustered = self._cluster_shared(df_shared)
 
         df_clusters = (
             df_clustered.filter(pl.col("cluster_id") != -1)
@@ -471,6 +463,114 @@ class FingerprintChainDetector(_BaseDetector):
             return 0.0
 
         return float(df_clusters["score"].to_numpy().max())
+
+    def _cluster_shared(self, df_shared: pl.DataFrame) -> pl.DataFrame:
+        if self.method == "rectangle":
+            return self._get_df_hash_cluster_rectangle(df_shared)
+        if self.method in {"euclidean", "cityblock", "chebyshev"}:
+            return self._get_df_hash_cluster_linkage(df_shared)
+        raise ValueError(
+            f"Unknown clustering method '{self.method}'; must be one of "
+            "'rectangle', 'euclidean', 'cityblock', or 'chebyshev'."
+        )
+
+    def get_pair_passage(
+        self, doc_i: int, doc_j: int, *,
+        max_alignment_points: int = 5000,
+        max_posting_bytes: int = 256 * 2**20,
+    ) -> dict:
+        """Inspect an explicit indexed pair without candidate retrieval or top-k loss.
+
+        Scores are distinct shared hashes (or their configured rarity weights),
+        not probabilities or a calibrated copyright/passage-acceptance decision.
+        """
+        if (
+            doc_i == doc_j or not 0 <= doc_i < self.num_documents
+            or not 0 <= doc_j < self.num_documents
+            or max_alignment_points < 1 or max_posting_bytes < 1
+        ):
+            raise ValueError("Use distinct in-range document IDs and positive inspection limits")
+        shared = np.intersect1d(
+            self.index.get_document_fingerprints(doc_i),
+            self.index.get_document_fingerprints(doc_j), assume_unique=True,
+        )
+        result = {
+            "doc_i": doc_i, "doc_j": doc_j,
+            "shared_fingerprints": len(shared),
+            "status": "no_cluster", "best_passage": None,
+            "parameters": {
+                "method": self.method, "position_threshold": self.position_threshold,
+                "offset_threshold": self.offset_threshold,
+                "distance_threshold": self.distance_threshold,
+                "min_cluster_size": self.min_cluster_size,
+                "minimum_distinct_support": self.min_cluster_size,
+                "score": "rarity_weighted_distinct_hashes" if self.rarity_weighted else "distinct_shared_hashes",
+                "max_alignment_points": max_alignment_points,
+                "max_posting_bytes": max_posting_bytes,
+            },
+        }
+        if not len(shared):
+            result["status"] = "no_shared_fingerprints"
+            return result
+        ranks = np.searchsorted(self.index.fingerprints, shared)
+        posting_bytes = int(self.index.lengths[ranks].astype(np.uint64).sum()) * 8
+        if posting_bytes > max_posting_bytes:
+            raise MemoryError(f"Explicit pair requires {posting_bytes:,} posting bytes, above {max_posting_bytes:,}")
+        postings = self.index._get_postings(shared)
+        hashes, positions_i, positions_j = [], [], []
+        total = 0
+        for fingerprint in shared:
+            records = postings[fingerprint]
+            first = records["position"][records["doc_id"] == doc_i]
+            second = records["position"][records["doc_id"] == doc_j]
+            if not len(first) or not len(second):
+                raise ValueError("Forward/positional pair membership is inconsistent")
+            total += len(first) * len(second)
+            if total > max_alignment_points:
+                raise MemoryError(f"Explicit pair exceeds {max_alignment_points:,} alignment points")
+            hashes.extend([int(fingerprint)] * (len(first) * len(second)))
+            positions_i.extend(np.repeat(first, len(second)).tolist())
+            positions_j.extend(np.tile(second, len(first)).tolist())
+        frame = pl.DataFrame({
+            "hash": pl.Series(hashes, dtype=pl.UInt64),
+            "position_doc1": pl.Series(positions_i, dtype=pl.Int64),
+            "position_doc2": pl.Series(positions_j, dtype=pl.Int64),
+        }).with_columns(
+            (pl.col("position_doc2") - pl.col("position_doc1")).alias("position_offset")
+        ).sort(["position_doc1", "position_doc2", "hash"])
+        weights = self._get_fingerprint_weights(shared)
+        frame = frame.with_columns(
+            pl.Series("weight", [weights[int(value)] for value in frame["hash"]], dtype=pl.Float64)
+        )
+        result["alignment_points"] = total
+        clustered = self._cluster_shared(frame)
+        groups = (
+            clustered.filter(pl.col("cluster_id") != -1)
+            .group_by("cluster_id")
+            .agg(
+                pl.col("hash").n_unique().alias("support"),
+                pl.struct(["hash", "weight"]).unique().struct.field("weight").sum().alias("score"),
+                pl.col("position_doc1").min().alias("first_position"),
+            )
+            .filter(pl.col("support") >= self.min_cluster_size)
+            .sort(["score", "support", "first_position", "cluster_id"], descending=[True, True, False, False])
+        )
+        result["surviving_clusters"] = groups.height
+        if not groups.height:
+            return result
+        best = clustered.filter(pl.col("cluster_id") == groups[0, "cluster_id"])
+        first_positions = best["position_doc1"].to_numpy()
+        second_positions = best["position_doc2"].to_numpy()
+        result["status"] = "cluster"
+        result["best_passage"] = {
+            "score": float(groups[0, "score"]),
+            "distinct_fingerprint_support": int(groups[0, "support"]),
+            "alignment_points": best.height,
+            "token_span_i": [int(first_positions.min()), int(first_positions.max()) + self.index.winnower.length],
+            "token_span_j": [int(second_positions.min()), int(second_positions.max()) + self.index.winnower.length],
+            "aligned_hashes": best.select(["hash", "position_doc1", "position_doc2"]).to_dicts(),
+        }
+        return result
 
     def _get_df_hash_cluster_rectangle(
         self, df_shared_hashes: pl.DataFrame
