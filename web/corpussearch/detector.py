@@ -13,8 +13,8 @@ from typing import Dict
 import numpy as np
 import polars as pl
 
-from . import indexing, winnower
-from .detectors import (
+from findmytext import indexing, winnower
+from findmytext.detectors import (
     FingerprintChainDetector,
     convert_closest_matches_with_positions_to_df,
 )

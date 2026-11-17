@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from findmytext import detectors, index_builder, indexing, web
+from findmytext import detectors, index_builder, indexing
 from findmytext.winnower import HASH_METHOD, ROLLING_BASE64, Winnower, winnow
 
 
@@ -110,9 +110,6 @@ def test_multiple_sub_thousand_flushes_preserve_every_occurrence_and_query(tmp_p
             assert detector.get_fingerprints(query).schema["hash"] == pl.UInt64
             scores = detector.get_containment_scores(query, min_fragment_length=100)
             assert scores[records[0]["id"]] > 0
-    website = web.TextContainmentDetector(str(target), min_fingerprints=1)
-    assert website.find_matches_jaccard(query, score="rarity")[records[0]["id"]] > 0
-    assert website.find_matches_clustering(query)[records[0]["id"]] > 0
 
 
 @pytest.mark.parametrize("start_method", [name for name in ("spawn", "forkserver") if name in mp.get_all_start_methods()])
