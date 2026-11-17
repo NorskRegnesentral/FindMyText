@@ -1,0 +1,26 @@
+Warming interleaved layout...
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/warmup-interleaved.npy.
+Warming columnar layout...
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/warmup-columnar.npy.
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/interleaved-0.npy.
+repeat=0 interleaved: 145.88s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/columnar-0.npy.
+repeat=0 columnar: 135.49s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/columnar-1.npy.
+repeat=1 columnar: 135.71s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/interleaved-1.npy.
+repeat=1 interleaved: 139.04s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/interleaved-2.npy.
+repeat=2 interleaved: 139.18s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/columnar-2.npy.
+repeat=2 columnar: 131.70s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/columnar-3.npy.
+repeat=3 columnar: 136.38s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/interleaved-3.npy.
+repeat=3 interleaved: 146.34s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/interleaved-4.npy.
+repeat=4 interleaved: 145.57s (4,026,535 pairs; identical=True)
+Saved 4,026,535 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_latvian/findmytext_build/.posting-layout-benchmark-013lbn2q/columnar-4.npy.
+repeat=4 columnar: 136.21s (4,026,535 pairs; identical=True)
+interleaved median: 145.57s ([145.87788609485142, 139.04437199584208, 139.17528498801403, 146.34475907799788, 145.57387153804302])
+columnar median: 135.71s ([135.48747755796649, 135.71394874108955, 131.70340760005638, 136.38420681096613, 136.20567952212878])

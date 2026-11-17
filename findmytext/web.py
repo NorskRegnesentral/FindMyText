@@ -67,7 +67,7 @@ def _compute_fingerprint_rarity(
     index_num_documents: int,
 ) -> pl.DataFrame:
     postings = index._get_postings(fingerprints, only_doc_ids=True)
-    hashes = np.fromiter(postings.keys(), dtype=np.int64, count=len(postings))
+    hashes = np.fromiter(postings.keys(), dtype=np.uint64, count=len(postings))
     rarities = np.fromiter(
         (1 - len(np.unique(doc_ids)) / index_num_documents for doc_ids in postings.values()),
         dtype=np.float64,
@@ -88,10 +88,11 @@ class TextContainmentDetector:
         self.index = indexing.DiskBasedIndex(index_dir)
         self.num_documents = len(self.index.to_external_doc_id)
         self.runtime_winnower = winnower.Winnower(
-            length=self.index.indexing_winnower.length,
+            length=self.index.winnower.length,
             window_size=1,
-            base=self.index.indexing_winnower.base,
-            punctuation=self.index.indexing_winnower.punctuation,
+            base=self.index.winnower.base,
+            punctuation=self.index.winnower.punctuation,
+            hash_method=self.index.winnower.hash_method,
         )
 
     def find_matches_jaccard(self, text: str, score: str = "count") -> Dict[str, float]:
@@ -227,7 +228,9 @@ class TextContainmentDetector:
 
     def _prepare(self, text: str) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
         fingerprints, positions = self.runtime_winnower.get_winnowed_fingerprints(text)
-        df_query = pl.DataFrame({"hash": fingerprints, "position": positions})
+        df_query = pl.DataFrame({"hash": fingerprints, "position": positions}).with_columns(
+            pl.col("hash").cast(pl.UInt64)
+        )
         fingerprints_rarity = _compute_fingerprint_rarity(
             index=self.index,
             fingerprints=fingerprints,

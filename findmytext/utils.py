@@ -3,7 +3,6 @@
 import gzip
 import io
 import json
-import random
 import sys
 import uuid
 
@@ -41,7 +40,6 @@ def generate_batches(
 def stream_json_zst(
     file_path: str,
     min_length: int = 100,
-    skip_prob: float = 0.0,
     max_length: int = 500_000,
     max_nb: Optional[int] = None,
 ):
@@ -61,7 +59,6 @@ def stream_json_zst(
             generator = json_line_reader(
                 text_stream,
                 min_length=min_length,
-                skip_prob=skip_prob,
                 max_length=max_length,
                 max_nb=max_nb,
             )
@@ -72,7 +69,6 @@ def stream_json_zst(
 def stream_jsonl(
     file_path: str,
     min_length: int = 100,
-    skip_prob: float = 0.0,
     max_length: int = 100000,
     max_nb: Optional[int] = None,
 ):
@@ -86,7 +82,6 @@ def stream_jsonl(
     generator = json_line_reader(
         fd,
         min_length=min_length,
-        skip_prob=skip_prob,
         max_length=max_length,
         max_nb=max_nb,
     )
@@ -99,22 +94,17 @@ def stream_jsonl(
 def json_line_reader(
     line_iterator,
     min_length: int = 100,
-    skip_prob: float = 0.0,
     max_length: int = 100000,
     max_nb: Optional[int] = None,
 ) -> Generator[Dict, None, None]:
     """Read lines from a text stream, parse them as JSON, and yield valid JSON objects
-    based on specified criteria such as minimum and maximum length, and skipping with a
-    certain probability."""
+    based on specified minimum and maximum length criteria."""
     nb_read = 0
     nb_skipped = 0
     processed_ids = set()
     for line in line_iterator:
         if line.strip():  # Skip empty lines
             # Parse each line as a JSON object
-            if random.random() < skip_prob:
-                nb_skipped += 1
-                continue
             data = json.loads(line)
             data = normalise_json(data)
 
@@ -187,20 +177,16 @@ def normalise_json(
 def stream_to_file(
     input_data_file: str,
     output_file: str,
-    skip_prob: float = 0.0,
     min_length: int = 100,
     max_length: int = 500_000,
     cutoff: Optional[int] = None,
 ):
     """Stream JSON objects from an input file and write them to an output file,
-    optionally skipping some objects based on a specified probability and stopping after
-    a certain number of objects.
+    optionally stopping after a certain number of objects.
 
     Args:
         input_data_file (str): Path to the input .jsonl, .jsonl.gz, or .jsonl.zst file to read from.
         output_file (str): Path to the output .jsonl file to write the streamed JSON objects to.
-        skip_prob (float, optional): Probability of skipping a JSON object while streaming.
-        Defaults to 0.0 (no skipping).
         min_length (int, optional): Minimum text lengths to include. Defaults to 100.
         max_length (int, optional): Maximum text lengths to include. Defaults to 500000.
         cutoff (Optional[int], optional): Maximum number of JSON objects to write to the output file.
@@ -210,14 +196,12 @@ def stream_to_file(
     if input_data_file.endswith(".jsonl") or input_data_file.endswith(".jsonl.gz"):
         stream = stream_jsonl(
             input_data_file,
-            skip_prob=skip_prob,
             min_length=min_length,
             max_length=max_length,
         )
     elif input_data_file.endswith(".jsonl.zst"):
         stream = stream_json_zst(
             input_data_file,
-            skip_prob=skip_prob,
             min_length=min_length,
             max_length=max_length,
         )

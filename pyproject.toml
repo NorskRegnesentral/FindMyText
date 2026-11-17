@@ -10,17 +10,30 @@ requires-python = ">=3.10"
 dependencies = [
     "datasets",
     "filelock",
+    "msgpack",
     "numba",
     "numpy",
     "orjson",
     "polars",
     "scipy",
     "tqdm",
+    "zstandard",
 ]
 
 [project.optional-dependencies]
 fast-gzip = ["isal"]
+viz = ["networkx", "matplotlib", "plotly", "pandas", "nbformat"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["findmytext*"]
+
+[tool.uv.workspace]
+members = [
+    "FindMyText",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

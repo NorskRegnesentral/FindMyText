@@ -7,9 +7,18 @@ orjson
 polars
 scipy
 tqdm
+zstandard
 
 # Optional: faster gzip decompression (Intel ISA-L). Falls back to stdlib gzip if absent.
 isal
+msgpack
+
+# Optional: document similarity graph visualization (findmytext.visualization)
+networkx
+matplotlib
+plotly
+pandas
+nbformat
 
 # Optional (heavy, GPU): used only in experiments/eval_sampler.py for LLM generation.
 # Install separately when needed:

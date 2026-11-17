@@ -1,0 +1,26 @@
+Warming interleaved layout...
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/warmup-interleaved.npy.
+Warming columnar layout...
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/warmup-columnar.npy.
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/interleaved-0.npy.
+repeat=0 interleaved: 300.05s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/columnar-0.npy.
+repeat=0 columnar: 277.97s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/columnar-1.npy.
+repeat=1 columnar: 273.99s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/interleaved-1.npy.
+repeat=1 interleaved: 299.70s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/interleaved-2.npy.
+repeat=2 interleaved: 305.10s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/columnar-2.npy.
+repeat=2 columnar: 271.75s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/columnar-3.npy.
+repeat=3 columnar: 268.65s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/interleaved-3.npy.
+repeat=3 interleaved: 304.56s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/interleaved-4.npy.
+repeat=4 interleaved: 311.73s (4,416,263 pairs; identical=True)
+Saved 4,416,263 document similarity pairs to /nr/project/stat/COPY.AI/data/Lars/hplt_icelandic/findmytext_build/.posting-layout-benchmark-nrgaqn6r/columnar-4.npy.
+repeat=4 columnar: 276.01s (4,416,263 pairs; identical=True)
+interleaved median: 304.56s ([300.0466158441268, 299.699956292985, 305.0954929559957, 304.5634995182045, 311.73489783494733])
+columnar median: 273.99s ([277.96999520179816, 273.99094757204875, 271.75007917312905, 268.65365727595054, 276.0115099931136])
