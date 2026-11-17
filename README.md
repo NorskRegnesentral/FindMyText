@@ -36,6 +36,11 @@ The top-level `hplt_build.py` and `hplt_nynorsk.py` build entry points are
 retained. Generated corpus/index data and large run outputs remain outside
 git; local report paths in this README identify those external results.
 
+For a presentation-oriented explanation of the build stages and the three
+representations, see [How we build the indexes](docs/INDEX_BUILD_WALKTHROUGH.md).
+The [similarity-join plan](docs/SIMILARITY_JOIN_PLAN.md) tracks completed and
+remaining work.
+
 ### Dated progress
 
 Dates below describe when the work/results were produced, not when they were
@@ -47,7 +52,9 @@ subsequently grouped into commits.
 | 2026-10-25 | Finished and verified Icelandic, Latvian and Bokmal index rebuilds; completed the full exact Nynorsk overlap run and derived the K sweep from its counts. |
 | 2026-10-25 to 2026-10-26 | Validated cross-corpus prefix pilots and introduced guarded full-run queues with a 32 GiB working allowance. |
 | 2026-10-26 | Computed full Nynorsk groups at K=50/30/20, built batch raw-document retrieval, and recorded default-detector passage and host-specific review evidence. |
+| 2026-10-26 to 2026-10-27 | Completed full exact Icelandic and Latvian joins and their independent completion checks. Bokmal's full join remains held by the 32 GiB preflight; its indexes are built. |
 | 2026-11-16 | Committed the accumulated research work in focused feature/documentation commits, organized the folders above, and updated imports, commands, notebook setup and links. Existing pushed history and core import paths were preserved; no corpus results were recomputed for the reorganization. |
+| 2026-11-17 | Reconciled plan checkboxes with implemented features and saved run reports; added a presentation-oriented index-build walkthrough. Calibration and deferred experiments remain explicitly open. |
 
 ---
 

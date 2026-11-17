@@ -1,23 +1,33 @@
 # Document Similarity Join: Discussion Plan
 
-**Status:** Agreed index/scoring contract. The single-worker overlap inverted
-builder and resumable rolling64 Nynorsk rebuild command are implemented.
-The full Nynorsk corpus was rebuilt and verified on 23 October 2026:
-1,028,632 documents, 96,496,752 positional fingerprint records, and 18,718,065
-overlap inverted fingerprint records. All three representations passed full
-membership/order/accounting checks, 256 sampled exact overlap comparisons, and
-source-text/hash/position checks on 20 documents across all five shards.
-The three indexes were also built and verified for Icelandic, Latvian, and
-Bokmal by 25 October. The single-worker overlap join now has a tested,
-bounded-subset Nynorsk prototype with both candidate schedulers and output
-modes. The next path adds streamed document-owned results, early safe length
-pruning, an external independent reference, atomic probe checkpoints/recovery,
-and bounded explicit-pair passage inspection. A gated full-corpus execution
-path now adds lossless rarity-prefix filtering, source-payload reuse, full-
-partner pilots and a 32 GiB working allowance. Complete K=50/30/20 Nynorsk
-candidate components and bounded default-detector graph/passage review are now
-implemented. Production time-budget policies and calibrated passage acceptance
-remain unimplemented.
+**Status checked 17 November 2026:** All three index representations were built
+and verified for Nynorsk, Icelandic, Latvian and Bokmal. The single-worker exact
+join is implemented, including lossless both-prefix filtering, document-owned
+duplicate suppression, streamed output, checkpoints/recovery and independent
+subset/pilot checks. Full uncapped K=5 joins and derived K=50/30/20/10 outputs
+completed for three corpora:
+
+| Corpus | Documents | K=50 pairs | K=5 pairs | Join time |
+| --- | ---: | ---: | ---: | ---: |
+| Nynorsk | 1,028,632 | 12,425,346 | 87,326,219 | 73.4 min |
+| Icelandic | 3,963,671 | 37,716,008 | 1,780,120,033 | 8.15 h |
+| Latvian | 11,298,371 | 66,403,185 | 5,055,882,747 | 29.04 h |
+
+Icelandic completed on 26 October and Latvian on 27 October; both independent
+completion checks passed. The follow-up queue is `completed_with_holds`:
+Bokmal's full join remains held by the 32 GiB working-array preflight, not
+running or failed. Its indexes are already built. Queue status and per-corpus
+reports are under
+`/nr/project/stat/COPY.AI/data/Lars/findmytext_runs/2026-10-25-full-followups/`.
+Times are join-only observations on a shared host, not index-build timings.
+
+Complete Nynorsk K=50/30/20 components, bounded candidate/default-passage
+views, source-record retrieval and host-specific investigations are also done.
+Human relevance labels, calibrated passage acceptance, validated content-region
+cleaning and production time-budget policies remain unfinished. Candidate
+counts are not meaningful-reuse counts or precision estimates. Validation
+includes sampled full-corpus counts, not an exhaustive independent all-pairs
+oracle.
 
 Current entry point: `.venv/bin/python hplt_nynorsk.py --build --nb-workers 8`.
 Build/run details and the sidecar format are in [README.md](../README.md).
@@ -305,8 +315,9 @@ can reuse these counts rather than rerunning all old pairs, but a fresh
 uncapped complete join with the same algorithm remains expensive.
 
 These are fingerprint-overlap candidate pairs, not 87 million verified passages
-or legal findings. Graph construction and calibrated passage acceptance remain
-separate next stages.
+or legal findings. Nynorsk graph construction and bounded passage review were
+subsequently completed (see the baseline above); calibrated passage acceptance
+remains a separate next stage.
 
 ## Agreed build and post-processing contract
 
@@ -342,7 +353,7 @@ separate next stages.
    returns qualifying pairs without claiming final overlap counts, and
    `exact_counts`, which also returns exact counts for accepted pairs. With
    uncapped exact candidate generation, both modes must return the same
-   exhaustive qualifying pair set. The default mode remains to be chosen;
+   exhaustive qualifying pair set. The implemented default is `exact_counts`;
    record the selected mode and any candidate-generation cap in metadata.
 8. **Keep both execution orders open.** Benchmark global rare-first
    fingerprint-driven traversal against document-driven probing ordered from
@@ -367,10 +378,12 @@ separate next stages.
 Omitting singletons from the derived index preserves every document-pair
 overlap count: a singleton cannot belong to the intersection of two documents.
 The original positional index remains available for final text verification.
-The value of K and the final text-match acceptance rule remain to be chosen.
+The experimental K sweep is 50/30/20/10/5; production K and final text-match
+acceptance still require calibration.
 
-The join execution and data-structure choices below remain recommendations to
-prototype and benchmark, not claims that the optimized join already exists.
+The stage descriptions below preserve the original design discussion. Use the
+dated results above and milestone status below to distinguish implemented
+features from optional research proposals.
 
 ## Goal
 
@@ -1256,13 +1269,20 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
 
 ## Milestones
 
+Updated 17 November 2026 against implementation, tests and saved run reports.
+Checked boxes describe the implemented research baseline, not a calibrated
+production reuse detector. Unchecked conditional experiments are deferred,
+not prerequisites for using the completed exact join.
+
 ### 0. Agree on the contract
 
 - [x] Choose absolute overlap count, not Jaccard, for candidate screening.
-- [ ] Choose the positive integer overlap threshold K.
+- [x] Choose experimental thresholds: K=50/30/20/10/5; compute full-corpus
+  exact counts once at K=5 and derive higher thresholds.
 - [ ] Specify text-segment acceptance: minimum span, coverage, positional
   tolerance, and treatment of repeated occurrences.
-- [ ] Specify whether output is exhaustive, top-k, or both (as separate modes).
+- [x] Specify exhaustive qualifying-pair output for uncapped exact joins;
+  bounded review/display selections are separate, not exhaustive join output.
 - [x] Preserve normal index construction and the original positional index.
 - [x] Build a separate position-free overlap inverted index with `df >= 2`,
   unique sorted document IDs, and fingerprint records ordered by `(df, hash)`.
@@ -1280,9 +1300,12 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
   and all-above-minimum-size document-group selection.
 - [x] Verify selected candidate edges using FingerprintChainDetector and keep
   each pair's highest-scoring surviving passage cluster above its threshold.
-- [ ] Choose the default overlap-output mode and separate output schemas.
-- [ ] Choose a checked-pair backend, RAM/disk budgets, and whether to enable an
-  explicitly non-exhaustive candidate-frequency cap.
+- [x] Default to `exact_counts` with `(doc_i, doc_j, count)` output; keep
+  `threshold_only` pair-only output distinct.
+- [x] Use document-owned epoch markers rather than global quadratic history
+  for full runs, a 32 GiB working-array allowance (not a hard RSS cap), and
+  disk-streamed accepted results. Leave the approximate df cap off in exact
+  full runs; benchmark it separately with explicit recall limitations.
 
 ### 1. Measure and lock down the baseline
 
@@ -1311,7 +1334,9 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
 - [x] Prototype global rare-first fingerprint traversal, bounded pair blocks,
   and an exact checked-pair table storing both accepted and rejected decisions.
 - [ ] Measure cache cardinality/bytes/hit rate and pair-attempt volume before
-  selecting a full-corpus global-state backend.
+  selecting a full-corpus global-state backend. Deferred: full runs instead
+  use per-probe markers; subset checked-table/marker bytes and discovery
+  counters are already recorded above.
 - [x] Benchmark on the bounded subset smaller-to-larger document-owned probing with per-worker epoch
   markers against fingerprint-driven execution, under identical semantics.
 - [ ] If global disk state is needed, benchmark deterministic range-tile or
@@ -1320,9 +1345,10 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
   early success, impossible remaining overlap, exact-K boundaries, empty sets,
   asymmetric set sizes, disjoint suffix ranges, equal endpoint values, and
   exact stopping when a list is exhausted.
-- [ ] Test repeated discoveries of accepted and rejected pairs across distant
-  fingerprint records, canonical key encoding, concurrent claims/retries, and
-  cache validity for source/K/mode changes.
+- [x] Test repeated discoveries of accepted and rejected pairs across
+  fingerprint records, canonical pair addressing, and checkpoint/cache
+  validity for source/K/mode changes in single-worker execution.
+- [ ] Test concurrent claims/retries if introducing shared parallel pair state.
 - [x] Test sequential probe checkpoint source/subset/K/mode/cap validation,
   uncommitted-output recovery, and real-data pause/resume pair equality.
 - [x] For the document-driven alternative, test epoch rollover and deterministic
@@ -1339,16 +1365,19 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
 
 ### 3. Add candidate graph selection and positional passage verification
 
-- [ ] Derive connected document components from candidate edges and persist
+- [x] Derive connected document components from candidate edges and persist
   reproducible membership/selection metadata.
-- [ ] Implement largest-eligible-component and all-above-minimum-size options,
+- [x] Implement largest-eligible-component and all-above-minimum-size options,
   testing exact size boundaries, ties, empty graphs, and isolated documents.
-- [ ] Test A-B/B-C connectivity without A-C; do not require clique membership
+- [x] Test A-B/B-C connectivity without A-C; do not require clique membership
   or expand each component into an unrequested all-pairs verification task.
 - [x] Expose/reuse explicit-pair FingerprintChainDetector clustering without
   top-k candidate loss, returning best qualifying passage evidence.
-- [ ] Define passage score units and minimum support/span independently of
-  overlap K and graph-component size.
+- [x] Define baseline score units as distinct shared hashes (or explicitly
+  configured rarity weights), independent of K/group size; record default
+  minimum distinct support 5 and token spans as diagnostics.
+- [ ] Calibrate minimum passage score/support/span and positional tolerances
+  for meaningful reuse; the baseline is not a validated acceptance rule.
 - [x] Return aligned positions/spans, distinct fingerprint support, score,
   parameters, pair status and explicit resource-limit errors; verify retained
   evidence against source tokens and test repeated occurrences.
@@ -1356,26 +1385,35 @@ Filter-and-Verification Trees on MapReduce](https://arxiv.org/abs/2506.03893)
   highest-scoring qualifying one, and test no qualifying cluster.
 - [x] Test scattered shared fingerprints versus genuinely aligned segments,
   including contiguous template text as a semantic negative.
-- [ ] Build separate candidate and verified graph views, including components
-  that split when unsupported edges are removed.
-- [ ] Display bounded document graphs and side-by-side highlighted passages,
-  plus group-level passage-support comparisons.
+- [x] Build separate bounded candidate and default-passage-supported graph
+  views, retaining explicit unresolved statuses.
+- [ ] Recompute/persist passage-supported components and test component splits;
+  do not infer global verified groups from the bounded review.
+- [x] Display bounded document graphs, paired passage evidence and group-level
+  support summaries in the executed notebook; export full highlighted examples.
+- [ ] Add interactive pair drill-down/pagination if needed beyond the notebook
+  and static highlighted reports.
 - [ ] Tune thresholds on labeled or manually reviewed examples.
 
 ### 4. Evaluate advanced join structures
 
-- [ ] Implement a prefix-filter prototype if the ranked-list approach leaves
-  substantial candidate work.
-- [ ] If using rarity-ordered prefixes, derive a separate forward rank view
-  without modifying the original hash-sorted forward index.
+- [x] Implement lossless both-prefix filtering with prefix length `L-K+1`;
+  validate both output modes against subset oracles and full-partner pilots,
+  then use it in the completed full joins.
+- [x] Derive a separate rarity-rank forward view without modifying the
+  original numeric-hash forward index; reuse source payloads for full runs.
 - [ ] Evaluate FVT/LFVT on a bounded, representative sample if candidate
   materialization or repeated-prefix processing remains a bottleneck.
 - [ ] Consider layout/parallel partitioning improvements only after measuring
   build costs, skew, and end-to-end throughput.
 - [ ] Explore the parallel work units above after the single-worker Nynorsk
   run, preserving pair ownership and output equality.
-- [ ] Run matched-sample collision diagnostics and a separate wide-hash
-  end-to-end experiment before considering full rebuilds.
+- [x] Run matched Nynorsk collision/rehashing diagnostics, full Nynorsk/Latvian
+  collision studies and a separate build benchmark; preserve results in
+  [HASHING_FINDINGS.md](HASHING_FINDINGS.md). All four rolling64 rebuilds
+  subsequently completed.
+- [ ] Extend the controlled collision study to Icelandic/Bokmal if needed;
+  index rebuild completion alone does not establish collision-study coverage.
 
 ## Evaluation and acceptance criteria
 
@@ -1428,6 +1466,11 @@ count. It should improve total elapsed time and resource use without breaking
 the exact-mode contract.
 
 ## Questions for our discussion
+
+Historical questions from the original planning session. K sweep, exhaustive
+output, output schemas, full-run scheduler/budget and baseline group review now
+have the answers recorded above. Production passage acceptance and the optional
+experiments remain open.
 
 1. What positive integer K should the absolute-overlap screening use, and
    should the product expose candidates, verified text segments, or both?
