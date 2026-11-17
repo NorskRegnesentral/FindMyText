@@ -17,9 +17,9 @@ step) and a thin Flask layer that **reuses the project's own detection code**.
 3. **Pick algorithm(s)** and run:
    - **Position-aware match (our method)** — the clustering score (largest
      geometrically-coherent cluster of shared fingerprints), via
-   [`findmytext.web.TextContainmentDetector.find_matches_clustering`](../findmytext/web.py).
+   [`corpussearch.detector.TextContainmentDetector.find_matches_clustering`](corpussearch/detector.py).
    - **Shared fingerprints (baseline)** — number of shared winnowed fingerprints,
-   via [`findmytext.web.TextContainmentDetector.find_matches_jaccard`](../findmytext/web.py).
+   via [`corpussearch.detector.TextContainmentDetector.find_matches_jaccard`](corpussearch/detector.py).
 4. **See results** — a score + best match per algorithm, a short ranking, and your
    text with the **matching passages highlighted**. Where possible each match
    shows the document's **title as a clickable link**.
@@ -42,6 +42,7 @@ web/
     ├── samples_data.json   # curated per-corpus example texts (+ source links)
     ├── config.py           # loads the two JSON files into typed dataclasses
     ├── detection.py        # on-demand detector loading, streaming, highlight spans
+    ├── detector.py         # website-only count scoring and highlight adapter
     ├── titles.py           # lazy resolver for title/url side-car maps + Wayback links
     ├── protection.py       # pluggable abuse protection (all OFF by default)
     ├── templates/index.html
@@ -51,9 +52,10 @@ web/
 Optional helper scripts under [`web/tools/`](tools/) build the side-car title/url
 maps for a corpus (`build_arxiv.py`, `build_hplt.py`, `build_wiki.py`).
 
-All scoring and tokenisation live in the FindMyText core; the web layer only does
-routing, progress streaming, corpus/LRU config and turning the core's highlight
-positions into character spans.
+The FindMyText core provides fingerprinting, index access and positional
+clustering. The website-only count-scoring and highlight adapter lives in
+[`corpussearch/detector.py`](corpussearch/detector.py), alongside the Flask
+routing, progress streaming and corpus/LRU configuration.
 
 ---
 
@@ -78,6 +80,13 @@ location is set by `index_root` in
 [`corpussearch/config.json`](corpussearch/config.json); each corpus's `index_dir`
 is resolved relative to it. At least one index must be present.
 
+After installing the web dependencies and the project's test extra, run the web
+integration tests from the repository root:
+
+```bash
+.venv/bin/python -m pytest web/tests -q
+```
+
 ---
 
 ## Configure corpora & links
@@ -100,7 +109,7 @@ export FINDMYTEXT_CONFIG=/srv/findmytext/config.json
 
 Each corpus needs a prebuilt `DiskBasedIndex` directory (`meta.json`,
 `fingerprints.npy`, `postings.dat`, …), built with
-[`index_builder.py`](../index_builder.py). Set `doc_url_template` to turn a
+[`index_builder.py`](../findmytext/index_builder.py). Set `doc_url_template` to turn a
 matched doc id into a link (e.g. `https://arxiv.org/abs/{doc_id}`), or leave it
 empty for ids with no public URL (e.g. the Wikipedia index uses internal ids).
 
@@ -178,7 +187,7 @@ combine this with the rate limit above so one visitor can't tie up the box.
 
 The matched-passage highlighting maps shared-fingerprint **token positions** back
 to character offsets in your text using the winnower's exact tokenisation
-(`tokenize_with_offsets` in [`findmytext/web.py`](../findmytext/web.py)) and the query
+(`tokenize_with_offsets` in [`corpussearch/detector.py`](corpussearch/detector.py)) and the query
 positions from `TextContainmentDetector.get_match_highlight_clusters`. The UI can
 show either the largest aligned passage or all aligned passages from the
 position-aware method. No corpus document text is needed, which keeps the server

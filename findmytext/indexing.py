@@ -3,6 +3,7 @@ fingerprints."""
 
 import gzip
 import heapq
+import io
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -36,6 +37,7 @@ class MemoryBasedIndex:
     _CHUNK = 10_000_000  # grow in 10 M-entry (~160 MB) steps
 
     def __init__(self, meta: Dict[str, Any]):
+        winnower.Winnower.from_metadata(meta)
         self.doc_id_map: Dict[str, int] = {}
         self.to_external: List[str] = []
         self.meta = meta
@@ -158,7 +160,10 @@ class MemoryBasedIndex:
         fp_changes = np.flatnonzero(fps[:-1] != fps[1:]) + 1
 
         packer = msgpack.Packer()
-        with gzip.open(path, "wb", compresslevel=1) as f:
+        # Compress bounded blocks instead of invoking gzip for every scalar/blob.
+        with gzip.open(path, "wb", compresslevel=1) as compressed, io.BufferedWriter(
+            compressed, buffer_size=1024 * 1024
+        ) as f:
             f.write(packer.pack(self.meta))
             f.write(packer.pack(len(self.to_external)))
             for doc_id in self.to_external:
@@ -220,17 +225,17 @@ class DiskBasedIndex:
     file that is accessed on demand.
     """
 
-    def __init__(self, index_dir: str):
-        """Initialize the disk-based index by loading the metadata and memory-mapped
-        files from the specified index directory."""
+    def __init__(self, index_dir: str, posting_read_threads: int = 1):
+        """Load a positional index; one posting-read thread avoids creating a pool.
+
+        Explicit larger counts are available for workloads that benefit from
+        concurrent reads. This setting does not control index-build processes.
+        """
+        if posting_read_threads < 1:
+            raise ValueError("posting_read_threads must be at least 1")
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
-            self.winnower = winnower.Winnower(
-                length=meta["length"],
-                window_size=meta["window_size"],
-                base=meta["base"],
-                punctuation=meta["punctuation"],
-            )
+            self.winnower = winnower.Winnower.from_metadata(meta)
 
         # Load index arrays as memory-mapped files (zero RAM cost; served from OS page cache)
         self.fingerprints = np.load(
@@ -251,7 +256,10 @@ class DiskBasedIndex:
         # Raw fd (not a file object) so os.pread can be called concurrently from
         # multiple threads without a shared seek position.
         self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
-        self._io_pool = ThreadPoolExecutor(max_workers=8)
+        self._io_pool = (
+            ThreadPoolExecutor(max_workers=posting_read_threads)
+            if posting_read_threads > 1 else None
+        )
 
     def get_closest_matches(
         self, fingerprints: np.ndarray, min_fingerprints=5, top_k: int = 5
@@ -431,16 +439,17 @@ class DiskBasedIndex:
         offsets = offsets[order]
         lengths = lengths[order]
 
-        # 5. parallel reads: os.pread releases the GIL so threads overlap I/O;
-        #    no shared seek position means reads are safe to issue concurrently.
+        # os.pread avoids a shared seek position in the optional threaded path.
         def _read_one(args):
             fp, offset, length = args
             data = os.pread(self._posting_fd, int(length) * 8, int(offset))
             return fp, data
 
         results = {}
-        read_iter = self._io_pool.map(
-            _read_one, zip(found_fingerprints, offsets, lengths)
+        read_args = zip(found_fingerprints, offsets, lengths)
+        read_iter = (
+            self._io_pool.map(_read_one, read_args)
+            if self._io_pool is not None else map(_read_one, read_args)
         )
         if verbose:
             read_iter = tqdm.tqdm(
@@ -463,7 +472,7 @@ class DiskBasedIndex:
         if hasattr(self, "_posting_fd") and self._posting_fd >= 0:
             os.close(self._posting_fd)
             self._posting_fd = -1
-        if hasattr(self, "_io_pool"):
+        if hasattr(self, "_io_pool") and self._io_pool is not None:
             self._io_pool.shutdown(wait=False)
 
 

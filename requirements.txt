@@ -1,12 +1,14 @@
 # Core dependencies for FindMyText
 datasets
 filelock
+msgpack
 numba
 numpy
 orjson
 polars
 scipy
 tqdm
+zstandard
 
 # Optional: faster gzip decompression (Intel ISA-L). Falls back to stdlib gzip if absent.
 isal

@@ -15,10 +15,13 @@ A full step-by-step walkthrough is available in [`demo.ipynb`](demo.ipynb).
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/FindMyText.git
+git clone https://github.com/NorskRegnesentral/FindMyText.git
 cd FindMyText
 pip install -e .
 ```
+
+For the notebook and alignment visualizations: `pip install -e ".[demo]"`.
+For tests: `pip install -e ".[test]"`, then `python -m pytest`.
 
 ---
 
@@ -26,13 +29,13 @@ pip install -e .
 
 ### 1. Build the index
 
-The first step is to index your corpus. Fingerprints are extracted in parallel and then merged into a single disk-based index:
+The first step is to index your corpus. Fingerprints can be extracted in parallel and then merged into a single disk-based index:
 
 ```python
 from findmytext import index_builder
 
-# `corpus` is any iterable of dicts with "text" and "id" fields
-files = index_builder.index_data_parallel(corpus, "my_fingerprints", n_workers=4)
+# `corpus.jsonl` contains one JSON object per line with "text" and a unique "id"
+index_builder.index_file("corpus.jsonl", "my_fingerprints", nb_workers=1)
 index_builder.merge_indexes_from_dir("my_fingerprints", "my_index")
 ```
 
@@ -41,11 +44,18 @@ The resulting index is stored on disk and memory-mapped at query time, so it sca
 The `index_builder` can also be used directly from the command line:
 ```bash
 # Step 1: extract fingerprints from a corpus file into intermediate shards
-python -m findmytext.index_builder index corpus.jsonl my_fingerprints --nb_workers 4
+python -m findmytext.index_builder index corpus.jsonl my_fingerprints --nb_workers 1
 
 # Step 2: merge shards into a final disk-based index
 python -m findmytext.index_builder merge my_fingerprints my_index
 ```
+
+JSONL, GZip (`.jsonl.gz`) and Zstandard (`.jsonl.zst`) are supported.
+Defaults are **4-token k-grams** and **window size 6**. Documents shorter than
+100 characters are skipped; the maximum is 100,000 characters for JSONL/GZip
+and 500,000 for Zstandard. `max_nb_documents_before_flush` controls shard
+size (default 1,000,000 documents). See [utils.py](findmytext/utils.py) for ingestion
+filters. `nb_workers=1` runs fingerprinting in the parent process; larger values use worker processes.
 
 
 ### 2. Detect content
@@ -63,7 +73,10 @@ best_match_id = max(scores, key=scores.get)
 print(f"Best match: {best_match_id}  (score: {scores[best_match_id]:.3f})")
 ```
 
-The text in `query_text` does not need to be exactly identical to the one found in the corpus. **FindMyText** is designed to be robust to small differences between the documents. 
+The text in `query_text` does not need to be exactly identical to the one found in the corpus. **FindMyText** is designed to be robust to small differences between the documents.
+
+Posting reads are sequential by default. To enable parallel reads when using
+`indexing.DiskBasedIndex` directly, pass, e.g., `posting_read_threads=8`.
 
 ### 3. Verifying a match with local alignment
 
@@ -88,7 +101,7 @@ alignment.show()
 
 ## License
 
-**FindMyText** is released under an MIT License.
+**FindMyText** is released under an [MIT License](LICENSE).
 
 The MIT License is a short and simple permissive license allowing both commercial and non-commercial use of the software. The only requirement is to preserve the copyright and license notices (see file License). Licensed works, modifications, and larger works may be distributed under different terms and without source code.
 
@@ -98,10 +111,10 @@ The MIT License is a short and simple permissive license allowing both commercia
 
 If you use **FindMyText** in your research, please cite our paper:
 
-```
+```bibtex
 @article{findmytext2026,
   authors = {Lars Henry Berge Olsen and Pierre Lison and Martin Jullum and Mark Anderson},
-  title   = {FindMyText:  Robust, Scalable Detection of Text Containment in Large Web-Crawled Corpora},
+  title   = {FindMyText: Robust, Scalable Detection of Text Containment in Large Web-Crawled Corpora},
   year    = {2026}
 }
 ```

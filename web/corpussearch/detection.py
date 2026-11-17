@@ -3,7 +3,7 @@
 This module owns only the Flask-facing glue: an LRU of loaded detectors,
 streaming progress events, and turning source-level highlight positions into
 character spans for the browser. Website-specific count scoring lives in
-``findmytext.web.TextContainmentDetector``.
+``corpussearch.detector.TextContainmentDetector``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from findmytext.web import TextContainmentDetector, tokenize_with_offsets  # noqa: E402
+from .detector import TextContainmentDetector, tokenize_with_offsets  # noqa: E402
 
 from .config import AppConfig, CorpusConfig, AlgoParams  # noqa: E402
 
@@ -109,7 +109,7 @@ def _merge_spans(spans) -> list[list[int]]:
 
 
 # ---------------------------------------------------------------------------
-# Index manager: load a core detector per corpus on demand, keep an LRU
+# Index manager: load a website detector per corpus on demand, keep an LRU
 # of resident ones.
 # ---------------------------------------------------------------------------
 class IndexManager:
@@ -130,7 +130,7 @@ class IndexManager:
         )
 
     def get(self, corpus: CorpusConfig, params: AlgoParams):
-        """Return a loaded core detector for the corpus, loading (and evicting)
+        """Return a loaded website detector for the corpus, loading (and evicting)
         as needed. Returns ``(detector, was_already_loaded)``.
         """
         with self._lock:
@@ -200,7 +200,7 @@ def run_detection(
 
     yield progress("starting", 5)
 
-    # 1. Load the core detector (slow on first use for large disk corpora).
+    # 1. Load the website detector (slow on first use for large disk corpora).
     already = manager.is_loaded(corpus.id)
     yield progress(
         "loading_index", 15,
@@ -213,7 +213,7 @@ def run_detection(
         yield {"type": "error", "message": f"Could not load corpus: {exc}"}
         return
 
-    winnower = detector.index.runtime_winnower
+    winnower = detector.runtime_winnower
 
     # 2. Tokenise the query with the plain core tokenizer (no position tracking)
     #    purely to report a fingerprint count and to bail out early on text that
@@ -225,7 +225,7 @@ def run_detection(
         return
 
     # 3. Score candidates with each requested algorithm (all scoring lives in
-    #    the core detector).
+    #    the website detector).
     yield progress("scoring", 70)
     results: dict[str, dict] = {}
 
@@ -299,7 +299,7 @@ def run_highlight(
     params = cfg.params
     cparams = _clustering_params(params, cc_overrides)
     detector, _ = manager.get(corpus, params)
-    winnower = detector.index.runtime_winnower
+    winnower = detector.runtime_winnower
     length = winnower.length
 
     # Character offsets for the query tokens (the tool-specific tokenizer). This
