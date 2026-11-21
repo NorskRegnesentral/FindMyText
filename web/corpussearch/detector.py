@@ -86,12 +86,9 @@ class TextContainmentDetector:
         self.top_k = top_k
         self.min_fingerprints = min_fingerprints
         self.index = indexing.DiskBasedIndex(index_dir)
-        self.num_documents = len(self.index.to_external_doc_id)
-        self.runtime_winnower = winnower.Winnower(
-            length=self.index.winnower.length,
-            window_size=1,
-            base=self.index.winnower.base,
-            punctuation=self.index.winnower.punctuation,
+        self.num_documents = self.index.num_documents
+        self.runtime_winnower = winnower.Winnower.from_metadata(
+            {**self.index.get_metadata(), "window_size": 1}
         )
 
     def find_matches_jaccard(self, text: str, score: str = "count") -> Dict[str, float]:

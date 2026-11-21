@@ -8,7 +8,7 @@ from web.corpussearch import create_app
 
 
 def test_web_adapter_scores_and_highlights_after_relocation(tmp_path, monkeypatch):
-    monkeypatch.setattr(indexing.MemoryBasedIndex, "_CHUNK", 100)
+    monkeypatch.setattr(index_builder.PostingBuffer, "_CHUNK", 100)
     text = " ".join(f"sharedword{i}" for i in range(90))
     records = [
         {"id": "source", "text": text},
@@ -16,11 +16,9 @@ def test_web_adapter_scores_and_highlights_after_relocation(tmp_path, monkeypatc
     ]
     source = tmp_path / "corpus.jsonl"
     source.write_text("".join(json.dumps(row) + "\n" for row in records))
-    shards = index_builder.index_file(
-        str(source), str(tmp_path / "shards"), nb_workers=1,
-    )
+    shards = index_builder.Indexer().index_file(str(source), str(tmp_path / "shards"))
     index = tmp_path / "index"
-    index_builder.merge_indexes(shards, str(index))
+    index_builder.Merger().merge(shards, str(index))
     (tmp_path / "samples_data.json").write_text("{}")
     config = tmp_path / "config.json"
     config.write_text(json.dumps({
