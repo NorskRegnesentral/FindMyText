@@ -29,33 +29,51 @@ For tests: `pip install -e ".[test]"`, then `python -m pytest`.
 
 ### 1. Build the index
 
-The first step is to index your corpus. Fingerprints can be extracted in parallel and then merged into a single disk-based index:
+The first step is to index your corpus:
 
 ```python
-from findmytext import index_builder
+import findmytext
 
 # `corpus.jsonl` contains one JSON object per line with "text" and a unique "id"
-index_builder.index_file("corpus.jsonl", "my_fingerprints", nb_workers=1)
-index_builder.merge_indexes_from_dir("my_fingerprints", "my_index")
+index = findmytext.build_index("corpus.jsonl", "my_index", nb_workers=4)
 ```
 
-The resulting index is stored on disk and memory-mapped at query time, so it scales to corpora that are too large to fit in RAM.
-
-The `index_builder` can also be used directly from the command line:
+The resulting index is stored on disk in `my_index` and memory-mapped at query time, so it
+scales to corpora that are too large to fit in RAM. The same build is available from the
+command line:
 ```bash
-# Step 1: extract fingerprints from a corpus file into intermediate shards
-python -m findmytext.index_builder index corpus.jsonl my_fingerprints --nb_workers 1
-
-# Step 2: merge shards into a final disk-based index
-python -m findmytext.index_builder merge my_fingerprints my_index
+python -m findmytext.index_builder index corpus.jsonl my_index --nb_workers 4
 ```
 
 JSONL, GZip (`.jsonl.gz`) and Zstandard (`.jsonl.zst`) are supported.
-Defaults are **4-token k-grams** and **window size 6**. Documents shorter than
-100 characters are skipped; the maximum is 100,000 characters for JSONL/GZip
-and 500,000 for Zstandard. `max_nb_documents_before_flush` controls shard
-size (default 1,000,000 documents). See [utils.py](findmytext/utils.py) for ingestion
-filters. `nb_workers=1` runs fingerprinting in the parent process; larger values use worker processes.
+Defaults are **4-token k-grams** and **window size 6**. 
+See [utils.py](findmytext/utils.py) for ingestion filters.
+`nb_workers` (default 1) is the number of processes used for fingerprinting and merging;
+`max_memory_gb` (default 8) bounds the memory they use.
+
+Under the hood, `build_index` writes fingerprint *shards* (one whenever the posting buffer
+fills up) into `my_index/shards`, then merges them into the final index and deletes them.
+For a corpus split over many files, build one index per file (e.g. one cluster job each)
+and merge them afterwards; the output of a merge is itself a valid input for later merges:
+
+```python
+findmytext.build_index("part1.jsonl.zst", "partial/part1", nb_workers=4)
+# ... one call per corpus file, then:
+index = findmytext.merge_indexes("partial", "my_index", nb_workers=4)
+```
+
+`merge_indexes` also accepts an explicit list of index directories instead of a parent
+directory, and returns the opened index like `build_index`. From the command line:
+```bash
+python -m findmytext.index_builder merge partial my_index --nb_workers 4
+```
+
+The merge splits the fingerprint space into ranges holding about the same number of
+postings, processed in parallel by `nb_workers` processes; `max_memory_gb` bounds the
+memory they use in total (about 80 bytes per posting of the ranges in flight). A worker
+killed by the kernel for exceeding a job's memory limit makes the merge fail with an
+explicit error; lower `nb_workers` or raise the limit and rerun the merge on the same
+inputs. Document IDs are assumed to be unique across the merged inputs.
 
 
 ### 2. Detect content
@@ -63,29 +81,34 @@ filters. `nb_workers=1` runs fingerprinting in the parent process; larger values
 Once the index is built, detection is a single call:
 
 ```python
-from findmytext import detectors
+detector = findmytext.FingerprintChainDetector(index)  # or the path: "my_index"
+scores = detector.search(query_text)
 
-detector = detectors.FingerprintChainDetector("my_index")
-scores = detector.get_containment_scores(query_text)
-
-# `scores` is a dict mapping document IDs to containment scores
+# `scores` is a dict mapping document IDs to containment probabilities
 best_match_id = max(scores, key=scores.get)
 print(f"Best match: {best_match_id}  (score: {scores[best_match_id]:.3f})")
 ```
 
 The text in `query_text` does not need to be exactly identical to the one found in the corpus. **FindMyText** is designed to be robust to small differences between the documents.
 
-Posting reads are sequential by default. To enable parallel reads when using
-`indexing.DiskBasedIndex` directly, pass, e.g., `posting_read_threads=8`.
+Scores are probabilities that the query shares a passage of at least `min_fragment_length`
+characters (default 1000) with the document, calibrated for near-verbatim reuse: a heavily
+edited passage must be correspondingly longer to score high. The steepness of the
+score curve is set by the detector's `dispersion` argument (default 0.5). Only documents
+scoring at least `min_probability` (default 0.05) are returned; the same threshold also
+sets how many shared fingerprints a document needs before it is retrieved and scored at all.
+
+Posting reads are sequential by default. To enable parallel reads, pass the number of
+available CPUs to the detector, e.g. `FingerprintChainDetector(index_dir, nb_cpus=8)`
+(or `posting_read_threads=8` when opening `indexing.DiskBasedIndex` directly). This
+only helps on cold or network storage; on warm or local data, sequential reads are faster.
 
 ### 3. Verifying a match with local alignment
 
 To inspect a detected match in detail, use the built-in local alignment:
 
 ```python
-from findmytext import oracle
-
-alignment = oracle.align(query_text, corpus_document_text)
+alignment = findmytext.align(query_text, corpus_document_text)
 alignment.show()
 ```
 

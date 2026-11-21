@@ -3,15 +3,20 @@
 import gzip
 import io
 import json
+import os
 import random
 import sys
 import uuid
+import multiprocessing as mp
+from tqdm import tqdm
+import zstandard
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
 try:
     import resource  # not available on Windows
 except ImportError:
     resource = None  # type: ignore[assignment]
-from typing import Any, Dict, Generator, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterable, Iterator, List, Optional, Tuple
 
 import orjson
 
@@ -47,28 +52,28 @@ def stream_json_zst(
 ):
     """Stream JSON objects from a .jsonl.zst file, yielding one JSON object at a
     time."""
-
-    import zstandard as zstd
-
-    # Open the file in binary read mode
-    with open(file_path, "rb") as f:
-        # Create a decompression context
-        dctx = zstd.ZstdDecompressor()
-        # Create a stream reader to decompress on the fly
-        with dctx.stream_reader(f) as reader:
-            # Wrap the binary stream in a text wrapper to handle line-by-line reading
-            text_stream = io.TextIOWrapper(reader, encoding="utf-8")
-            generator = json_line_reader(
-                text_stream,
-                min_length=min_length,
-                skip_prob=skip_prob,
-                max_length=max_length,
-                max_nb=max_nb,
-            )
-            for data in generator:
-                yield data
+    yield from json_line_reader(
+        stream_lines(file_path),
+        min_length=min_length,
+        skip_prob=skip_prob,
+        max_length=max_length,
+        max_nb=max_nb,
+    )
 
 
+def stream_lines(file_path: str) -> Iterator[bytes]:
+    """Yield raw (bytes) lines from a .zst, .gz or uncompressed file."""
+    if file_path.endswith(".zst"):
+        dctx = zstandard.ZstdDecompressor(max_window_size=2**31)
+        with open(file_path, "rb") as f, dctx.stream_reader(f) as reader:
+            yield from io.BufferedReader(reader, buffer_size=1 << 20)
+    elif file_path.endswith(".gz"):
+        with gzip.open(file_path, "rb") as f:
+            yield from f
+    else:
+        with open(file_path, "rb") as f:
+            yield from f
+            
 def stream_jsonl(
     file_path: str,
     min_length: int = 100,
@@ -95,7 +100,6 @@ def stream_jsonl(
 
     fd.close()
 
-
 def json_line_reader(
     line_iterator,
     min_length: int = 100,
@@ -103,13 +107,18 @@ def json_line_reader(
     max_length: int = 100000,
     max_nb: Optional[int] = None,
 ) -> Generator[Dict, None, None]:
-    """Read lines from a text stream, parse them as JSON, and yield valid JSON objects
-    based on specified criteria such as minimum and maximum length, and skipping with a
-    certain probability."""
+    """Read lines (str or bytes) from a stream, parse them as JSON, and yield valid
+    JSON objects based on specified criteria such as minimum and maximum length, and
+    skipping with a certain probability.
+
+    Only the first document with a given ID is yielded; later repeats of the same ID
+    are skipped with a warning (some crawled corpora contain the same page several
+    times)."""
     nb_read = 0
     nb_skipped = 0
+    nb_duplicates = 0
     processed_ids = set()
-    for line in line_iterator:
+    for line_nr, line in enumerate(line_iterator, start=1):
         if line.strip():  # Skip empty lines
             # Parse each line as a JSON object
             if random.random() < skip_prob:
@@ -119,15 +128,21 @@ def json_line_reader(
             data = normalise_json(data)
 
             if data["id"] in processed_ids:
-                raise ValueError(f"Duplicate document ID found: {data['id']}")
+                nb_duplicates += 1
+                print(
+                    f"Warning: duplicate document ID {data['id']} "
+                    f"at line {line_nr:,}, skipping",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
             processed_ids.add(data["id"])
 
             if len(data["text"]) < min_length or len(data["text"]) > max_length:
                 nb_skipped += 1
                 continue
-            if any(
-                [word in data["text"].split() for word in {"sex", "porn"}]
-            ):  # Avoiding a certain type of websites ...
+            words = set(data["text"].split())
+            if "sex" in words or "porn" in words:  # Avoiding a certain type of websites
                 nb_skipped += 1
                 continue
 
@@ -135,7 +150,10 @@ def json_line_reader(
             nb_read += 1
             if max_nb is not None and nb_read >= max_nb:
                 break
-    print("Nb documents: %i kept, %i skipped" % (nb_read, nb_skipped))
+    print(
+        "Nb documents: %i kept, %i skipped, %i duplicates"
+        % (nb_read, nb_skipped, nb_duplicates)
+    )
 
 
 def normalise_json(
@@ -235,43 +253,19 @@ def stream_to_file(
                 break
 
 
-def get_process_memory_gb() -> float:
-    """Return current RSS of the current process in GB (Linux, macOS, and Windows)."""
-    if sys.platform == "linux":
-        try:
-            with open("/proc/self/status") as f:
-                for line in f:
-                    if line.startswith("VmRSS:"):
-                        return int(line.split()[1]) / (1024 * 1024)  # kB → GB
-        except (OSError, ValueError):
-            pass
-    if sys.platform == "win32":
-        import ctypes
-        import ctypes.wintypes
-
-        class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ("cb", ctypes.c_ulong),
-                ("PageFaultCount", ctypes.c_ulong),
-                ("PeakWorkingSetSize", ctypes.c_size_t),
-                ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t),
-                ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-
-        pmc = _PROCESS_MEMORY_COUNTERS()
-        pmc.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
-        ctypes.windll.kernel32.K32GetProcessMemoryInfo(
-            ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb
-        )
-        return pmc.WorkingSetSize / (1024**3)
-    else:
-        import resource
-
-        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # Linux: KiB → GB; macOS: bytes → GB
-        return rss / (1024**2) if sys.platform != "darwin" else rss / (1024**3)
+def get_filtered_files(
+    dir: str, file_prefixes: Iterable[str] = (), file_suffixes: Iterable[str] = ()
+) -> List[str]:
+    """Return the sorted full paths of the entries of dir (files and directories)
+    whose name starts with at least one of file_prefixes and ends with at least one
+    of file_suffixes.  An empty prefix or suffix collection imposes no constraint on
+    that side, so get_filtered_files(dir) lists the whole directory.  Returns an
+    empty list when nothing matches."""
+    prefixes = tuple(file_prefixes)
+    suffixes = tuple(file_suffixes)
+    return sorted(
+        os.path.join(dir, name)
+        for name in os.listdir(dir)
+        if (not prefixes or name.startswith(prefixes))
+        and (not suffixes or name.endswith(suffixes))
+    )

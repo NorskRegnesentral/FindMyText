@@ -393,23 +393,41 @@ class LocalAligner:
         if self.verbose:
             print("First pass complete.")
 
-        maximum_length_shared_region = int(best_score * 10 // self.match_score)
+        # The best alignment ends at (seq1_end, seq2_end) and cannot be longer than
+        # best_score / min_cost characters, where the smallest per-character cost is the
+        # 0.1 gap cost of whitespace. We first try a tighter window (which is enough in
+        # the vast majority of cases) and widen it if the second pass does not recover
+        # the same score, which happens for alignments with long runs of cheap gaps or
+        # substitutions (e.g. in tables).
+        for window_factor in (10, 30, 100):
+            maximum_length_shared_region = int(
+                best_score * window_factor // self.match_score
+            )
+            start_offset1: int = max(0, seq1_end - maximum_length_shared_region)
+            start_offset2: int = max(0, seq2_end - maximum_length_shared_region)
+            shorter_seq1 = seq1_int[start_offset1:seq1_end]
+            shorter_seq2 = seq2_int[start_offset2:seq2_end]
 
-        start_offset1: int = max(0, seq1_end - maximum_length_shared_region)
-        start_offset2: int = max(0, seq2_end - maximum_length_shared_region)
-        shorter_seq1 = seq1_int[start_offset1:seq1_end]
-        shorter_seq2 = seq2_int[start_offset2:seq2_end]
-
-        best_score2, start_i, best_i2, start_j, best_j2 = _smith_waterman_single_pass(
-            shorter_seq1,
-            shorter_seq2,
-            self.match_score,
-            gap_costs_array,
-            substitution_costs_array,
-            progress_counter=self.verbose,
-        )
-
-        if best_score2 != best_score:
+            best_score2, start_i, best_i2, start_j, best_j2 = (
+                _smith_waterman_single_pass(
+                    shorter_seq1,
+                    shorter_seq2,
+                    self.match_score,
+                    gap_costs_array,
+                    substitution_costs_array,
+                    progress_counter=self.verbose,
+                )
+            )
+            if np.isclose(best_score2, best_score, rtol=1e-4):
+                break
+            if start_offset1 == 0 and start_offset2 == 0:
+                break
+            if self.verbose:
+                print(
+                    "Score mismatch between passes (%.1f vs %.1f), widening the window"
+                    % (best_score, best_score2)
+                )
+        else:
             raise ValueError(
                 "Warning: Score mismatch between passes:", best_score, best_score2
             )

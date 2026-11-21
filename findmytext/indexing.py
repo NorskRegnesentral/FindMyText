@@ -1,220 +1,63 @@
-"""Module for in-memory and disk-based indexing of documents using winnowed
-fingerprints."""
+"""Disk-based index of winnowed document fingerprints.
 
-import gzip
+An index directory contains:
+- meta.json: the fingerprint parameters (see winnower.Winnower.to_metadata)
+- fingerprints.npy: sorted uint64 array with one entry per unique fingerprint
+- offsets.npy / lengths.npy: byte offset in postings.dat and number of postings for
+  each fingerprint
+- postings.dat: concatenated postings lists, POSTING_DTYPE records (doc_id, position)
+- doc_name_offsets.npy / doc_name_bytes.npy: UTF-8 document names, concatenated,
+  indexed by internal doc_id
+- fingerprint_blocks.npy: every FINGERPRINT_BLOCK-th fingerprint, the in-RAM top level
+  of the lookup (derived from fingerprints.npy; rebuilt and cached if missing)
+
+Directories in this format are written by index_builder.PostingBuffer.
+"""
+
 import heapq
-import io
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List
 
+import numpy as np
 import orjson  # 3-5x faster JSON parsing
 import tqdm
 
-try:
-    import isal.igzip as igzip  # 2-4x faster gzip decompression (Intel ISA-L)
-except ImportError:
-    igzip = gzip  # type: ignore[assignment]
-
-from typing import Any, Dict, List, Tuple
-
-import msgpack
-import numpy as np
-
 from . import winnower
 
+POSTING_DTYPE = np.dtype([("doc_id", np.uint32), ("position", np.uint32)])
 
-class MemoryBasedIndex:
-    """In-memory index that accumulates all (fingerprint, doc_id, position) triples in
-    a single flat numpy structured array (16 bytes per entry).
+# Fingerprints per block of the two-level lookup: 512 uint64 = one 4 KiB page.
+FINGERPRINT_BLOCK = 512
+FINGERPRINT_BLOCKS_FILE = "fingerprint_blocks.npy"
 
-    The implementation is optimised for fast insertion of fingerprints, and to
-    efficiently export the index to disk (in MsgPack format). It is, however,
-    not suitable for very large datasets that exceed available RAM. For larger
-    datasets, use the DiskBasedIndex.
+
+def compute_fingerprint_blocks(
+    fingerprints: np.ndarray, block: int = FINGERPRINT_BLOCK
+) -> np.ndarray:
+    """Return the first fingerprint of every block-sized block.
+
+    Reads the (possibly memory-mapped) array in large sequential chunks: a strided
+    ``fingerprints[::block]`` on a memmap would instead fault in every page one at a
+    time, which takes minutes on a network filesystem.
     """
+    chunk = block * (1 << 15)  # ~128 MiB of uint64 for the default block size
+    parts = [
+        np.asarray(fingerprints[i : i + chunk])[::block]
+        for i in range(0, len(fingerprints), chunk)
+    ]
+    if not parts:
+        return np.zeros(0, dtype=np.uint64)
+    return np.ascontiguousarray(np.concatenate(parts))
 
-    _DTYPE = np.dtype([("fp", np.uint64), ("doc", np.uint32), ("pos", np.uint32)])
-    _CHUNK = 10_000_000  # grow in 10 M-entry (~160 MB) steps
 
-    def __init__(self, meta: Dict[str, Any]):
-        winnower.Winnower.from_metadata(meta)
-        self.doc_id_map: Dict[str, int] = {}
-        self.to_external: List[str] = []
-        self.meta = meta
-
-        # Preallocate a large numpy structured array to hold the index entries.
-        # # The array will grow in chunks as needed.
-        self.index_array: np.ndarray = np.empty(self._CHUNK, dtype=self._DTYPE)
-        self.index_size: int = 0  # number of valid entries in index_array
-
-    def add_fingerprints(self, doc_id: str, fp_pos_list: List[Tuple[int, int]]):
-        """Append fingerprint-position pairs for a document to the posting buffer."""
-
-        # We use a mapping from external document IDs (strings) to internal integer IDs
-        # to save space in the index.
-        int_id = self.doc_id_map.get(doc_id)
-        if int_id is None:
-            int_id = len(self.to_external)
-            self.doc_id_map[doc_id] = int_id
-            self.to_external.append(doc_id)
-
-        # If the current index is not large enough to hold the new entries, we grow it
-        n = len(fp_pos_list)
-        if self.index_size + n > len(self.index_array):
-            extra = max(self._CHUNK, n)
-            new_buf = np.empty(self.index_size + extra, dtype=self._DTYPE)
-            new_buf[: self.index_size] = self.index_array[: self.index_size]
-            self.index_array = new_buf  # old buffer freed when refcount drops to 0
-
-        # Append the new fingerprint-position pairs to the index array.
-        for fp, pos in fp_pos_list:
-            self.index_array[self.index_size] = (int(fp), int_id, int(pos))
-            self.index_size += 1
-
-    @property
-    def doc_count(self) -> int:
-        """Return the number of unique documents indexed so far."""
-        return len(self.to_external)
-
-    def get_closest_matches(
-        self, fingerprints: np.ndarray, min_fingerprints=5, top_k: int = 5
-    ) -> List[str]:
-        """Given an array of query fingerprints, retrieve the closest matching
-        documents from the index based on shared fingerprints.
-
-        Args:
-            fingerprints: Winnowed fingerprints of the query document.
-            min_fingerprints: The minimum number of shared fingerprints required for a document to be
-            considered a match (default: 5).
-            top_k: The number of top matching documents to return based on shared fingerprint counts
-            (default: 5).
-
-        Returns:
-        - A list of document IDs corresponding to the closest matches in the index.
-
-        """
-        return list(
-            self.get_match_counts(
-                fingerprints, min_fingerprints=min_fingerprints, top_k=top_k
-            ).keys()
-        )
-
-    def get_match_counts(
-        self, fingerprints: np.ndarray, min_fingerprints: int = 5, top_k: int = 5
-    ) -> Dict[str, int]:
-        """Given an array of query fingerprints, retrieve the counts of shared
-        fingerprints for each document in the index, and return the top-k matches that
-        have at least the minimum number of shared fingerprints."""
-        if self.index_size == 0:
-            return {}
-        buf = self.index_array[: self.index_size]
-        mask = np.isin(buf["fp"], np.asarray(fingerprints, dtype=np.uint64))
-        if not mask.any():
-            return {}
-        unique_docs, counts = np.unique(buf["doc"][mask], return_counts=True)
-        keep = counts >= min_fingerprints
-        unique_docs, counts = unique_docs[keep], counts[keep]
-        if len(unique_docs) == 0:
-            return {}
-        order = np.argsort(-counts)[:top_k]
-        return {self.to_external[int(unique_docs[i])]: int(counts[i]) for i in order}
-
-    def get_fingerprint_positions(
-        self, fingerprints: np.ndarray, doc_id: str
-    ) -> Dict[int, List[int]]:
-        """Given an array of query fingerprints and a document ID, retrieve the
-        positions of the shared fingerprints for that document in the index."""
-        int_id = self.doc_id_map.get(doc_id)
-        if int_id is None:
-            return {}
-        buf = self.index_array[: self.index_size]
-        mask = (buf["doc"] == int_id) & np.isin(
-            buf["fp"], np.asarray(fingerprints, dtype=np.uint64)
-        )
-        hits = buf[mask]
-        positions: Dict[int, List[int]] = {}
-        for fp_val, pos_val in zip(hits["fp"].tolist(), hits["pos"].tolist()):
-            positions.setdefault(fp_val, []).append(pos_val)
-        return positions
-
-    def to_msgpack(self, path: str) -> None:
-        """Write sorted fingerprint postings to a gzipped msgpack file (flat-stream format).
-
-        Format: metadata dict, doc-ID table (n_docs: int + n_docs × str), then for each
-        unique fingerprint: fp (int), n_postings (int), doc_ids (bytes: n_postings ×
-        uint32), positions (bytes: n_postings × uint32).
-
-        Group boundaries are found with a single numpy vectorised pass; posting data is
-        written as raw byte blobs rather than individual msgpack values, reducing Python-
-        level work from O(total_postings) to O(unique_fingerprints).
-        """
-        print(f"Exporting index to {path}...", end="", flush=True)
-        view = self.index_array[: self.index_size]
-        view.sort(order="fp")  # in-place
-        print("Done sorting. Now writing to file...", end="", flush=True)
-        fps = view["fp"]
-        docs = view["doc"]
-        positions = view["pos"]
-
-        # Find all positions where the fingerprint value changes (one C-level pass).
-        fp_changes = np.flatnonzero(fps[:-1] != fps[1:]) + 1
-
-        packer = msgpack.Packer()
-        # Compress bounded blocks instead of invoking gzip for every scalar/blob.
-        with gzip.open(path, "wb", compresslevel=1) as compressed, io.BufferedWriter(
-            compressed, buffer_size=1024 * 1024
-        ) as f:
-            f.write(packer.pack(self.meta))
-            f.write(packer.pack(len(self.to_external)))
-            for doc_id in self.to_external:
-                f.write(packer.pack(doc_id))
-            i = 0
-            for boundary in fp_changes:
-                j = int(boundary)
-                f.write(packer.pack(int(fps[i])))
-                f.write(packer.pack(j - i))
-                f.write(packer.pack(docs[i:j].tobytes()))
-                f.write(packer.pack(positions[i:j].tobytes()))
-                i = j
-            # Write the final group.
-            if i < self.index_size:
-                f.write(packer.pack(int(fps[i])))
-                f.write(packer.pack(self.index_size - i))
-                f.write(packer.pack(docs[i:].tobytes()))
-                f.write(packer.pack(positions[i:].tobytes()))
-        print("Done.")
-
-    @classmethod
-    def from_msgpack(cls, path: str) -> "MemoryBasedIndex":
-        """Load a MemoryBasedIndex from a gzipped msgpack file (flat-stream format)."""
-        with gzip.open(path, "rb") as f:
-            unpacker = msgpack.Unpacker(f, raw=False)
-            meta = next(unpacker)
-            index = cls(meta)
-            n_docs = next(unpacker)
-            for i in range(n_docs):
-                doc_id = next(unpacker)
-                index.doc_id_map[doc_id] = i
-                index.to_external.append(doc_id)
-            for fp in unpacker:
-                n_postings = next(unpacker)
-                docs_raw = next(unpacker)  # bytes: n_postings × uint32
-                pos_raw = next(unpacker)  # bytes: n_postings × uint32
-                if index.index_size + n_postings > len(index.index_array):
-                    extra = max(cls._CHUNK, n_postings)
-                    new_buf = np.empty(index.index_size + extra, dtype=cls._DTYPE)
-                    new_buf[: index.index_size] = index.index_array[: index.index_size]
-                    index.index_array = new_buf
-                end = index.index_size + n_postings
-                index.index_array["fp"][index.index_size : end] = fp
-                index.index_array["doc"][index.index_size : end] = np.frombuffer(
-                    docs_raw, dtype=np.uint32
-                )
-                index.index_array["pos"][index.index_size : end] = np.frombuffer(
-                    pos_raw, dtype=np.uint32
-                )
-                index.index_size = end
-        return index
+def write_fingerprint_blocks(index_dir: str) -> None:
+    """Derive fingerprint_blocks.npy from fingerprints.npy in index_dir."""
+    fingerprints = np.load(os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r")
+    np.save(
+        os.path.join(index_dir, FINGERPRINT_BLOCKS_FILE),
+        compute_fingerprint_blocks(fingerprints),
+    )
 
 
 class DiskBasedIndex:
@@ -233,18 +76,26 @@ class DiskBasedIndex:
         """
         if posting_read_threads < 1:
             raise ValueError("posting_read_threads must be at least 1")
+        self.index_dir = index_dir
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
-            self.winnower = winnower.Winnower.from_metadata(meta)
+        # Round-tripping through Winnower validates hash_method and normalises the keys.
+        self._meta = winnower.Winnower.from_metadata(meta).to_metadata()
 
-        # Load index arrays as memory-mapped files (zero RAM cost; served from OS page cache)
+        # Load index arrays as memory-mapped files
+        print("Loading index arrays...", end="", flush=True)
         self.fingerprints = np.load(
             os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r"
         )
+        self._lookup = _TwoLevelSearch(
+            self.fingerprints, self._load_fingerprint_blocks(index_dir)
+        )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+        print("done.", flush=True)
 
         # Load doc-ID mapping as memory-mapped arrays wrapped in a lazy accessor
+        print("Loading doc-ID mapping...", end="", flush=True)
         doc_name_offsets = np.load(
             os.path.join(index_dir, "doc_name_offsets.npy"), mmap_mode="r"
         )
@@ -252,6 +103,7 @@ class DiskBasedIndex:
             os.path.join(index_dir, "doc_name_bytes.npy"), mmap_mode="r"
         )
         self.to_external_doc_id = _DocIdMap(doc_name_offsets, doc_name_bytes)
+        print("done.", flush=True)
 
         # Raw fd (not a file object) so os.pread can be called concurrently from
         # multiple threads without a shared seek position.
@@ -260,6 +112,44 @@ class DiskBasedIndex:
             ThreadPoolExecutor(max_workers=posting_read_threads)
             if posting_read_threads > 1 else None
         )
+
+    def _load_fingerprint_blocks(self, index_dir: str) -> np.ndarray:
+        """Top level of the fingerprint lookup, read from fingerprint_blocks.npy.
+
+        Indexes built before that file existed get it computed (one sequential pass
+        over fingerprints.npy) and cached next to the index if the directory is
+        writable.
+        """
+        path = os.path.join(index_dir, FINGERPRINT_BLOCKS_FILE)
+        expected = -(-len(self.fingerprints) // FINGERPRINT_BLOCK)
+        if os.path.isfile(path):
+            blocks = np.load(path)
+            if len(blocks) == expected:
+                return blocks
+        blocks = compute_fingerprint_blocks(self.fingerprints)
+        try:
+            np.save(path, blocks)
+        except OSError:
+            pass  # read-only index directory: recompute on every load
+        return blocks
+
+    def get_metadata(self) -> dict:
+        """Fingerprint parameters the index was built with (see ``Winnower.to_metadata``).
+
+        Pass the result to ``Winnower.from_metadata`` to hash queries the same way
+        as the indexed corpus.
+        """
+        return dict(self._meta)
+
+    @property
+    def num_documents(self) -> int:
+        """Number of documents in the index."""
+        return len(self.to_external_doc_id)
+
+    @property
+    def num_fingerprints(self) -> int:
+        """Number of distinct fingerprints (i.e. posting lists) in the index."""
+        return len(self.fingerprints)
 
     def get_closest_matches(
         self, fingerprints: np.ndarray, min_fingerprints=5, top_k: int = 5
@@ -401,6 +291,22 @@ class DiskBasedIndex:
 
         return top_docs_external
 
+    def get_posting_counts(self, fingerprints: np.ndarray) -> np.ndarray:
+        """Number of postings of each fingerprint in the index (0 when absent).
+
+        Only the fingerprint and length arrays are consulted, so this is much
+        cheaper than reading the postings themselves.
+        """
+        queries = np.asarray(fingerprints, dtype=np.uint64)
+        counts = np.zeros(len(queries), dtype=np.int64)
+        if not len(self.fingerprints):
+            return counts
+        idx = self._lookup(queries)
+        idx_clipped = np.clip(idx, 0, len(self.fingerprints) - 1)
+        found = (idx < len(self.fingerprints)) & (self.fingerprints[idx_clipped] == queries)
+        counts[found] = self.lengths[idx_clipped[found]]
+        return counts
+
     def _get_postings(
         self,
         fingerprints: np.ndarray,
@@ -416,9 +322,11 @@ class DiskBasedIndex:
         file, and extracts the relevant postings for each fingerprint.
         """
         queries = np.asarray(fingerprints, dtype=np.uint64)
+        if not len(self.fingerprints):
+            return {}  # an index of fingerprint-less documents has nothing to look up
 
-        # 1. vectorized lookup
-        idx = np.searchsorted(self.fingerprints, queries)
+        # 1. vectorized lookup (two-level search keeps page faults to ~1 per query)
+        idx = self._lookup(queries)
 
         # 2. keep only matches — clip first so the index lookup is always in bounds
         idx_clipped = np.clip(idx, 0, len(self.fingerprints) - 1)
@@ -474,6 +382,38 @@ class DiskBasedIndex:
             self._posting_fd = -1
         if hasattr(self, "_io_pool") and self._io_pool is not None:
             self._io_pool.shutdown(wait=False)
+
+
+class _TwoLevelSearch:
+    """searchsorted over a memory-mapped sorted array with one page fault per query.
+
+    A plain binary search over a 16 GB fingerprint array touches ~30 random pages per
+    query.  Here the array is split into blocks of `block` entries (one 4 KiB page for
+    uint64); the first entry of each block is kept in RAM (0.2% of the array), located
+    with an in-memory binary search, and only the matching block is then searched on
+    disk.  Positions returned are identical to np.searchsorted(array, queries).
+    """
+
+    def __init__(self, array: np.ndarray, block_starts: np.ndarray = None,
+                 block: int = FINGERPRINT_BLOCK):
+        self.array = array
+        self.block = block
+        if block_starts is None:
+            block_starts = compute_fingerprint_blocks(array, block)
+        self.block_starts = block_starts  # in RAM, 0.2% of the array
+
+    def __call__(self, queries: np.ndarray) -> np.ndarray:
+        # Block b holds array[b*block:(b+1)*block]; the query belongs to the last block
+        # whose first entry is <= query, i.e. searchsorted(side="right") - 1.
+        blocks = np.searchsorted(self.block_starts, queries, side="right") - 1
+        blocks = np.maximum(blocks, 0)
+        result = np.empty(len(queries), dtype=np.int64)
+        for b in np.unique(blocks):  # queries are grouped by block: one page read each
+            in_block = blocks == b
+            start = int(b) * self.block
+            chunk = self.array[start : start + self.block]
+            result[in_block] = start + np.searchsorted(chunk, queries[in_block])
+        return result
 
 
 class _DocIdMap:

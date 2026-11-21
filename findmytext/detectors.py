@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import warnings
 from abc import ABC, abstractmethod
+from typing import Optional, Union
 
 import numpy as np
 import polars as pl
@@ -43,55 +44,96 @@ class _BaseDetector(ABC):
 
     Parameters
     ----------
-    index_dir : str
+    index : str or indexing.DiskBasedIndex
         Path to the directory containing a disk-based winnowing index
-        (``meta.json``, ``fingerprints.npy``, ``postings.dat``, ...).
+        (``meta.json``, ``fingerprints.npy``, ``postings.dat``, ...), or an index
+        already opened (e.g. the result of :func:`findmytext.build_index`).
     top_k : int
         Number of closest candidate documents to retrieve per query (default: 50).
-    min_fingerprints : int
-        Minimum number of shared fingerprints for a candidate to be considered a
-        match (default: 5).
+    min_probability : float
+        Documents whose containment probability falls below this value are not
+        returned by :meth:`search` (default: 0.05). It also sets the minimum number
+        of shared fingerprints a document needs to be retrieved from the index at
+        all (see :meth:`_min_shared_fingerprints`), which skips the scoring of
+        hopeless candidates.
     rarity_weighted : bool
-        If ``True``, score by rarity-weighted fingerprint sum rather than raw count
-        (default: ``False``).
+        If ``True``, score by an IDF-weighted fingerprint sum rather than raw count
+        (default: ``False``; see :meth:`_get_fingerprint_weights`).
+    dispersion : float
+        Ratio of the variance to the mean of the shared-fingerprint count, used to
+        convert raw scores to probabilities (default: 0.5; see
+        :meth:`_normalise_scores`).
+    nb_cpus : int
+        Number of CPUs available to the detector (default: 1). Used as the number
+        of threads reading posting lists in parallel when ``index`` is a path.
+        Parallel reads only pay off on cold or network storage; on warm or local
+        data the sequential default is faster. Ignored, with a warning, when an
+        already-opened index is passed.
+    min_fingerprints : int, optional
+        Explicit minimum number of shared fingerprints for a document to be
+        retrieved from the index, overriding the value derived from
+        ``min_probability`` (default: ``None``, i.e. derived).
 
     """
 
     def __init__(
         self,
-        index_dir: str,
+        index: Union[str, indexing.DiskBasedIndex],
         top_k: int = 50,
-        min_fingerprints: int = 5,
+        min_probability: float = 0.05,
         rarity_weighted: bool = False,
+        dispersion: float = 0.5,
+        nb_cpus: int = 1,
+        min_fingerprints: Optional[int] = None,
     ):
-        self.index_dir = index_dir
+        if dispersion <= 0:
+            raise ValueError("dispersion must be positive")
+        if not 0 < min_probability < 1:
+            raise ValueError("min_probability must be strictly between 0 and 1")
+        if min_fingerprints is not None and min_fingerprints < 1:
+            raise ValueError("min_fingerprints must be at least 1")
+        if nb_cpus < 1:
+            raise ValueError("nb_cpus must be at least 1")
+        if isinstance(index, indexing.DiskBasedIndex):
+            if nb_cpus != 1:
+                warnings.warn(
+                    "nb_cpus is ignored when an already-opened DiskBasedIndex is "
+                    "passed; set posting_read_threads when opening the index instead.",
+                    stacklevel=2,
+                )
+            self.index = index
+        else:
+            self.index = indexing.DiskBasedIndex(index, posting_read_threads=nb_cpus)
+        self.nb_cpus = nb_cpus
+        self.index_dir = self.index.index_dir
         self.top_k = top_k
+        self.min_probability = min_probability
         self.min_fingerprints = min_fingerprints
         self.rarity_weighted = rarity_weighted
-        self.index = indexing.DiskBasedIndex(index_dir)
-        self.num_documents = len(self.index.to_external_doc_id)
-        self.runtime_winnower = winnower.Winnower(
-            length=self.index.winnower.length,
-            window_size=1,
-            base=self.index.winnower.base,
-            punctuation=self.index.winnower.punctuation,
+        self.dispersion = dispersion
+        self.num_documents = self.index.num_documents
+        # Queries use every k-gram (window_size=1) hashed like the indexed corpus.
+        self.index_metadata = self.index.get_metadata()
+        self.runtime_winnower = winnower.Winnower.from_metadata(
+            {**self.index_metadata, "window_size": 1}
         )
 
-        # Mean fingerprint weight across the whole index, used to normalise rarity
-        # weights so that scores remain on the same scale as the raw fingerprint count.
-        # lengths[i] approximates df(h) (exact when each fingerprint appears at most
-        # once per document, which is typical for rare word k-grams).
-        self._mean_fingerprint_weight = (
-            float(1.0 - self.index.lengths.mean() / self.num_documents)
-            if rarity_weighted
-            else 1.0
-        )
+        # Rarity weights are divided by their occurrence-weighted mean over the index
+        # (the expected weight of a fingerprint met in running text), so that a
+        # verbatim passage still scores N0 on average; the extra variance of summing
+        # unequal weights is folded into the dispersion (see _normalise_scores).
+        self._mean_weight = 1.0
+        self._score_dispersion = dispersion
+        if rarity_weighted:
+            counts = _sample_posting_counts(self.index.lengths).astype(np.float64)
+            weights = self._idf_weights(counts)
+            self._mean_weight = float(np.average(weights, weights=counts))
+            mean_sq_weight = float(np.average(weights**2, weights=counts))
+            self._score_dispersion = dispersion + mean_sq_weight / self._mean_weight**2 - 1.0
 
     @abstractmethod
-    def get_containment_scores(
-        self, text: str, min_fragment_length: float = 1000.0
-    ) -> dict[str, float]:
-        """Return a containment-probability score for each candidate document.
+    def search(self, text: str, min_fragment_length: float = 1000.0) -> dict[str, float]:
+        """Find the indexed documents likely to contain a passage of ``text``.
 
         Parameters
         ----------
@@ -99,14 +141,14 @@ class _BaseDetector(ABC):
             The query document to search for.
         min_fragment_length : float
             Minimum length of a matching fragment in characters (default 1 000).
-            Used to derive the expected fingerprint count :math:`N_0` for the
-            Poisson model.
+            Used to derive the expected fingerprint count :math:`N_0` (see
+            :meth:`_normalise_scores`).
 
         Returns
         -------
         dict[str, float]
-            Mapping from external document id to containment probability in
-            :math:`[0, 1]`.
+            Mapping from external document id to containment probability, for the
+            documents whose probability is at least ``min_probability``.
 
         """
         raise NotImplementedError
@@ -123,10 +165,38 @@ class _BaseDetector(ABC):
             pl.col("hash").cast(pl.UInt64)
         )
 
-    def _get_candidates(self, fingerprints) -> pl.DataFrame:
+    def _retrieve_candidates(
+        self, text: str, min_fragment_length: float
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """Fingerprint the query and fetch the candidate documents worth scoring.
+
+        Returns the query fingerprint table (see :meth:`get_fingerprints`) and the
+        candidate table (see :meth:`_get_candidates`), restricted to documents
+        sharing at least :meth:`_min_shared_fingerprints` fingerprints.
+        """
+        if len(text) < min_fragment_length:
+            warnings.warn(
+                f"Query ({len(text)} chars) is shorter than min_fragment_length "
+                f"({min_fragment_length} chars)",
+                UserWarning,
+                stacklevel=3,
+            )
+        df_query = self.get_fingerprints(text)
+        min_fingerprints = self._min_shared_fingerprints(min_fragment_length)
+        return df_query, self._get_candidates(df_query["hash"], min_fingerprints)
+
+    def _to_probabilities(
+        self, raw_scores: dict[str, float], min_fragment_length: float
+    ) -> dict[str, float]:
+        """Convert raw scores to probabilities and drop those below ``min_probability``."""
+        probabilities = self._normalise_scores(raw_scores, min_fragment_length)
+        return {doc: p for doc, p in probabilities.items() if p >= self.min_probability}
+
+    def _get_candidates(self, fingerprints, min_fingerprints: int) -> pl.DataFrame:
         """Return the candidate-match table for the given fingerprints.
 
         Accepts any array-like of hash values (numpy array, Polars Series, …).
+        Only documents sharing at least ``min_fingerprints`` of them are returned.
         The returned DataFrame has columns ``doc_match_id``,
         ``doc_match_closeness_rank``, ``hash``, and ``position`` (the position
         of each shared hash inside the candidate document).
@@ -134,57 +204,106 @@ class _BaseDetector(ABC):
         candidates = self.index.get_closest_matches_with_positions(
             query=fingerprints,
             top_k=self.top_k,
-            min_fingerprints=self.min_fingerprints,
+            min_fingerprints=min_fingerprints,
             verbose=False,
         )
         return convert_closest_matches_with_positions_to_df(candidates)
 
-    def _get_fingerprint_weights(self, fingerprints) -> dict[int, float]:
-        """Per-fingerprint weights for scoring: uniform (1.0) or rarity-based.
+    def _min_shared_fingerprints(self, min_fragment_length: float) -> int:
+        """Smallest shared-fingerprint count worth scoring for this fragment length.
 
-        Returns a ``{hash: weight}`` mapping.  When ``rarity_weighted=False``
-        every fingerprint gets weight 1.0.  When ``rarity_weighted=True`` the
-        weight is ``1 - df(h) / num_documents``, normalised so the index-wide
-        mean equals 1.0.
+        Inverts :meth:`_normalise_scores`: a document with fewer shared fingerprints
+        would end up below ``min_probability`` even if all of them formed one
+        passage, so the index need not return it.  With rarity weighting the
+        score is a weighted sum, so the count is scaled down by the largest
+        normalised weight to remain a lower bound.  ``min_fingerprints`` overrides
+        the derived value.
         """
+        if self.min_fingerprints is not None:
+            return self.min_fingerprints
+        N0 = self._expected_fingerprints(min_fragment_length)
+        min_score = N0 - 0.5 + norm.ppf(self.min_probability) * np.sqrt(self._score_dispersion * N0)
+        if self.rarity_weighted:
+            max_weight = float(self._idf_weights(np.array(1.0))) / self._mean_weight
+            min_score /= max(max_weight, 1.0)
+        return max(1, int(np.ceil(min_score)))
+
+    def _expected_fingerprints(self, min_fragment_length: float) -> float:
+        """Expected shared-fingerprint count :math:`N_0` of a verbatim passage of
+        ``min_fragment_length`` characters (see :meth:`_normalise_scores`)."""
+        k = self.index_metadata["length"]
+        w = self.index_metadata["window_size"]
+        n_kgrams = max(min_fragment_length / _AVG_CHARS_PER_WORD - k + 1, 1.0)
+        return n_kgrams * 2 / (w + 1)
+
+    def _idf_weights(self, posting_counts: np.ndarray) -> np.ndarray:
+        """Unnormalised rarity weight ``log(1 + N / cf)`` of fingerprints with the
+        given (positive) posting counts ``cf``, ``N`` being the number of documents."""
+        return np.log1p(self.num_documents / posting_counts)
+
+    def _get_fingerprint_weights(self, fingerprints) -> dict[int, float]:
+        """Per-fingerprint weights for scoring: uniform (1.0) or IDF-like.
+
+        Returns a ``{hash: weight}`` mapping over the fingerprints present in the
+        index.  When ``rarity_weighted=False`` every fingerprint gets weight 1.0.
+        When ``rarity_weighted=True`` the weight is ``log(1 + N / cf(h))``, with
+        ``N`` the number of indexed documents and ``cf(h)`` the number of postings
+        of ``h``, divided by the occurrence-weighted mean of that quantity over the
+        index so that a fingerprint met in running text has weight 1.0 on average.
+        """
+        hashes = np.unique(np.asarray(fingerprints, dtype=np.uint64))
         if not self.rarity_weighted:
-            hashes = np.unique(np.asarray(fingerprints, dtype=np.uint64))
             return dict.fromkeys(hashes.tolist(), 1.0)
-        postings = self.index._get_postings(fingerprints, only_doc_ids=True)
-        return {
-            int(h): float(1 - len(np.unique(doc_ids)) / self.num_documents)
-            / self._mean_fingerprint_weight
-            for h, doc_ids in postings.items()
-        }
+        counts = self.index.get_posting_counts(hashes)
+        found = counts > 0
+        weights = self._idf_weights(counts[found].astype(np.float64)) / self._mean_weight
+        return dict(zip(hashes[found].tolist(), weights.tolist()))
 
     def _normalise_scores(
         self, raw_scores: dict[str, float], min_fragment_length: float
     ) -> dict[str, float]:
         r"""Convert raw fingerprint scores to containment probabilities.
 
-        **Model.**  Let :math:`N` be the observed score (sum of fingerprint weights)
-        and :math:`L_0` = ``min_fragment_length`` in characters.  The expected
-        fingerprint count for a passage of exactly :math:`L_0` characters is
+        **Model.**  Let :math:`n` be the observed score (number of shared fingerprints,
+        or sum of their weights) and :math:`L_0` = ``min_fragment_length`` in
+        characters.  A passage of :math:`L_0` characters holds about
+        :math:`L_0 / \bar{c} - k + 1` k-grams, with :math:`\bar{c} \approx 5.5`
+        characters per word, and winnowing with window :math:`w` keeps on average a
+        fraction :math:`2 / (w + 1)` of them.  The expected number of shared
+        fingerprints for a verbatim passage of exactly :math:`L_0` characters is thus
 
         .. math::
-            N_0 = \frac{L_0}{w \cdot \bar{c}}
+            N_0 = \left(\frac{L_0}{\bar{c}} - k + 1\right) \frac{2}{w + 1}
 
-        where :math:`w` is the winnowing window size and :math:`\bar{c} \approx 5.5`
-        is the average characters per word (one k-gram sliding step — *not* the length
-        of the k-gram string itself, which would be :math:`k \times 5.5 \approx 22`
-        characters for k = 4).  With :math:`w = 6` and :math:`L_0 = 1000`:
-        :math:`N_0 \approx 30`.
+        (:math:`N_0 \approx 51` for :math:`L_0 = 1000`, :math:`k = 4`, :math:`w = 6`).
 
-        Under a Poisson noise model, the posterior probability that the underlying
-        passage length exceeds :math:`L_0` is approximated via the normal approximation
-        to the Poisson/Gamma posterior:
+        The count varies much less than a Poisson variable with the same mean, because
+        winnowing selects fingerprints regularly: every window contains at least one and
+        neighbouring k-grams are rarely both selected.  Simulations give a variance of
+        0.2–0.6 times the mean depending on the edit rate; ``dispersion`` (default 0.5,
+        slightly above the simulated values since real text varies more) sets this
+        ratio.  With a normal approximation and continuity correction,
 
         .. math::
-            P(\text{match} \mid N = n) \approx
-            \Phi\!\left(\frac{n - N_0}{\sqrt{N_0}}\right)
+            P(\text{match} \mid n) = \Phi\!\left(
+                \frac{n + 0.5 - N_0}{\sqrt{\text{dispersion} \cdot N_0}}\right)
 
-        This gives :math:`P = 0.5` when :math:`n = N_0`, with a sharp transition over
-        :math:`\pm\sqrt{N_0} \approx \pm 5` fingerprints.
+        so that :math:`P \approx 0.5` at :math:`n = N_0` and the transition spans about
+        :math:`\pm 2\sqrt{\text{dispersion} \cdot N_0}` (:math:`\pm 10` fingerprints
+        in the example above).
+
+        **Calibration.**  :math:`N_0` assumes a verbatim passage.  Edits remove shared
+        fingerprints (a k-gram survives independent word edits with probability
+        :math:`(1 - \epsilon)^k`), so an edited passage needs to be proportionally
+        longer to reach the same probability: with 5% of words changed, about 1250
+        characters instead of 1000.
+
+        **Rarity weighting.**  With ``rarity_weighted=True`` the score is a sum of
+        weights :math:`W` normalised to mean 1 over fingerprint occurrences, so its
+        mean is still :math:`N_0`, but a random sum of unequal terms has variance
+        :math:`\mathrm{Var}(n)\,E[W]^2 + E[n]\,\mathrm{Var}(W)`, i.e. the effective
+        dispersion becomes :math:`\text{dispersion} + E[W^2] - 1`; both moments are
+        estimated from the index's posting counts when the detector is created.
 
         Parameters
         ----------
@@ -199,11 +318,27 @@ class _BaseDetector(ABC):
             Mapping from ``doc_match_id`` to containment probability in :math:`[0, 1]`.
 
         """
-        N0 = min_fragment_length / (
-            self.index.winnower.window_size * _AVG_CHARS_PER_WORD
-        )
-        probs = norm.cdf((np.array(list(raw_scores.values())) - N0) / N0**0.5)
+        N0 = self._expected_fingerprints(min_fragment_length)
+        scores = np.array(list(raw_scores.values()), dtype=float)
+        probs = norm.cdf((scores + 0.5 - N0) / np.sqrt(self._score_dispersion * N0))
         return dict(zip(raw_scores.keys(), probs.tolist()))
+
+
+def _sample_posting_counts(
+    lengths: np.ndarray, n_chunks: int = 1000, chunk_size: int = 10_000
+) -> np.ndarray:
+    """Posting counts of up to n_chunks * chunk_size fingerprints, read as evenly
+    spaced contiguous chunks of the (memory-mapped) lengths array.
+
+    Fingerprints are stored in hash order, which is unrelated to their frequency,
+    so the chunks form an unbiased sample at a tiny fraction of the I/O of a full
+    pass over a multi-GB array.
+    """
+    n = len(lengths)
+    if n <= n_chunks * chunk_size:
+        return np.asarray(lengths)
+    starts = np.linspace(0, n - chunk_size, n_chunks).astype(np.int64)
+    return np.concatenate([lengths[s : s + chunk_size] for s in starts])
 
 
 class NbSharedFingerprintsDetector(_BaseDetector):
@@ -211,31 +346,39 @@ class NbSharedFingerprintsDetector(_BaseDetector):
 
     Scores each candidate document by the sum of fingerprint weights over its
     unique shared fingerprints — either the raw count (uniform weights, default)
-    or a rarity-weighted sum.
+    or a rarity-weighted sum (IDF-like weights, see
+    :meth:`_BaseDetector._get_fingerprint_weights`).
 
     Parameters
     ----------
-    index_dir : str
-        Path to the disk-based winnowing index directory.
+    index : str or indexing.DiskBasedIndex
+        Path to the disk-based winnowing index directory, or an opened index.
     top_k : int
         Number of closest candidate documents to retrieve per query (default: 50).
-    min_fingerprints : int
-        Minimum number of shared fingerprints for a candidate to be considered a
-        match (default: 5).
+    min_probability : float
+        Documents below this containment probability are not returned, nor even
+        scored (default: 0.05; see :class:`_BaseDetector`).
     rarity_weighted : bool
         If ``True``, score by rarity-weighted fingerprint sum rather than raw count
         (default: ``False``).
+    dispersion : float
+        Variance-to-mean ratio of the shared-fingerprint count used when converting
+        scores to probabilities (default: 0.5).
+    nb_cpus : int
+        Number of CPUs available; sets the number of parallel posting-read threads
+        when ``index`` is a path (default: 1; see :class:`_BaseDetector`).
+    min_fingerprints : int, optional
+        Explicit minimum shared-fingerprint count for retrieval, overriding the
+        value derived from ``min_probability`` (default: ``None``).
 
     """
 
-    def get_containment_scores(
-        self, text: str, min_fragment_length: float = 1000.0
-    ) -> dict[str, float]:
-        """Return a containment-probability score for each candidate document.
+    def search(self, text: str, min_fragment_length: float = 1000.0) -> dict[str, float]:
+        """Find the indexed documents likely to contain a passage of ``text``.
 
         Scores each candidate by the total sum of fingerprint weights over
         unique shared fingerprints, then converts that sum to a probability
-        using the Poisson model in :meth:`_normalise_scores`.
+        with :meth:`_normalise_scores`.
 
         Parameters
         ----------
@@ -247,21 +390,11 @@ class NbSharedFingerprintsDetector(_BaseDetector):
         Returns
         -------
         dict[str, float]
-            Mapping from external document id to containment probability in
-            :math:`[0, 1]`.
+            Mapping from external document id to containment probability, for the
+            documents whose probability is at least ``min_probability``.
 
         """
-
-        if len(text) < min_fragment_length:
-            warnings.warn(
-                f"Query ({len(text)} chars) is shorter than min_fragment_length "
-                f"({min_fragment_length} chars)",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        df_query = self.get_fingerprints(text)
-        df_candidates = self._get_candidates(df_query["hash"])
+        df_query, df_candidates = self._retrieve_candidates(text, min_fragment_length)
         if df_candidates.height == 0:
             return {}
 
@@ -286,9 +419,7 @@ class NbSharedFingerprintsDetector(_BaseDetector):
             pl.col("weight").sum().alias("raw_score")
         )
         raw_scores = dict(zip(df_scores["doc_match_id"], df_scores["raw_score"]))
-
-        # Convert the raw fingerprint scores to containment probabilities using the Poisson model.
-        return self._normalise_scores(raw_scores, min_fragment_length)
+        return self._to_probabilities(raw_scores, min_fragment_length)
 
 
 class FingerprintChainDetector(_BaseDetector):
@@ -302,13 +433,13 @@ class FingerprintChainDetector(_BaseDetector):
 
     Parameters
     ----------
-    index_dir : str
-        Path to the disk-based winnowing index directory.
+    index : str or indexing.DiskBasedIndex
+        Path to the disk-based winnowing index directory, or an opened index.
     top_k : int
         Number of closest candidate documents to retrieve per query (default: 50).
-    min_fingerprints : int
-        Minimum number of shared fingerprints for a candidate to be considered a
-        match (default: 5).
+    min_probability : float
+        Documents below this containment probability are not returned, nor even
+        scored (default: 0.05; see :class:`_BaseDetector`).
     method : str
         Clustering method: ``"rectangle"`` (default), ``"euclidean"``,
         ``"cityblock"``, or ``"chebyshev"``.
@@ -327,36 +458,54 @@ class FingerprintChainDetector(_BaseDetector):
     rarity_weighted : bool
         If ``True``, score by the largest rarity-weighted cluster sum rather than
         the largest cluster count (default: ``False``).
+    dispersion : float
+        Variance-to-mean ratio of the shared-fingerprint count used when converting
+        scores to probabilities (default: 0.5).
+    nb_cpus : int
+        Number of CPUs available; sets the number of parallel posting-read threads
+        when ``index`` is a path (default: 1; see :class:`_BaseDetector`).
+    min_fingerprints : int, optional
+        Explicit minimum shared-fingerprint count for retrieval, overriding the
+        value derived from ``min_probability`` (default: ``None``).
 
     """
 
     def __init__(
         self,
-        index_dir: str,
+        index: Union[str, indexing.DiskBasedIndex],
         top_k: int = 50,
-        min_fingerprints: int = 5,
+        min_probability: float = 0.05,
         rarity_weighted: bool = False,
         method: str = "rectangle",
         position_threshold: int = 30,
         offset_threshold: int = 30,
         distance_threshold: int = 30,
         min_cluster_size: int = 5,
+        dispersion: float = 0.5,
+        nb_cpus: int = 1,
+        min_fingerprints: Optional[int] = None,
     ):
-        super().__init__(index_dir, top_k, min_fingerprints, rarity_weighted)
+        super().__init__(
+            index,
+            top_k=top_k,
+            min_probability=min_probability,
+            rarity_weighted=rarity_weighted,
+            dispersion=dispersion,
+            nb_cpus=nb_cpus,
+            min_fingerprints=min_fingerprints,
+        )
         self.method = method
         self.position_threshold = position_threshold
         self.offset_threshold = offset_threshold
         self.distance_threshold = distance_threshold
         self.min_cluster_size = min_cluster_size
 
-    def get_containment_scores(
-        self, text: str, min_fragment_length: float = 1000.0
-    ) -> dict[str, float]:
-        """Return a containment-probability score for each candidate document.
+    def search(self, text: str, min_fragment_length: float = 1000.0) -> dict[str, float]:
+        """Find the indexed documents likely to contain a passage of ``text``.
 
         Clusters shared fingerprints in the 2-D ``(position_query, offset)``
         space; the weight sum of the largest surviving cluster is converted to
-        a probability using the same Poisson model as
+        a probability with :meth:`_normalise_scores`, as in
         :class:`NbSharedFingerprintsDetector`.
 
         Parameters
@@ -365,26 +514,16 @@ class FingerprintChainDetector(_BaseDetector):
             The query document to search for.
         min_fragment_length : float
             Minimum matching-passage length in characters (default 1 000).
-            Defines the Poisson threshold :math:`N_0`.
+            Defines the expected fingerprint count :math:`N_0`.
 
         Returns
         -------
         dict[str, float]
-            Mapping from external document id to containment probability in
-            :math:`[0, 1]`.
+            Mapping from external document id to containment probability, for the
+            documents whose probability is at least ``min_probability``.
 
         """
-
-        if len(text) < min_fragment_length:
-            warnings.warn(
-                f"Query ({len(text)} chars) is shorter than min_fragment_length "
-                f"({min_fragment_length} chars)",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        df_query = self.get_fingerprints(text)
-        df_candidates = self._get_candidates(df_query["hash"])
+        df_query, df_candidates = self._retrieve_candidates(text, min_fragment_length)
         if df_candidates.height == 0:
             return {}
 
@@ -396,7 +535,7 @@ class FingerprintChainDetector(_BaseDetector):
                 df_query, df_candidates, fingerprint_weights, doc_id
             )
 
-        return self._normalise_scores(raw_scores, min_fragment_length)
+        return self._to_probabilities(raw_scores, min_fragment_length)
 
     def _score_doc(
         self,
@@ -615,21 +754,19 @@ def convert_closest_matches_with_positions_to_df(
     for rank, (doc_id, hash_positions) in enumerate(
         closest_with_positions.items(), start=1
     ):
+        # Flatten {hash: [positions]} directly rather than via explode(): no empty
+        # lists are involved, so the frame is simpler and Polars-version independent.
+        hashes = [h for h, positions in hash_positions.items() for _ in positions]
+        positions = [p for positions in hash_positions.values() for p in positions]
         frames.append(
             pl.DataFrame(
                 {
-                    "hash": pl.Series(list(hash_positions.keys()), dtype=pl.UInt64),
-                    "position": list(hash_positions.values()),
+                    "doc_match_id": pl.Series([doc_id] * len(hashes), dtype=pl.Utf8),
+                    "doc_match_closeness_rank": pl.Series([rank] * len(hashes), dtype=pl.Int32),
+                    "hash": pl.Series(hashes, dtype=pl.UInt64),
+                    "position": pl.Series(positions, dtype=pl.Int32),
                 }
             )
-            .explode("position")
-            .with_columns(
-                pl.lit(doc_id).alias("doc_match_id"),
-                pl.lit(rank, dtype=pl.Int32).alias("doc_match_closeness_rank"),
-                pl.col("hash").cast(pl.UInt64),
-                pl.col("position").cast(pl.Int32),
-            )
-            .select(["doc_match_id", "doc_match_closeness_rank", "hash", "position"])
         )
     return pl.concat(frames)
 
@@ -695,16 +832,29 @@ def main() -> None:
         help="Number of candidate documents to retrieve from the index (default: 50).",
     )
     parser.add_argument(
+        "--min-probability",
+        type=float,
+        default=0.05,
+        metavar="P",
+        help="Drop documents below this containment probability (default: 0.05).",
+    )
+    parser.add_argument(
         "--min-fingerprints",
         type=int,
-        default=5,
+        default=None,
         metavar="N",
-        help="Minimum shared fingerprints for a candidate to be considered (default: 5).",
+        help="Explicit minimum shared fingerprints for retrieval (default: derived from --min-probability).",
     )
     parser.add_argument(
         "--rarity-weighted",
         action="store_true",
-        help="Weight fingerprints by rarity instead of counting uniformly.",
+        help="Weight fingerprints by rarity (IDF-like) instead of counting uniformly.",
+    )
+    parser.add_argument(
+        "--dispersion",
+        type=float,
+        default=0.5,
+        help="Variance-to-mean ratio of the shared-fingerprint count (default: 0.5).",
     )
 
     # ── FingerprintChainDetector parameters ─────────────────────────────── #
@@ -744,6 +894,18 @@ def main() -> None:
         help="Minimum cluster size; smaller clusters are discarded (default: 5).",
     )
 
+    # ── Resources ───────────────────────────────────────────────────────── #
+    parser.add_argument(
+        "--nb-cpus",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Number of CPUs available, used as parallel posting-read threads "
+            "(default: 1; only helps on cold or network storage)."
+        ),
+    )
+
     # ── Output ──────────────────────────────────────────────────────────── #
     parser.add_argument(
         "--top-n",
@@ -779,15 +941,21 @@ def main() -> None:
         detector = NbSharedFingerprintsDetector(
             args.index_dir,
             top_k=args.top_k,
+            min_probability=args.min_probability,
             min_fingerprints=args.min_fingerprints,
             rarity_weighted=args.rarity_weighted,
+            dispersion=args.dispersion,
+            nb_cpus=args.nb_cpus,
         )
     else:
         detector = FingerprintChainDetector(
             args.index_dir,
             top_k=args.top_k,
+            min_probability=args.min_probability,
             min_fingerprints=args.min_fingerprints,
             rarity_weighted=args.rarity_weighted,
+            dispersion=args.dispersion,
+            nb_cpus=args.nb_cpus,
             method=args.method,
             position_threshold=args.position_threshold,
             offset_threshold=args.offset_threshold,
@@ -796,9 +964,7 @@ def main() -> None:
         )
 
     # ── Score ────────────────────────────────────────────────────────────── #
-    scores = detector.get_containment_scores(
-        text, min_fragment_length=args.min_fragment_length
-    )
+    scores = detector.search(text, min_fragment_length=args.min_fragment_length)
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     if args.top_n > 0:
