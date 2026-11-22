@@ -13,6 +13,15 @@ zstandard
 # Optional: faster gzip decompression (Intel ISA-L). Falls back to stdlib gzip if absent.
 isal
 
+# Optional: used only by experiments/eval.py (evaluation metrics).
+scikit-learn
+
+# Optional: used only by experiments/baselines.py (dense-retrieval baseline).
+# sentence-transformers pulls in torch and transformers. Install separately when needed:
+#   faiss-cpu
+#   sentence-transformers
+#   huggingface_hub
+
 # Optional (heavy, GPU): used only in experiments/eval_sampler.py for LLM generation.
 # Install separately when needed:
 #   vllm

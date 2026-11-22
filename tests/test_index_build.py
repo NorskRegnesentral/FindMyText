@@ -188,7 +188,7 @@ def test_parallel_build_accepts_generator_with_modern_start_methods(tmp_path, st
         "from findmytext import index_builder\n"
         "if __name__ == '__main__':\n"
         f"    mp.set_start_method({start_method!r})\n"
-        f"    shards = index_builder.Indexer(nb_workers=2, max_memory_gb=1e-9).index_file({str(source)!r}, {str(tmp_path / 'shards')!r})\n"
+        f"    shards = index_builder.Indexer(n_workers=2, max_memory_gb=1e-9).index_file({str(source)!r}, {str(tmp_path / 'shards')!r})\n"
         f"    index_builder.Merger().merge(shards, {str(tmp_path / 'index')!r})\n"
     )
     completed = subprocess.run(
@@ -216,7 +216,7 @@ def test_single_worker_avoids_process_pool_and_errors_are_not_success(tmp_path, 
 def test_parallel_fingerprint_errors_reach_the_caller():
     stream = iter([{"id": "bad", "text": 123}])
     with pytest.raises(TypeError):
-        list(index_builder.Indexer(nb_workers=2)._get_batched_fingerprints(stream, None))
+        list(index_builder.Indexer(n_workers=2)._get_batched_fingerprints(stream, None))
 
 
 def write_shard(path, meta):
@@ -295,7 +295,7 @@ def test_partitioned_merge_matches_source_and_accepts_merged_inputs(tmp_path, mo
     assert len(shards) == len(records)
     # A tiny memory budget forces many fingerprint ranges, most of them empty.
     merged = tmp_path / "merged"
-    index_builder.Merger(nb_workers=2, max_memory_gb=1e-6).merge(shards, str(merged))
+    index_builder.Merger(n_workers=2, max_memory_gb=1e-6).merge(shards, str(merged))
     reader = assert_index_matches_source(merged, records)
     assert not (merged / "_parts").exists()
     assert reader.get_metadata()["hash_method"] == HASH_METHOD
@@ -311,7 +311,7 @@ def test_partitioned_merge_matches_source_and_accepts_merged_inputs(tmp_path, mo
     assert_index_matches_source(tmp_path / "again", records)
     index_builder.Merger().merge_dir(str(tmp_path / "shards"), str(tmp_path / "again-engine"))
     assert_index_matches_source(tmp_path / "again-engine", records)
-    final = index_builder.merge_indexes([merged] + extra_shards, str(tmp_path / "final"), nb_workers=2)
+    final = index_builder.merge_indexes([merged] + extra_shards, str(tmp_path / "final"), n_workers=2)
     assert final.num_documents == len(records) + 1
     assert_index_matches_source(tmp_path / "final", records + extra)
     with pytest.raises(ValueError, match="already holds an index"):
@@ -331,7 +331,7 @@ def test_build_index_produces_one_complete_index_and_feeds_detectors(tmp_path, m
     source = tmp_path / "corpus.jsonl"
     records = make_corpus(source, count=4)
     # Several shards (one per document), merged inside the index directory.
-    index = findmytext.build_index(str(source), str(tmp_path / "index"), nb_workers=2, max_memory_gb=1e-9)
+    index = findmytext.build_index(str(source), str(tmp_path / "index"), n_workers=2, max_memory_gb=1e-9)
     assert isinstance(index, indexing.DiskBasedIndex) and index.index_dir == str(tmp_path / "index")
     assert index.num_documents == len(records) == 4
     assert index.num_fingerprints == len(index.fingerprints) == len(index.offsets) > 0
@@ -350,15 +350,15 @@ def test_build_index_produces_one_complete_index_and_feeds_detectors(tmp_path, m
         assert detector.index_dir == str(tmp_path / "index")
         assert detector.search(records[0]["text"], min_fragment_length=100)[records[0]["id"]] > 0.5
     assert findmytext.FingerprintChainDetector(index).index is index
-    # nb_cpus becomes the posting-read thread count when a path is given, and
+    # n_workers becomes the posting-read thread count when a path is given, and
     # is ignored (with a warning) when the index is already open.
-    threaded = findmytext.NbSharedFingerprintsDetector(str(tmp_path / "index"), nb_cpus=2)
-    assert threaded.nb_cpus == 2 and threaded.index._io_pool._max_workers == 2
+    threaded = findmytext.NbSharedFingerprintsDetector(str(tmp_path / "index"), n_workers=2)
+    assert threaded.n_workers == 2 and threaded.index._io_pool._max_workers == 2
     assert findmytext.FingerprintChainDetector(str(tmp_path / "index")).index._io_pool is None
-    with pytest.warns(UserWarning, match="nb_cpus is ignored"):
-        assert findmytext.FingerprintChainDetector(index, nb_cpus=2).index is index
-    with pytest.raises(ValueError, match="nb_cpus"):
-        findmytext.FingerprintChainDetector(str(tmp_path / "index"), nb_cpus=0)
+    with pytest.warns(UserWarning, match="n_workers is ignored"):
+        assert findmytext.FingerprintChainDetector(index, n_workers=2).index is index
+    with pytest.raises(ValueError, match="n_workers"):
+        findmytext.FingerprintChainDetector(str(tmp_path / "index"), n_workers=0)
     with pytest.raises(ValueError, match="already holds an index"):
         findmytext.build_index(str(source), str(tmp_path / "index"))
     findmytext.build_index(str(source), str(tmp_path / "index"), stop_after=1, delete_existing=True)
@@ -386,7 +386,7 @@ def test_partition_bounds_balance_postings_of_skewed_fingerprints(tmp_path, monk
         buffer.save(shards[-1])
     total = sum(len(v) for v in expected.values())
     # A budget of 250 postings per worker share: 2400 postings -> 10 ranges.
-    merger = index_builder.Merger(nb_workers=2, max_memory_gb=2 * 250 * index_builder._BYTES_PER_POSTING / 2**30)
+    merger = index_builder.Merger(n_workers=2, max_memory_gb=2 * 250 * index_builder._BYTES_PER_POSTING / 2**30)
     bounds = merger._partition_bounds(shards, total)
     assert bounds[0] == 0 and bounds[-1] == 2**64 and bounds == sorted(set(bounds))
     assert len(bounds) - 1 >= 8
@@ -422,7 +422,7 @@ def test_merge_fails_promptly_when_a_worker_is_killed(tmp_path):
         f"    shards = index_builder.Indexer(max_memory_gb=1e-9).index_file({str(source)!r}, {str(tmp_path / 'shards')!r})\n"
         "    index_builder._merge_partition = killed\n"
         "    try:\n"
-        f"        index_builder.Merger(nb_workers=2).merge(shards, {str(tmp_path / 'index')!r})\n"
+        f"        index_builder.Merger(n_workers=2).merge(shards, {str(tmp_path / 'index')!r})\n"
         "    except RuntimeError as e:\n"
         "        print('CAUGHT', e)\n"
     )
@@ -527,7 +527,7 @@ def test_default_posting_reads_avoid_pool_and_equal_explicit_threaded_reads(tmp_
     shards = index_builder.Indexer().index_file(str(source), str(tmp_path / "shards"))
     target = tmp_path / "index"
     index_builder.Merger().merge(shards, str(target))
-    threaded = indexing.DiskBasedIndex(str(target), posting_read_threads=8)
+    threaded = indexing.DiskBasedIndex(str(target), n_workers=8)
     queries, _ = Winnower.from_metadata(threaded.get_metadata()).get_winnowed_fingerprints(
         records[0]["text"]
     )
@@ -547,4 +547,30 @@ def test_default_posting_reads_avoid_pool_and_equal_explicit_threaded_reads(tmp_
     assert sequential.get_match_counts(queries) == threaded.get_match_counts(queries)
     assert sequential._get_postings(np.empty(0, dtype=np.uint64)) == {}
     with pytest.raises(ValueError, match="at least 1"):
-        indexing.DiskBasedIndex(str(target), posting_read_threads=0)
+        indexing.DiskBasedIndex(str(target), n_workers=0)
+
+
+def test_resource_defaults_come_from_available_cpus_and_memory(monkeypatch):
+    import types
+
+    fake = types.SimpleNamespace(
+        Process=lambda: types.SimpleNamespace(cpu_affinity=lambda: [0, 2, 5]),
+        cpu_count=lambda: 64,
+        virtual_memory=lambda: types.SimpleNamespace(available=10 * 2**30),
+    )
+    monkeypatch.setattr(index_builder, "psutil", fake)
+    for cls in (index_builder.Indexer, index_builder.Merger):
+        auto = cls()
+        assert auto.n_workers == 3 and auto.max_memory_gb == pytest.approx(8.0)
+        explicit = cls(n_workers=2, max_memory_gb=0.5)
+        assert explicit.n_workers == 2 and explicit.max_memory_gb == 0.5
+    # Without an affinity mask (macOS), the logical CPU count is used instead.
+    fake.Process = lambda: types.SimpleNamespace()
+    assert index_builder.Indexer(max_memory_gb=1.0).n_workers == 64
+    merger = index_builder.Merger()
+    assert merger.n_workers == 64 and merger.max_memory_gb == pytest.approx(8.0)
+    for bad in ({"n_workers": 0}, {"max_memory_gb": 0}):
+        with pytest.raises(ValueError, match="must be positive"):
+            index_builder.Indexer(**bad)
+        with pytest.raises(ValueError, match="must be positive"):
+            index_builder.Merger(**bad)

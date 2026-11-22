@@ -37,18 +37,22 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import orjson
+import psutil
 
 from . import indexing, utils, winnower
+
 
 def build_index(
     corpus_file: str,
     index_dir: str,
     length: int = 4,
     window_size: int = 6,
-    nb_workers: int = 1,
-    max_memory_gb: float = 8.0,
+    n_workers: Optional[int] = None,
+    max_memory_gb: Optional[float] = None,
     stop_after: Optional[int] = None,
     delete_existing: bool = False,
+    min_length: Optional[int] = None,
+    max_length: Optional[int] = None,
 ) -> indexing.DiskBasedIndex:
     """Index one corpus file into a single disk-based index and open it.
 
@@ -63,11 +67,16 @@ def build_index(
         index_dir: Directory of the resulting index.
         length: k-gram length for fingerprinting (default 4).
         window_size: Winnowing window size (default 6).
-        nb_workers: Number of processes, for fingerprinting and for merging.
-        max_memory_gb: Memory budget, for the posting buffer and the merge workers.
+        n_workers: Number of processes, for fingerprinting and for merging
+            (default: the CPUs available to this process).
+        max_memory_gb: Memory budget, for the posting buffer and the merge workers
+            (default: 80% of the memory currently available; set it explicitly
+            inside a SLURM job or a container, whose limits are not detected).
         stop_after: If set, index only the first stop_after documents.
         delete_existing: If True, an existing index_dir is deleted first; otherwise a
             directory already holding an index raises an error.
+        min_length: If set, only index documents with at least this many characters.
+        max_length: If set, only index documents with at most this many characters.
 
     Returns:
         The opened index, ready to be passed to a detector.
@@ -78,13 +87,14 @@ def build_index(
         elif os.path.isfile(os.path.join(index_dir, "meta.json")):
             raise ValueError(f"{index_dir} already holds an index; pass delete_existing=True to rebuild it")
     shards_dir = os.path.join(index_dir, "shards")
-    indexer = Indexer(length, window_size, nb_workers, max_memory_gb)
-    shards = indexer.index_file(corpus_file, shards_dir, stop_after, delete_existing=True)
+
+    indexer = Indexer(length, window_size, n_workers, max_memory_gb)
+    shards = indexer.index_file(corpus_file, shards_dir, stop_after, min_length=min_length, max_length=max_length)
     if len(shards) == 1:  # a single shard already is the final index
         for name in os.listdir(shards[0]):
             os.replace(os.path.join(shards[0], name), os.path.join(index_dir, name))
     else:
-        Merger(nb_workers, max_memory_gb).merge(shards, index_dir)
+        Merger(n_workers, max_memory_gb).merge(shards, index_dir)
     shutil.rmtree(shards_dir)
     return indexing.DiskBasedIndex(index_dir)
 
@@ -92,8 +102,8 @@ def build_index(
 def merge_indexes(
     sources: Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]],
     output_dir: Union[str, os.PathLike],
-    nb_workers: int = 1,
-    max_memory_gb: float = 8.0,
+    n_workers: Optional[int] = None,
+    max_memory_gb: Optional[float] = None,
     delete_existing: bool = False,
 ) -> indexing.DiskBasedIndex:
     """Merge several indexes into a single disk-based index and open it.
@@ -104,8 +114,11 @@ def merge_indexes(
             single directory whose subdirectories holding a meta.json are merged, in
             sorted name order.
         output_dir: Directory of the merged index.
-        nb_workers: Number of processes merging fingerprint ranges in parallel.
-        max_memory_gb: Memory budget shared by the workers.
+        n_workers: Number of processes merging fingerprint ranges in parallel
+            (default: the CPUs available to this process).
+        max_memory_gb: Memory budget shared by the workers (default: 80% of the
+            memory currently available; set it explicitly inside a SLURM job or a
+            container, whose limits are not detected).
         delete_existing: If True, an existing output_dir is deleted first; otherwise a
             directory already holding an index raises an error.
 
@@ -126,7 +139,7 @@ def merge_indexes(
             shutil.rmtree(output_dir)
         elif os.path.isfile(os.path.join(output_dir, "meta.json")):
             raise ValueError(f"{output_dir} already holds an index; pass delete_existing=True to replace it")
-    Merger(nb_workers, max_memory_gb).merge(index_dirs, output_dir)
+    Merger(n_workers, max_memory_gb).merge(index_dirs, output_dir)
     return indexing.DiskBasedIndex(output_dir)
 
 
@@ -156,28 +169,42 @@ class Indexer:
     Args:
         length: k-gram length for fingerprinting (default 4).
         window_size: Winnowing window size (default 6).
-        nb_workers: Process budget, including the parent that reads and inserts.
-            Values above one use nb_workers - 1 fingerprint workers; nb_workers=1
-            fingerprints directly in the parent.
+        n_workers: Process budget, including the parent that reads and inserts.
+            Values above one use n_workers - 1 fingerprint workers; n_workers=1
+            fingerprints directly in the parent (default: the CPUs available to
+            this process).
         max_memory_gb: Memory budget for the posting buffer; a shard is written
-            whenever the buffer would exceed it.
+            whenever the buffer would exceed it (default: 80% of the memory
+            currently available, see _resolve_resources).
     """
 
     def __init__(
-        self, length: int = 4, window_size: int = 6, nb_workers: int = 1, max_memory_gb: float = 8.0
+        self,
+        length: int = 4,
+        window_size: int = 6,
+        n_workers: Optional[int] = None,
+        max_memory_gb: Optional[float] = None,
     ):
-        if nb_workers < 1 or max_memory_gb <= 0:
-            raise ValueError("Worker count and memory budget must be positive")
+        if n_workers is None:
+            process = psutil.Process()
+            n_workers = len(process.cpu_affinity()) if hasattr(process, "cpu_affinity") else psutil.cpu_count()
+        if max_memory_gb is None:
+            max_memory_gb = 0.8 * psutil.virtual_memory().available / 2**30
+        
+        self.n_workers, self.max_memory_gb = n_workers, max_memory_gb
+        if self.n_workers < 1 or self.max_memory_gb <= 0:
+            raise ValueError("n_workers and max_memory_gb must be positive")
+  
         self.winnower = winnower.Winnower(length=length, window_size=window_size)
-        self.nb_workers = nb_workers
-        self.max_postings = int(max_memory_gb * 2**30 / PostingBuffer.PEAK_BYTES_PER_POSTING)
+        self.max_postings = int(self.max_memory_gb * 2**30 / PostingBuffer.PEAK_BYTES_PER_POSTING)
 
     def index_file(
         self,
         corpus_file: str,
         output_dir: str,
         stop_after: Optional[int] = None,
-        delete_existing: bool = False,
+        min_length: Optional[int] = None,
+        max_length: Optional[int] = None,
     ) -> List[str]:
         """Index documents from a corpus file and save index shards to output_dir.
 
@@ -192,7 +219,8 @@ class Indexer:
                 identifier) and a "text" field (document content).
             output_dir: Directory where the shard directories will be created.
             stop_after: If set, stop after this many documents (useful for testing).
-            delete_existing: If True, delete output_dir before starting.
+            min_length: If set, only index documents with at least this many characters.
+            max_length: If set, only index documents with at most this many characters.
 
         Returns:
             List of paths to the saved shard directories.
@@ -203,9 +231,9 @@ class Indexer:
             raise ValueError("stop_after must be nonnegative")
 
         if corpus_file.endswith((".jsonl", ".jsonl.gz")):
-            stream = utils.stream_jsonl(corpus_file)
+            stream = utils.stream_jsonl(corpus_file, min_length=min_length, max_length=max_length)
         elif corpus_file.endswith(".jsonl.zst"):
-            stream = utils.stream_json_zst(corpus_file)
+            stream = utils.stream_json_zst(corpus_file, min_length=min_length, max_length=max_length)
         else:
             raise ValueError(
                 "Unsupported file format. Please provide a .jsonl, .jsonl.gz, or .jsonl.zst file."
@@ -213,15 +241,12 @@ class Indexer:
         print("Indexing documents from", corpus_file)
 
         if os.path.exists(output_dir):
-            if delete_existing:
-                print(f"Deleting existing output directory: {output_dir}")
-                shutil.rmtree(output_dir)
-            elif not os.path.isdir(output_dir):
+            if not os.path.isdir(output_dir):
                 raise ValueError(f"Output path {output_dir} exists and is not a directory")
         os.makedirs(output_dir, exist_ok=True)
         print("Index shards will be saved to", output_dir)
         print(
-            f"Indexing with {self.nb_workers} processes, flushing every "
+            f"Indexing with {self.n_workers} processes, flushing every "
             f"{self.max_postings:,} postings...", flush=True,
         )
 
@@ -265,18 +290,18 @@ class Indexer:
         """
         batch_winnower = self.winnower.get_winnowed_fingerprints_batch
         batches = utils.generate_batches(stream, stop_after)
-        if self.nb_workers == 1:
+        if self.n_workers == 1:
             for batch in batches:
                 yield batch_winnower(batch)
             return
-        n_workers = self.nb_workers - 1
+        n_extractors = self.n_workers - 1
         # Spawned workers (not forked: the parent may hold numpy/polars threads).  The
         # corpus generator stays in the parent, since it cannot be pickled.
-        pool = ProcessPoolExecutor(n_workers, mp_context=mp.get_context("spawn"))
+        pool = ProcessPoolExecutor(n_extractors, mp_context=mp.get_context("spawn"))
         try:
             pending: deque = deque()
             for batch in batches:
-                if len(pending) >= n_workers:
+                if len(pending) >= n_extractors:
                     yield pending.popleft().result()
                 pending.append(pool.submit(batch_winnower, batch))
             while pending:
@@ -284,7 +309,7 @@ class Indexer:
         except BrokenProcessPool as e:
             raise RuntimeError(
                 "A fingerprinting worker died unexpectedly (most likely killed by the kernel for "
-                "running out of memory): lower nb_workers or raise the job's memory limit."
+                "running out of memory): lower n_workers or raise the job's memory limit."
             ) from e
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
@@ -449,19 +474,28 @@ class Merger:
     """Merges index directories into one, with fixed resource limits.
 
     Args:
-        nb_workers: Number of worker processes merging fingerprint ranges in parallel.
+        n_workers: Number of worker processes merging fingerprint ranges in parallel.
             Each worker alternates between reading, sorting and writing, so 1.5 workers
-            per CPU keeps both the CPUs and the filesystem busy.
+            per CPU keeps both the CPUs and the filesystem busy (default: the CPUs
+            available to this process).
         max_memory_gb: Memory budget shared by the workers.  It only determines how
             many fingerprint ranges the merge is split into; a smaller budget means
-            more, smaller ranges.
+            more, smaller ranges (default: 80% of the memory currently available,
+            see _resolve_resources).
     """
 
-    def __init__(self, nb_workers: int = 1, max_memory_gb: float = 8.0):
-        if nb_workers < 1 or max_memory_gb <= 0:
-            raise ValueError("nb_workers and max_memory_gb must be positive")
-        self.nb_workers = nb_workers
-        self.max_memory_gb = max_memory_gb
+    def __init__(self, n_workers: Optional[int] = None, max_memory_gb: Optional[float] = None):
+
+        if n_workers is None:
+            process = psutil.Process()
+            n_workers = len(process.cpu_affinity()) if hasattr(process, "cpu_affinity") else psutil.cpu_count()
+        if max_memory_gb is None:
+            max_memory_gb = 0.8 * psutil.virtual_memory().available / 2**30
+        
+        self.n_workers, self.max_memory_gb = n_workers, max_memory_gb
+        if self.n_workers < 1 or self.max_memory_gb <= 0:
+            raise ValueError("n_workers and max_memory_gb must be positive")
+
 
     def merge_dir(self, shards_dir: str, output_dir: str) -> None:
         """Merge every index shard found in shards_dir (subdirectories containing a
@@ -499,13 +533,13 @@ class Merger:
 
         # Workers write the postings in place and the small per-fingerprint arrays of
         # their range as part files; only counts travel back through the pool.
-        print(f"Merging {len(tasks)} fingerprint ranges with {self.nb_workers} workers...", flush=True)
+        print(f"Merging {len(tasks)} fingerprint ranges with {self.n_workers} workers...", flush=True)
         n_postings, n_fingerprints = 0, 0
         progress = _Progress(len(tasks), "ranges")
         # A ProcessPoolExecutor (unlike multiprocessing.Pool) fails every pending task
         # when a worker is killed, e.g. by the OOM killer of a SLURM job, instead of
         # silently replacing the worker and waiting forever for the lost task.
-        pool = ProcessPoolExecutor(self.nb_workers, mp_context=mp.get_context("spawn"))
+        pool = ProcessPoolExecutor(self.n_workers, mp_context=mp.get_context("spawn"))
         try:
             pending = {pool.submit(_merge_partition, task) for task in tasks}
             while pending:
@@ -518,7 +552,7 @@ class Merger:
         except BrokenProcessPool as e:
             raise RuntimeError(
                 "A merge worker died unexpectedly (most likely killed by the kernel for "
-                "running out of memory): lower nb_workers or raise the job's memory limit."
+                "running out of memory): lower n_workers or raise the job's memory limit."
             ) from e
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
@@ -543,7 +577,7 @@ class Merger:
     def _partition_bounds(self, index_dirs: List[str], total_postings: int) -> List[int]:
         """Split the 64-bit fingerprint space into ranges of about equal posting counts.
 
-        The number of ranges is the larger of nb_workers (so every worker has a job)
+        The number of ranges is the larger of n_workers (so every worker has a job)
         and the count needed for one range's postings to fit the per-worker share of
         the memory budget.  The bounds are approximate posting-count quantiles: every
         input contributes the fingerprints found at evenly spaced posting ranks (100 per
@@ -551,8 +585,8 @@ class Merger:
         sorted, weighted samples.  Returns strictly increasing boundaries from 0 to
         2**64, normally n_parts + 1 of them.
         """
-        postings_per_part = self.max_memory_gb * 2**30 / self.nb_workers / _BYTES_PER_POSTING
-        n_parts = max(self.nb_workers, -(-total_postings // int(max(postings_per_part, 1))))
+        postings_per_part = self.max_memory_gb * 2**30 / self.n_workers / _BYTES_PER_POSTING
+        n_parts = max(self.n_workers, -(-total_postings // int(max(postings_per_part, 1))))
         samples, weights = [], []
         for index_dir in index_dirs:
             fingerprints = np.load(os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r")
@@ -741,16 +775,22 @@ if __name__ == "__main__":
     merge_parser.add_argument("--delete_existing", action="store_true", help="Replace an existing index")
 
     for p in (index_parser, merge_parser):
-        p.add_argument("--nb_workers", type=int, default=1, help="Number of worker processes (default: 1)")
-        p.add_argument("--max_memory_gb", type=float, default=8.0, help="Memory budget in GB (default: 8)")
+        p.add_argument(
+            "--n_workers", type=int, default=None,
+            help="Number of worker processes (default: the CPUs available to the process)",
+        )
+        p.add_argument(
+            "--max_memory_gb", type=float, default=None,
+            help="Memory budget in GB (default: 80%% of the available memory; set it inside SLURM jobs)",
+        )
 
     args = parser.parse_args()
     if args.task == "index":
         build_index(
-            args.corpus_file, args.index_dir, args.length, args.window_size, args.nb_workers,
+            args.corpus_file, args.index_dir, args.length, args.window_size, args.n_workers,
             args.max_memory_gb, args.stop_after, args.delete_existing,
         )
     else:
         merge_indexes(
-            args.indexes_dir, args.output_dir, args.nb_workers, args.max_memory_gb, args.delete_existing
+            args.indexes_dir, args.output_dir, args.n_workers, args.max_memory_gb, args.delete_existing
         )

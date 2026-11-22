@@ -68,14 +68,15 @@ class DiskBasedIndex:
     file that is accessed on demand.
     """
 
-    def __init__(self, index_dir: str, posting_read_threads: int = 1):
-        """Load a positional index; one posting-read thread avoids creating a pool.
+    def __init__(self, index_dir: str, n_workers: int = 1):
+        """Load a positional index; ``n_workers`` threads read posting lists in
+        parallel, and the default of one avoids creating a pool.
 
-        Explicit larger counts are available for workloads that benefit from
-        concurrent reads. This setting does not control index-build processes.
+        Larger counts are for workloads that benefit from concurrent reads (cold
+        or network storage).  This setting does not control index-build processes.
         """
-        if posting_read_threads < 1:
-            raise ValueError("posting_read_threads must be at least 1")
+        if n_workers < 1:
+            raise ValueError("n_workers must be at least 1")
         self.index_dir = index_dir
         with open(os.path.join(index_dir, "meta.json"), "r", encoding="utf-8") as f:
             meta = orjson.loads(f.read())
@@ -109,8 +110,8 @@ class DiskBasedIndex:
         # multiple threads without a shared seek position.
         self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
         self._io_pool = (
-            ThreadPoolExecutor(max_workers=posting_read_threads)
-            if posting_read_threads > 1 else None
+            ThreadPoolExecutor(max_workers=n_workers)
+            if n_workers > 1 else None
         )
 
     def _load_fingerprint_blocks(self, index_dir: str) -> np.ndarray:
