@@ -228,6 +228,18 @@ def test_lookups_across_many_blocks_and_posting_counts(tmp_path):
     totals = reader.get_match_counts(values, min_fingerprints=1, top_k=5)
     assert totals == {f"doc{d}": len(range(d, n, 5)) for d in range(5)}
 
+    # Reader threads fetch the lookup arrays from the files, in batches, instead of
+    # through the memory maps: same positions, counts and postings.
+    threaded = indexing.DiskBasedIndex(str(tmp_path / "index"), n_workers=4)
+    probes = np.concatenate([mixed, u64(0, U64_MAX)])
+    np.testing.assert_array_equal(threaded._lookup(probes), reader._lookup(probes))
+    np.testing.assert_array_equal(posting_counts(threaded, mixed), mixed_counts)
+    threaded_postings = threaded._get_postings(np.concatenate([values[subset], absent[:20]]))
+    assert list(threaded_postings) == list(postings)
+    for fingerprint, records in postings.items():
+        np.testing.assert_array_equal(threaded_postings[fingerprint], records)
+    assert threaded.get_match_counts(values, min_fingerprints=1, top_k=5) == totals
+
 
 def test_index_without_fingerprints_answers_every_query_with_nothing(tmp_path):
     reader = build_index(tmp_path / "empty", {"lonely": []})

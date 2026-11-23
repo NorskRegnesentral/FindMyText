@@ -176,6 +176,8 @@ def test_rarity_weights_are_idf_like_and_normalised_to_unit_occurrence_mean(tmp_
     # Weights follow log(1 + N / cf) / mean and so decrease with the posting count;
     # the corpus has fingerprints seen 7 and 14 times (the shared text is repeated).
     hashes = np.unique(detector.get_fingerprints(records[0]["text"])[0])
+    # Queries use every k-gram, the index only the winnowed ones: keep those indexed.
+    hashes = hashes[weighting.posting_counts(hashes) > 0]
     values = detector._fingerprint_weights(hashes)
     posting_counts = weighting.posting_counts(hashes)
     assert posting_counts.min() >= 1 and posting_counts.min() < posting_counts.max()

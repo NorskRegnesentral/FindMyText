@@ -15,10 +15,11 @@ Directories in this format are written by index_builder.PostingBuffer.
 """
 
 import heapq
+import itertools
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import orjson  # 3-5x faster JSON parsing
@@ -96,8 +97,9 @@ class DiskBasedIndex:
     """
 
     def __init__(self, index_dir: str, n_workers: int = 1):
-        """Load a positional index; ``n_workers`` threads read posting lists in
-        parallel, and the default of one avoids creating a pool.
+        """Load a positional index; ``n_workers`` threads read the fingerprint
+        lookup arrays and the posting lists in parallel, and the default of one
+        avoids creating a pool.
 
         Larger counts are for workloads that benefit from concurrent reads (cold
         or network storage).  This setting does not control index-build processes.
@@ -109,6 +111,10 @@ class DiskBasedIndex:
             meta = orjson.loads(f.read())
         # Round-tripping through Winnower validates hash_method and normalises the keys.
         self._meta = winnower.Winnower.from_metadata(meta).to_metadata()
+        self._io_pool = (
+            ThreadPoolExecutor(max_workers=n_workers)
+            if n_workers > 1 else None
+        )
 
         # Load index arrays as memory-mapped files
         print("Loading index arrays...", end="", flush=True)
@@ -116,10 +122,14 @@ class DiskBasedIndex:
             os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r"
         )
         self._lookup = _TwoLevelSearch(
-            self.fingerprints, np.load(os.path.join(index_dir, FINGERPRINT_BLOCKS_FILE))
+            self.fingerprints,
+            np.load(os.path.join(index_dir, FINGERPRINT_BLOCKS_FILE)),
+            read_blocks=_ArrayReader(self.fingerprints, self._io_pool).slices,
         )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
+        self._offset_reader = _ArrayReader(self.offsets, self._io_pool)
+        self._length_reader = _ArrayReader(self.lengths, self._io_pool)
         print("done.", flush=True)
 
         # Load doc-ID mapping as memory-mapped arrays wrapped in a lazy accessor
@@ -136,10 +146,6 @@ class DiskBasedIndex:
         # Raw fd (not a file object) so os.pread can be called concurrently from
         # multiple threads without a shared seek position.
         self._posting_fd = os.open(os.path.join(index_dir, "postings.dat"), os.O_RDONLY)
-        self._io_pool = (
-            ThreadPoolExecutor(max_workers=n_workers)
-            if n_workers > 1 else None
-        )
 
     def get_metadata(self) -> dict:
         """Fingerprint parameters the index was built with (see ``Winnower.to_metadata``).
@@ -360,34 +366,24 @@ class DiskBasedIndex:
         idx = idx_clipped[mask]
 
         # 3. get offsets and lengths
-        offsets = self.offsets[idx]
-        lengths = self.lengths[idx]
+        offsets = self._offset_reader.take(idx)
+        lengths = self._length_reader.take(idx)
 
         found_fingerprints = queries[mask]
 
         # 4. sort by file offset to favour sequential I/O and reduce random seeks
         order = np.argsort(offsets)
         found_fingerprints = found_fingerprints[order]
-        offsets = offsets[order]
-        lengths = lengths[order]
-
-        # os.pread avoids a shared seek position in the optional threaded path.
-        def _read_one(args):
-            fp, offset, length = args
-            data = os.pread(self._posting_fd, int(length) * 8, int(offset))
-            return fp, data
+        sizes = lengths[order].astype(np.int64) * POSTING_DTYPE.itemsize
+        spans = list(zip(offsets[order].tolist(), sizes.tolist()))
 
         results = {}
-        read_args = zip(found_fingerprints, offsets, lengths)
-        read_iter = (
-            self._io_pool.map(_read_one, read_args)
-            if self._io_pool is not None else map(_read_one, read_args)
-        )
+        read_iter = _pread_spans(self._posting_fd, spans, self._io_pool)
         if verbose:
             read_iter = tqdm.tqdm(
                 read_iter, total=len(found_fingerprints), desc="Retrieving postings"
             )
-        for fp, data in read_iter:
+        for data, fp in zip(read_iter, found_fingerprints):
             postings_array = np.frombuffer(
                 data, dtype=[("doc_id", np.uint32), ("position", np.uint32)]
             )
@@ -408,6 +404,66 @@ class DiskBasedIndex:
             self._io_pool.shutdown(wait=False)
 
 
+def _pread_spans(
+    fd: int, spans: List[Tuple[int, int]], pool: Optional[ThreadPoolExecutor] = None
+) -> Iterator[bytes]:
+    """Yield the ``size`` bytes at ``offset`` of ``fd`` for each ``(offset, size)``
+    span, in the order given.
+
+    os.pread has no shared seek position and releases the GIL, so with a thread pool
+    the reads overlap, which is what pays off on cold or network storage.
+    """
+    if pool is None:
+        return (os.pread(fd, size, offset) for offset, size in spans)
+
+    def read(batch):
+        return [os.pread(fd, size, offset) for offset, size in batch]
+
+    # A few batches per thread rather than one task per read: dispatching a task
+    # costs more than a read served from the page cache.
+    step = max(1, len(spans) // (4 * pool._max_workers))
+    batches = [spans[i : i + step] for i in range(0, len(spans), step)]
+    return itertools.chain.from_iterable(pool.map(read, batches))
+
+
+class _ArrayReader:
+    """Random access to a memory-mapped .npy array, through a thread pool if given one.
+
+    Entries of a mapped array are fetched by page faults, one blocking round trip at
+    a time on cold or network storage.  With a pool they are read from the file
+    instead (see ``_pread_spans``), which overlaps the round trips; without one they
+    are served by the memory map.
+    """
+
+    def __init__(self, array: np.memmap, pool: Optional[ThreadPoolExecutor] = None):
+        self.array = array
+        self._pool = pool
+        self._fd = os.open(array.filename, os.O_RDONLY) if pool is not None else -1
+
+    def slices(self, starts: List[int], count: int) -> Iterator[np.ndarray]:
+        """Yield ``array[s : s + count]`` for each ``s`` in ``starts``."""
+        array = self.array
+        if self._pool is None:
+            return (array[s : s + count] for s in starts)
+        size = array.dtype.itemsize
+        spans = [(array.offset + s * size, count * size) for s in starts]
+        return (
+            np.frombuffer(data, dtype=array.dtype)
+            for data in _pread_spans(self._fd, spans, self._pool)
+        )
+
+    def take(self, idx: np.ndarray) -> np.ndarray:
+        """Return ``array[idx]``."""
+        if self._pool is None or not len(idx):
+            return self.array[idx]
+        return np.concatenate(list(self.slices(idx.tolist(), 1)))
+
+    def __del__(self):
+        if getattr(self, "_fd", -1) >= 0:
+            os.close(self._fd)
+            self._fd = -1
+
+
 class _TwoLevelSearch:
     """searchsorted over a memory-mapped sorted array with one page fault per query.
 
@@ -418,26 +474,40 @@ class _TwoLevelSearch:
     disk.  Positions returned are identical to np.searchsorted(array, queries).
 
     ``block_starts`` must equal ``array[::block]`` (index_builder writes it to
-    fingerprint_blocks.npy).
+    fingerprint_blocks.npy).  ``read_blocks(starts, count)`` yields
+    ``array[s : s + count]`` for each ``s`` in ``starts`` (default: slices of
+    ``array``; see ``_ArrayReader.slices`` for parallel reads).
     """
 
-    def __init__(self, array: np.ndarray, block_starts: np.ndarray,
-                 block: int = FINGERPRINT_BLOCK):
+    def __init__(
+        self,
+        array: np.ndarray,
+        block_starts: np.ndarray,
+        block: int = FINGERPRINT_BLOCK,
+        read_blocks: Optional[Callable[[List[int], int], Iterator[np.ndarray]]] = None,
+    ):
         self.array = array
         self.block = block
         self.block_starts = block_starts  # in RAM, 0.2% of the array
+        self.read_blocks = read_blocks or (
+            lambda starts, count: (array[s : s + count] for s in starts)
+        )
 
     def __call__(self, queries: np.ndarray) -> np.ndarray:
         # Block b holds array[b*block:(b+1)*block]; the query belongs to the last block
         # whose first entry is <= query, i.e. searchsorted(side="right") - 1.
         blocks = np.searchsorted(self.block_starts, queries, side="right") - 1
         blocks = np.maximum(blocks, 0)
+        # Group the queries by block: order[lo:hi] are the queries of one block.
+        order = np.argsort(blocks, kind="stable")
+        unique_blocks, first = np.unique(blocks[order], return_index=True)
+        bounds = np.append(first, len(queries)).tolist()
+        starts = (unique_blocks * self.block).tolist()
         result = np.empty(len(queries), dtype=np.int64)
-        for b in np.unique(blocks):  # queries are grouped by block: one page read each
-            in_block = blocks == b
-            start = int(b) * self.block
-            chunk = self.array[start : start + self.block]
-            result[in_block] = start + np.searchsorted(chunk, queries[in_block])
+        chunks = self.read_blocks(starts, self.block)  # one read per block
+        for start, lo, hi, chunk in zip(starts, bounds, bounds[1:], chunks):
+            group = order[lo:hi]
+            result[group] = start + np.searchsorted(chunk, queries[group])
         return result
 
 

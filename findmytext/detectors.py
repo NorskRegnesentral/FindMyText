@@ -156,7 +156,7 @@ class _BaseDetector(ABC):
         self,
         index: Union[str, indexing.DiskBasedIndex],
         top_k: int = 50,
-        min_probability: float = 0.01,
+        min_probability: float = 0.05,
         rarity_weighted: bool = False,
         dispersion: float = 0.5,
         n_workers: int = 1,
@@ -340,19 +340,10 @@ class _BaseDetector(ABC):
         probabilities = self._normalise_scores(raw_scores, min_fragment_length)
         return {doc: p for doc, p in probabilities.items() if p >= self.min_probability}
 
-    def _min_raw_score(self, min_fragment_length: float) -> float:
-        """Raw score at which :meth:`_normalise_scores` reaches ``min_probability``.
-
-        Inverts the normal model: documents with a smaller raw score end up below
-        ``min_probability`` and are dropped by :meth:`score_candidates`.
-        """
-        N0 = self._expected_fingerprints(min_fragment_length)
-        return N0 - 0.5 + norm.ppf(self.min_probability) * np.sqrt(self._score_dispersion * N0)
-
     def _min_shared_fingerprints(self, min_fragment_length: float) -> int:
         """Smallest shared-fingerprint count worth scoring for this fragment length.
 
-        Inverts :meth:`_normalise_scores` (see :meth:`_min_raw_score`): a document
+        Inverts :meth:`_normalise_scores`: a document
         with fewer shared fingerprints would end up below ``min_probability`` even
         if all of them formed one passage, so the index need not return it.  With
         rarity weighting the score is a weighted sum, so the count is scaled down
@@ -361,7 +352,8 @@ class _BaseDetector(ABC):
         """
         if self.min_fingerprints is not None:
             return self.min_fingerprints
-        min_score = self._min_raw_score(min_fragment_length)
+        N0 = self._expected_fingerprints(min_fragment_length)
+        min_score = N0 - 0.5 + norm.ppf(self.min_probability) * np.sqrt(self._score_dispersion * N0)
         if self.weighting:
             min_score /= max(self.weighting.max, 1.0)
         return max(1, int(np.ceil(min_score)))
