@@ -211,11 +211,11 @@ def build_benchmark(
         output_path=positives_path,
         nb_examples=nb_pos,
         sw_threshold=pos_sw_threshold,
-        target_length=target_length,
+        target_length=negatives_path,
     )
 
     print(f"[4/4] Merging into {output_path}", flush=True)
-    return merge_examples(positives_path, negatives_path, output_path, nb_pos, nb_neg, seed)
+    return merge_examples(positives_path, negatives_path, output_path, nb_examples, seed)
 
 
 class Corpus:
@@ -1051,24 +1051,32 @@ class NegativeExampleGenerator:
         self,
         text: str,
         target_chunk_size: Optional[float] = None,
-        max_chunks: int = 16,
+        max_chunks: Optional[int] = None,
+        nb_candidates: int = 3,
     ) -> str:
         """Randomly permute the order of a few chunks of the input text.
 
-        If target_chunk_size is given, the number of chunks is derived from the length of
-        the text so that the chunks are on average smaller than that size (bounded by
-        max_chunks); otherwise 2 to 8 chunks are used. The permutation is chosen so that
-        no two chunks which were adjacent in the input remain adjacent and in the same
-        order, since such pairs would re-create part of the original alignment.
+        Without target_chunk_size, the text is split into 2 to 8 chunks of random
+        (Dirichlet-distributed) sizes. With target_chunk_size, it is split into chunks of
+        about that size (as many as needed, whatever the length of the text, optionally
+        bounded by max_chunks), all of them of nearly equal size: a region longer than
+        the oracle threshold is thus cut into pieces below it, and no short chunk is
+        produced, since a short chunk inserted between two originally adjacent chunks
+        does not break their alignment (the aligner bridges it as a cheap gap) while
+        its boundaries still destroy word n-grams.
+
+        The chunks are reordered with _random_block_reversal, which keeps the source
+        order only locally *decreasing*; nb_candidates such orders are drawn and the one
+        aligning least with the input text (according to the oracle) is kept.
         """
         if target_chunk_size is None:
             nb_chunks = np.random.randint(2, 9)
+            chunk_proportions = np.random.dirichlet(np.ones(nb_chunks), size=1)[0]
         else:
-            nb_chunks = int(np.clip(np.ceil(len(text) / target_chunk_size), 2, max_chunks))
-
-        # We sample chunk proportions from a Dirichlet distribution to determine the
-        # relative sizes of the chunks, and split the text accordingly
-        chunk_proportions = np.random.dirichlet(np.ones(nb_chunks), size=1)[0]
+            nb_chunks = max(2, int(np.ceil(len(text) / target_chunk_size)))
+            if max_chunks is not None:
+                nb_chunks = min(nb_chunks, max_chunks)
+            chunk_proportions = np.full(nb_chunks, 1.0 / nb_chunks)
         chunks = chunk_proportion(text, chunk_proportions=chunk_proportions)
 
         # If the text could not be split into at least two chunks (e.g. a single word),
@@ -1081,24 +1089,40 @@ class NegativeExampleGenerator:
             "Permuting %i chunks of sizes: %s"
             % (len(chunks), [len(c) for c in chunks])
         )
+        best_text, best_score = text, float("inf")
+        for _ in range(max(1, nb_candidates)):
+            order = self._random_block_reversal(len(chunks))
+            candidate = " ".join(chunks[i] for i in order)
+            score = (
+                self.aligner.get_largest_region_score(text, candidate)
+                if nb_candidates > 1
+                else 0.0
+            )
+            if score < best_score:
+                best_text, best_score = candidate, score
+        return best_text
 
-        # We draw a few random permutations and keep the one preserving the fewest
-        # originally-adjacent ordered pairs (ideally none). Reversing the order never
-        # preserves such a pair, so it is used as a fallback.
-        best_order = list(range(len(chunks) - 1, -1, -1))
-        for _ in range(20):
-            order = list(np.random.permutation(len(chunks)))
-            nb_preserved = sum(
-                1 for a, b in zip(order, order[1:]) if b == a + 1
-            )
-            if nb_preserved == 0:
-                best_order = order
-                break
-        else:
-            print(
-                "WARNING: no permutation without preserved adjacent chunks found, reversing"
-            )
-        return " ".join(chunks[i] for i in best_order)
+    @staticmethod
+    def _random_block_reversal(nb_chunks: int) -> List[int]:
+        """Draw a random order of nb_chunks chunks in which the original order is only
+        ever locally *decreasing*: the chunks are grouped into blocks of consecutive
+        chunks (random number and sizes), each block is reversed and the blocks are
+        shuffled.
+
+        The oracle (Smith-Waterman) can only chain chunks that appear in increasing
+        order in both texts, and the substitution of a chunk by an unrelated one of the
+        same length is much cheaper than its length (shared characters, spaces...), so
+        a plain random permutation typically leaves chains of two or three chunks in
+        increasing order, close enough to be bridged, which keeps the region above the
+        threshold. With reversed blocks, a chain can use at most one chunk per block,
+        and two originally adjacent chunks never stay adjacent in the same order.
+        """
+        nb_blocks = np.random.randint(1, max(1, nb_chunks // 2) + 1)
+        cuts = np.sort(np.random.choice(np.arange(1, nb_chunks), nb_blocks - 1, replace=False))
+        blocks = np.split(np.arange(nb_chunks), cuts)
+        return [
+            int(i) for b in np.random.permutation(len(blocks)) for i in blocks[b][::-1]
+        ]
 
 
 # Boundary patterns used to split a text into units, from strongest to weakest: sentence
@@ -1581,37 +1605,19 @@ def merge_examples(
     bulky debugging fields (source_text, before, after) are dropped unless
     keep_source_texts is True.
 
+    Args:
+        positives_path: JSONL file of positive examples (see generate_positives).
+        negatives_path: JSONL file of negative examples (see generate_negatives).
+        output_path: destination JSONL file of the benchmark.
+        nb_examples: total number of examples; with an odd number, the extra example
+            is a positive.
+        seed: optional random seed for reproducibility.
+        keep_source_texts: whether to keep the bulky debugging fields.
+
     Returns: output_path.
     """
     nb_neg = nb_examples // 2
     nb_pos = nb_examples - nb_neg
-    return merge_examples(
-        positives_path, negatives_path, output_path, nb_pos, nb_neg, seed, keep_source_texts
-    )
-
-
-def merge_examples(
-    positives_path: str,
-    negatives_path: str,
-    output_path: str,
-    nb_pos: int,
-    nb_neg: int,
-    seed: Optional[int] = None,
-    keep_source_texts: bool = False,
-) -> str:
-    """Merge positive and negative examples into a single benchmark file.
-
-    Arguments:
-    positives_path: path to the JSONL file containing positive examples.
-    negatives_path: path to the JSONL file containing negative examples.
-    output_path: path to the output JSONL file.
-    nb_pos: number of positive examples to draw.
-    nb_neg: number of negative examples to draw.
-    seed: optional random seed for reproducibility.
-    keep_source_texts: whether to keep bulky debugging fields (source_text, before, after).
-    Returns: output_path.
-    """
-
     rng = random.Random(seed)
     examples = _draw_examples(positives_path, nb_pos, POSITIVE, rng, keep_source_texts)
     examples += _draw_examples(negatives_path, nb_neg, NEGATIVE, rng, keep_source_texts)
@@ -1650,51 +1656,3 @@ def _draw_examples(
         examples.append(ex)
     return examples
 
-
-
-# ------------------------------------------------------------- legacy aliases
-#
-# Former names and signatures of the pipeline steps, kept for the job scripts that
-# still rely on them.
-
-
-def create_negative_samples(
-    indexed_samples_path: str,
-    min_oracle_score: float = 100,
-    output_path: str = "negative_samples_100.jsonl",
-    overwrite_existing: bool = False,
-    use_llm: bool = True,
-    paraphrase_fraction: float = 0.5,
-    stop_at: Optional[int] = 1000,
-):
-    """Legacy alias of generate_negatives."""
-    generate_negatives(
-        corpus_sample=indexed_samples_path,
-        output_path=output_path,
-        nb_examples=stop_at,
-        sw_threshold=min_oracle_score,
-        use_llm=use_llm,
-        paraphrase_fraction=paraphrase_fraction,
-        overwrite=overwrite_existing,
-    )
-
-
-def create_positive_samples(
-    indexed_samples_path: str,
-    non_indexed_samples_path: str,
-    target_length: int,
-    min_oracle_score: float = 1000,
-    output_path: str = "positive_samples_1000.jsonl",
-    overwrite_existing: bool = False,
-    stop_at: Optional[int] = 1000,
-):
-    """Legacy alias of generate_positives."""
-    generate_positives(
-        corpus_sample=indexed_samples_path,
-        out_of_corpus_sample=non_indexed_samples_path,
-        output_path=output_path,
-        nb_examples=stop_at,
-        sw_threshold=min_oracle_score,
-        target_length=target_length,
-        overwrite=overwrite_existing,
-    )

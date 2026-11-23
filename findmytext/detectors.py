@@ -328,8 +328,9 @@ class _BaseDetector(ABC):
         return max(1, int(np.ceil(min_score)))
 
     def _expected_fingerprints(self, min_fragment_length: float, edit_rate: float = 0.1) -> float:
-        """Expected shared-fingerprint count :math:`N_0` of a verbatim passage of
-        ``min_fragment_length`` characters (see :meth:`_normalise_scores`)."""
+        """Expected shared-fingerprint count :math:`N_0` of a passage of
+        ``min_fragment_length`` characters with a word-edit rate of ``edit_rate``
+        (see :meth:`_normalise_scores`)."""
         k = self.index_metadata["length"]
         w = self.index_metadata["window_size"]
         n_kgrams = max(min_fragment_length / _AVG_CHARS_PER_WORD - k + 1, 1.0)
@@ -369,13 +370,16 @@ class _BaseDetector(ABC):
         characters.  A passage of :math:`L_0` characters holds about
         :math:`L_0 / \bar{c} - k + 1` k-grams, with :math:`\bar{c} \approx 5.5`
         characters per word, and winnowing with window :math:`w` keeps on average a
-        fraction :math:`2 / (w + 1)` of them.  The expected number of shared
-        fingerprints for a verbatim passage of exactly :math:`L_0` characters is thus
+        fraction :math:`2 / (w + 1)` of them.  A k-gram survives independent word
+        edits at rate :math:`\epsilon` with probability :math:`(1 - \epsilon)^k`, so
+        the expected number of shared fingerprints for a passage of :math:`L_0`
+        characters with a tolerated edit rate :math:`\epsilon` is
 
         .. math::
-            N_0 = \left(\frac{L_0}{\bar{c}} - k + 1\right) \frac{2}{w + 1}
+            N_0 = (1 - \epsilon)^k \left(\frac{L_0}{\bar{c}} - k + 1\right) \frac{2}{w + 1}
 
-        (:math:`N_0 \approx 51` for :math:`L_0 = 1000`, :math:`k = 4`, :math:`w = 6`).
+        (:math:`N_0 \approx 33` for :math:`L_0 = 1000`, :math:`k = 4`, :math:`w = 6`,
+        :math:`\epsilon = 0.1`; see :meth:`_expected_fingerprints`).
 
         The count varies much less than a Poisson variable with the same mean, because
         winnowing selects fingerprints regularly: every window contains at least one and
@@ -389,14 +393,12 @@ class _BaseDetector(ABC):
                 \frac{n + 0.5 - N_0}{\sqrt{\text{dispersion} \cdot N_0}}\right)
 
         so that :math:`P \approx 0.5` at :math:`n = N_0` and the transition spans about
-        :math:`\pm 2\sqrt{\text{dispersion} \cdot N_0}` (:math:`\pm 10` fingerprints
+        :math:`\pm 2\sqrt{\text{dispersion} \cdot N_0}` (:math:`\pm 8` fingerprints
         in the example above).
 
-        **Calibration.**  :math:`N_0` assumes a verbatim passage.  Edits remove shared
-        fingerprints (a k-gram survives independent word edits with probability
-        :math:`(1 - \epsilon)^k`), so an edited passage needs to be proportionally
-        longer to reach the same probability: with 5% of words changed, about 1250
-        characters instead of 1000.
+        **Calibration.**  Passages edited more heavily than :math:`\epsilon` lose
+        further fingerprints and must be proportionally longer than :math:`L_0` to
+        reach the same probability.
 
         **Rarity weighting.**  With ``rarity_weighted=True`` the score is a sum of
         weights :math:`W` normalised to mean 1 over fingerprint occurrences, so its

@@ -8,7 +8,7 @@
 
 The tool builds on standard document fingerprinting techniques, and extends them with a novel mechanism that explicitly captures *sequences* (chains) of matching fingerprints. This makes it robust to near-verbatim copies — texts that share the same content but with minor differences due to OCR errors, formatting variants, text normalisation, or added boilerplate. Leveraging a distributed, disk-based indexing framework, FindMyText scales to large corpora that cannot be held in memory.
 
-A full step-by-step walkthrough is available in [`demo.ipynb`](demo.ipynb).
+A full step-by-step walkthrough is available in [`demo.ipynb`](demo.ipynb).  See our [paper](https://arxiv.org/abs/2306.17100) for more details.
 
 ---
 
@@ -95,62 +95,6 @@ alignment = findmytext.align(query_text, corpus_document_text)
 alignment.show()
 ```
 
-### 4. Evaluating detectors
-
-`experiments/benchmark.py` creates the labelled data: positives are perturbed chunks of
-corpus documents (hyphenation, casing, boilerplate, unicode normalisation) that still
-share a segment of Smith-Waterman score ≥ `pos_sw_threshold` with their source, padded
-with out-of-corpus text to the median length of the negatives; negatives are corpus
-documents permuted and paraphrased (LLM) until no segment scores ≥ `neg_sw_threshold`,
-while keeping most of the original wording. One call builds the whole benchmark
-(intermediate files in a work directory, resumable):
-
-```python
-import experiments.benchmark as b
-b.build_benchmark("corpus_dir/", "outofcorpus_sample.jsonl", "eval_set.jsonl",
-                  nb_examples=2000, pos_sw_threshold=1000, neg_sw_threshold=100)
-```
-
-The steps (`sample_corpus`, `generate_negatives`, `generate_positives`,
-`merge_examples`) can also be run separately, e.g. over several jobs appending to the
-same file; see the module docstring.
-
-`experiments/eval.py` measures how well the detectors separate labelled positive
-examples (texts containing a passage of an indexed document, with the document's id
-in `source_doc_id`) from negatives. It reports ROC-AUC and the precision at 90 % and
-99 % recall for the shared-fingerprint baseline and the chain detector (plain and
-rarity-weighted); a positive only counts as detected through its source document.
-Positives whose source document is not returned at all score 0 (the `missed` column);
-once more than 1 % of them do, `P@R=99` collapses to the positive rate, and the
-`diagnose` command explains which cut (`min_fingerprints`, `top_k`,
-`min_probability`) dropped each source document and which values would recover them.
-
-```bash
-# Run all detectors against an index (requires scikit-learn)
-python experiments/eval.py run --index my_index --data eval_set.jsonl
-# Explain the missed positives
-python experiments/eval.py diagnose --index my_index --data eval_set.jsonl
-```
-
-`experiments/baselines.py` provides a dense-retrieval baseline for comparison:
-`DenseRetrievalDetector` embeds the query with a sentence-embedding model
-(`Qwen/Qwen3-Embedding-4B` by default) and returns the closest documents of a database
-of pre-computed document embeddings by exact cosine similarity (faiss). The database is
-built from the Hugging Face dataset `maknee/wikipedia_qwen_4b` (1 M Wikipedia articles,
-whose row ids match the `source_doc_id` of the Wikipedia evaluation data; ~10 GB):
-
-```bash
-# Requires faiss-cpu, sentence-transformers and huggingface_hub
-python experiments/baselines.py build wiki_dense_db
-```
-
-```python
-from baselines import DenseRetrievalDetector
-from eval import Evaluator
-
-Evaluator("my_index", detectors={"dense": DenseRetrievalDetector("wiki_dense_db")}).run("eval_set.jsonl")
-```
-
 ---
 
 ## How it works
@@ -201,6 +145,39 @@ the two versions side by side.
 
 ---
 
+## Evaluation details
+
+The evaluation described in the FindMyText [paper](https://arxiv.org/abs/2306.17100) relies on a novel benchmarking procedure. This procedure is deliberately designed to be "adversarial", in order to assess whether detectors can distinguish content reuse from mere similarity between documents. 
+
+Concretely, based on an corpus, the benchmarking procedure generates a set of examples consisting of both positive and negative cases:
+- *Positive examples* are perturbed chunks of corpus documents that still share a segment of Smith-Waterman score ≥ `pos_sw_threshold` with their source. Those pertubed chunks are concatenated with out-of-corpus texts.
+- *Negative examples* are corpus documents that have been permuted and paraphrased (LLM) until no segment scores ≥ `neg_sw_threshold`. 
+
+A new benchmark can be created with the following command:
+
+```python
+import experiments.benchmark as b
+b.build_benchmark("corpus_dir/", "outofcorpus_sample.jsonl", "eval_set.jsonl",
+                  nb_examples=2000, pos_sw_threshold=1000, neg_sw_threshold=100)
+```
+
+The steps (`sample_corpus`, `generate_negatives`, `generate_positives`,
+`merge_examples`) can also be run separately, e.g. over several jobs appending to the
+same file; see the module docstring.
+
+Once the benchmark is created, it can be used to evaluate detectors with `experiments/eval.py`.
+The script measures how well the detectors separate labelled positive
+examples from negatives, using the ROC-AUC and precision at 90 % and 99 % recall metrics.
+
+The evaluation can be run with the following command:
+
+```bash
+# Run all detectors against an index (requires scikit-learn)
+python experiments/eval.py run --index my_index --data eval_set.jsonl
+```
+
+---
+
 ## License
 
 **FindMyText** is released under an [MIT License](LICENSE).
@@ -211,7 +188,7 @@ The MIT License is a short and simple permissive license allowing both commercia
 
 ## Reference
 
-If you use **FindMyText** in your research, please cite our paper:
+If you use **FindMyText** in your research, please cite our [paper](https://arxiv.org/abs/2306.17100):
 
 ```bibtex
 @article{findmytext2026,

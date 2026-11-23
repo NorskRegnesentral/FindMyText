@@ -24,8 +24,9 @@ Evaluating it, from Python::
     from baselines import DenseRetrievalDetector
     from eval import Evaluator
 
-    detector = DenseRetrievalDetector("wiki_dense_db")
-    Evaluator("my_index", detectors={"dense": detector}).run("eval_set.jsonl")
+    evaluator = Evaluator(None)  # or Evaluator("my_index") to compare with the default detectors
+    evaluator.add_detector("dense", DenseRetrievalDetector("wiki_dense_db"))
+    evaluator.run("eval_set.jsonl")
 
 Requires ``faiss-cpu``, ``sentence-transformers`` and ``huggingface_hub`` (see
 ``requirements.txt``).  The database (1 M x 2560 float32) takes about 10 GB of RAM.

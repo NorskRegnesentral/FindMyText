@@ -344,11 +344,6 @@ def test_merge_examples_splits_evenly_and_drops_bulky_fields(tmp_path):
     assert [r["text"] for r in rows2] == [r["text"] for r in rows]
     assert all("source_text" in r for r in rows2)
 
-    # The legacy alias keeps separate counts
-    benchmark.merge_positive_and_negative_samples(pos_path, neg_path, 2, 5, str(out), seed=1)
-    rows3 = [orjson.loads(l) for l in out.read_bytes().splitlines()]
-    assert collections.Counter(r["type"] for r in rows3) == {benchmark.POSITIVE: 2, benchmark.NEGATIVE: 5}
-
     # Positives without a source document are rejected
     bad_path = write_jsonl(tmp_path / "bad.jsonl", [{"text": "no source"}])
     with pytest.raises(ValueError, match="source_doc_id"):

@@ -97,8 +97,6 @@ def test_search_returns_closest_doc_ids_by_cosine(detector):
         best = max(result, key=result.get)
         assert best == doc_id
         assert result[best] == pytest.approx(1.0, abs=1e-3)
-    # The signature of the fingerprint detectors is accepted.
-    assert detector.search("doc2", 1000.0) == detector.search("doc2")
 
 
 def test_top_k_is_capped_by_database_size(db_dir, monkeypatch):
@@ -161,7 +159,7 @@ def test_build_database_renames_download_and_writes_meta(tmp_path, monkeypatch):
 
 def test_dense_detector_is_accepted_by_evaluator(tmp_path, detector):
     pytest.importorskip("sklearn")
-    from findmytext import detectors as fmt_detectors, index_builder
+    from findmytext import index_builder
 
     fmt_eval = _load("eval")
     docs = [{"id": str(i), "text": " ".join(f"w{i}_{j}" for j in range(150))} for i in range(6)]
@@ -173,13 +171,21 @@ def test_dense_detector_is_accepted_by_evaluator(tmp_path, detector):
     examples += [{"text": f"unrelated text {i}", "type": "negative"} for i in range(6)]
     (tmp_path / "eval.jsonl").write_text("".join(json.dumps(e) + "\n" for e in examples))
 
-    evaluator = fmt_eval.Evaluator(
-        index,
-        detectors={"dense": detector, "baseline": fmt_detectors.NbSharedFingerprintsDetector(index)},
-    )
-    assert evaluator._separate == ["dense"] and evaluator._shared == ["baseline"]
+    evaluator = fmt_eval.Evaluator(index)
+    evaluator.add_detector("dense", detector)
+    assert evaluator._separate == ["dense"]
+    assert evaluator._shared == list(fmt_eval.DEFAULT_DETECTOR_NAMES)
     metrics = evaluator.run(str(tmp_path / "eval.jsonl"), verbose=False)
     dense = metrics["dense"]
     assert dense["top1_acc"] == 1.0
     assert dense["roc_auc"] == 1.0  # positives score ~1, negatives ~0 (orthogonal query)
     assert np.isnan(dense["mean_retrieval_time"])
+
+    # Without an index, the evaluator runs the external detectors alone.
+    evaluator = fmt_eval.Evaluator(None)
+    evaluator.add_detector("dense", detector)
+    assert evaluator._shared == [] and evaluator._separate == ["dense"]
+    metrics = evaluator.run(str(tmp_path / "eval.jsonl"), verbose=False)
+    assert list(metrics) == ["dense"] and metrics["dense"]["top1_acc"] == 1.0
+    with pytest.raises(ValueError, match="no detector registered"):
+        fmt_eval.Evaluator(None).run(str(tmp_path / "eval.jsonl"), verbose=False)

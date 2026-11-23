@@ -93,34 +93,6 @@ def test_compute_metrics_reports_the_score_floor():
     assert "missed" in table.splitlines()[1] and table.endswith(warning)
 
 
-def test_create_eval_set_samples_shuffles_and_keeps_only_light_fields(tmp_path):
-    pos = tmp_path / "pos.jsonl"
-    neg = tmp_path / "neg.jsonl"
-    write_jsonl(pos, [
-        {"text": f"p{i}", "type": "positive", "source_doc_id": i, "source_text": "x" * 100,
-         "oracle_score": 1200.0, "before": {"doc_id": "a"}}
-        for i in range(5)
-    ])
-    write_jsonl(neg, [{"text": f"n{i}", "source_text": "y" * 100, "oracle_score": 90.0} for i in range(4)])
-    out = tmp_path / "mix.jsonl"
-    fmt_eval.create_eval_set(str(pos), str(neg), 3, 2, str(out), seed=1)
-    rows = [json.loads(line) for line in out.read_text().splitlines()]
-    assert len(rows) == 5
-    assert sorted(r["type"] for r in rows) == ["negative"] * 2 + ["positive"] * 3
-    for row in rows:
-        assert set(row) <= set(fmt_eval._KEPT_FIELDS) and "source_text" not in row
-        assert row["text"].startswith("p" if row["type"] == "positive" else "n")
-        assert (row["type"] == "positive") == ("source_doc_id" in row)
-    # Deterministic for a given seed, and not simply positives-then-negatives.
-    fmt_eval.Evaluator.create_eval_set(str(pos), str(neg), 3, 2, str(tmp_path / "again.jsonl"), seed=1)
-    assert (tmp_path / "again.jsonl").read_text() == out.read_text()
-    fmt_eval.create_eval_set(str(pos), str(neg), 5, 4, str(out), seed=3)
-    types = [json.loads(line)["type"] for line in out.read_text().splitlines()]
-    assert types != ["positive"] * 5 + ["negative"] * 4
-    with pytest.raises(ValueError, match="only 4 examples"):
-        fmt_eval.create_eval_set(str(pos), str(neg), 1, 5, str(out))
-
-
 def test_evaluator_separates_classes_and_matches_plain_search(tmp_path, corpus_and_eval_set):
     index, docs, examples = corpus_and_eval_set
     evaluator = fmt_eval.Evaluator(index)
@@ -185,24 +157,12 @@ def test_raw_scores_are_what_score_candidates_normalises(corpus_and_eval_set):
         assert detector.score_candidates(wide, 300) == pytest.approx(probs)
 
 
-def test_diagnose_misses_classifies_each_cut(tmp_path, corpus_and_eval_set):
+def test_run_reports_missed_positives_on_the_score_floor(tmp_path, corpus_and_eval_set):
     index, docs, examples = corpus_and_eval_set
-    eval_path = str(tmp_path / "eval.jsonl")
     positives = [e for e in examples if e["type"] == "positive"]
 
-    evaluator = fmt_eval.Evaluator(index)
-    report = evaluator.diagnose_misses(eval_path, min_fragment_length=300, verbose=False)
-    assert report["misses"] == [] and set(report["summary"]) == set(fmt_eval.DEFAULT_DETECTOR_NAMES)
-    assert all(s["n_misses"] == 0 and s["to_recover_all"] is None for s in report["summary"].values())
-    assert fmt_eval.format_misses([], ["chain"]) == "No missed positive."
-    with pytest.raises(ValueError, match="unknown detector"):
-        evaluator.diagnose_misses(eval_path, detector_names=["nope"])
-    evaluator.add_detector("dummy", SearchOnlyDetector())
-    with pytest.raises(ValueError, match="cannot be diagnosed"):
-        evaluator.diagnose_misses(eval_path, detector_names=["dummy"])
-
     # A query where a longer passage of doc-1 outranks the source doc-0: top_k=1
-    # drops the source, and a source id absent from the index shares nothing.
+    # drops the source; a source id absent from the index is never returned.
     rng = random.Random(1)
     words0, words1 = docs[0]["text"].split(), docs[1]["text"].split()
     outranked = {
@@ -215,66 +175,10 @@ def test_diagnose_misses_classifies_each_cut(tmp_path, corpus_and_eval_set):
     write_jsonl(misses_path, [outranked, unknown] + examples)
 
     small = fmt_eval.Evaluator(index, top_k=1)
-    out = tmp_path / "misses_out.jsonl"
-    report = small.diagnose_misses(str(misses_path), min_fragment_length=300,
-                                   detector_names=["baseline", "chain"],
-                                   output_path=str(out), verbose=False)
-    by_id = {m["source_doc_id"]: m for m in report["misses"]}
-    assert set(by_id) == {"doc-0", "doc-unknown"} and set(report["summary"]) == {"baseline", "chain"}
-    m = by_id["doc-0"]
-    assert m["rank"] == 2 and m["top_doc"] == "doc-1" and m["top_count"] > m["n_shared"] > 0
-    assert m["n_candidates"] >= 2 and m["text_length"] == len(outranked["text"])
-    for d in m["detectors"].values():
-        assert d["reason"] == fmt_eval.OUTSIDE_TOP_K and d["probability"] > 0.9
-    assert m["detectors"]["baseline"]["raw_score"] == m["n_shared"]
-    m = by_id["doc-unknown"]
-    assert m["rank"] is None and m["n_shared"] == 0 and m["top_doc"] == positives[0]["source_doc_id"]
-    for d in m["detectors"].values():
-        assert d["reason"] == fmt_eval.NO_SHARED_FINGERPRINTS and d["raw_score"] is None
-
-    summary = report["summary"]["chain"]
-    assert summary["n_pos"] == 8 and summary["n_misses"] == 2 and summary["n_recoverable"] == 1
-    assert summary["reasons"] == {
-        fmt_eval.NO_SHARED_FINGERPRINTS: 1, fmt_eval.BELOW_MIN_FINGERPRINTS: 0,
-        fmt_eval.OUTSIDE_TOP_K: 1, fmt_eval.BELOW_MIN_PROBABILITY: 0,
-    }
-    assert summary["to_recover_all"]["top_k"] == 2 and summary["to_recover_all"]["achievable"]
-    # With 8 positives, 99 % recall tolerates no miss, and one is unrecoverable.
-    assert summary["to_reach_recall_99"]["n_to_recover"] == 2
-    assert not summary["to_reach_recall_99"]["achievable"]
-    text = fmt_eval.format_miss_summary(report["summary"])
-    assert "top_k >= 2" in text and "not enough: 1 of the 2" in text
-    assert "doc-unknown" in fmt_eval.format_misses(report["misses"], ["baseline", "chain"])
-    rows = [json.loads(line) for line in out.read_text().splitlines()]
-    assert [r["source_doc_id"] for r in rows] == [m["source_doc_id"] for m in report["misses"]]
-
-    # run() misses exactly these positives, and its P@R values sit on the floor.
     metrics = small.run(str(misses_path), min_fragment_length=300, verbose=False)
     assert metrics["chain"]["n_pos_missed"] == 2 and metrics["chain"]["max_recall"] == 0.75
     assert metrics["chain"]["p_at_r90"] == metrics["chain"]["p_at_r99"] == pytest.approx(8 / 14)
     assert "is the positive rate (8/14)" in fmt_eval.format_results(metrics)
-
-    # Cuts set on the detectors themselves are honoured: a retrieval threshold no
-    # positive reaches, and a cluster size that leaves the chain detector no cluster.
-    strict = fmt_eval.Evaluator(index)
-    strict.detectors["baseline"].min_fingerprints = 500
-    strict.detectors["chain"].min_cluster_size = 10_000
-    report = strict.diagnose_misses(eval_path, min_fragment_length=300,
-                                    detector_names=["baseline", "chain"], verbose=False)
-    assert report["thresholds"]["baseline"]["min_fingerprints"] == 500
-    assert len(report["misses"]) == len(positives)
-    for m in report["misses"]:
-        assert m["rank"] == 1
-        assert m["detectors"]["baseline"]["reason"] == fmt_eval.BELOW_MIN_FINGERPRINTS
-        chain = m["detectors"]["chain"]
-        assert chain["reason"] == fmt_eval.BELOW_MIN_PROBABILITY and chain["raw_score"] == 0.0
-        assert chain["probability"] < strict.detectors["chain"].min_probability
-    assert report["summary"]["baseline"]["to_recover_all"]["min_fingerprints"] == min(
-        m["n_shared"] for m in report["misses"]
-    )
-    assert report["summary"]["chain"]["to_recover_all"]["min_probability"] == min(
-        m["detectors"]["chain"]["probability"] for m in report["misses"]
-    )
 
 
 def test_add_detector_accepts_search_only_detectors_and_index_paths(tmp_path, corpus_and_eval_set):

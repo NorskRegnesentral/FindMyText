@@ -117,19 +117,24 @@ def test_multiple_sub_thousand_flushes_preserve_every_occurrence_and_query(tmp_p
         with pytest.warns(UserWarning, match="shorter than min_fragment_length"):
             assert cls(str(target), min_fingerprints=1).search(query, min_fragment_length=5000) == {}
     # Normalisation (unweighted detector, so the dispersion is exactly the default 0.5):
-    # N0 = (1000 / 5.5 - 4 + 1) * 2 / 7 ~ 51.1 for k=4, w=6; sigma = sqrt(0.5 * N0).
+    # N0 = 0.9^4 * (1000 / 5.5 - 4 + 1) * 2 / 7 ~ 33.5 for k=4, w=6 and a 10% word-edit
+    # rate; sigma = sqrt(0.5 * N0).
     plain = detectors.NbSharedFingerprintsDetector(str(target))
-    n0 = (1000 / 5.5 - 4 + 1) * 2 / 7
+    n0 = 0.9**4 * (1000 / 5.5 - 4 + 1) * 2 / 7
+    assert plain._expected_fingerprints(1000) == pytest.approx(n0)
     probs = plain._normalise_scores({"mid": n0 - 0.5, "high": n0 + 2 * (0.5 * n0) ** 0.5, "low": 0}, 1000)
     assert probs["mid"] == pytest.approx(0.5) and probs["high"] > 0.97 and probs["low"] < 1e-6
-    # Retrieval threshold: the smallest count whose probability reaches min_probability
-    # (z_0.05 = -1.645), so it inverts the normalisation exactly at the boundary.
+    # Retrieval threshold: the smallest count whose probability reaches the default
+    # min_probability of 0.01 (z_0.01 = -2.326), so it inverts the normalisation
+    # exactly at the boundary.
+    assert plain.min_probability == 0.01
     threshold = plain._min_shared_fingerprints(1000)
-    assert threshold == int(np.ceil(n0 - 0.5 - 1.6449 * (0.5 * n0) ** 0.5)) == 43
+    assert threshold == int(np.ceil(n0 - 0.5 - 2.3263 * (0.5 * n0) ** 0.5)) == 24
     boundary = plain._normalise_scores({"at": threshold, "below": threshold - 1}, 1000)
-    assert boundary["at"] >= 0.05 > boundary["below"]
+    assert boundary["at"] >= plain.min_probability > boundary["below"]
     assert plain._min_shared_fingerprints(100) < threshold
-    assert detectors.NbSharedFingerprintsDetector(str(target), min_probability=0.5)._min_shared_fingerprints(1000) == 51
+    # At min_probability=0.5 the threshold is N0 - 0.5 itself (z = 0), i.e. ceil(33.0) = 34.
+    assert detectors.NbSharedFingerprintsDetector(str(target), min_probability=0.5)._min_shared_fingerprints(1000) == 34
     assert detectors.NbSharedFingerprintsDetector(str(target), min_fingerprints=1)._min_shared_fingerprints(1000) == 1
     assert detector.rarity_weighted and detector._min_shared_fingerprints(1000) < threshold
     for bad in ({"min_probability": 0}, {"min_probability": 1}, {"min_fingerprints": 0}):
