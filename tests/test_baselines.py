@@ -125,6 +125,70 @@ def test_instruction_wraps_query_in_qwen_prompt(detector, monkeypatch):
     assert seen == ["hello", "Instruct: Find the source article\nQuery: hello"]
 
 
+def test_split_windows_covers_text_at_word_boundaries(detector):
+    detector.chunk_chars, detector.chunk_overlap = 20, 0.5
+    words = [f"w{i:02d}" for i in range(30)]  # 30 words of 3 chars = 119 chars
+    text = " ".join(words)
+    windows = detector.split_windows(text)
+    assert len(windows) > 1
+    for w in windows:
+        assert w and not w[0].isspace() and not w[-1].isspace()
+        assert all(token in words for token in w.split(" "))  # no word cut in two
+        assert len(w) <= 20 + 2 * 5  # at most a quarter of chunk_chars of shift per side
+    assert windows[0].startswith("w00") and windows[-1].endswith("w29")
+    starts = [text.index(w) for w in windows]
+    assert all(b - a <= 10 + 2 * 5 for a, b in zip(starts, starts[1:]))  # stride 10 (+ snapping)
+    # Short texts are only searched as a whole.
+    assert detector.split_windows("w00 w01 w02") == []
+    assert detector.split_windows("") == []
+    # No whitespace: windows are cut at the raw positions.
+    windows = detector.split_windows("x" * 50)
+    assert windows == ["x" * 20] * 4  # starts 0, 10, 20, 30
+
+
+def test_chunked_search_scores_documents_by_their_best_window(detector, monkeypatch):
+    # "doc3" buried in unrelated text is invisible to a whole-text query, but the
+    # window containing it retrieves document 3 with a high similarity.
+    text = " ".join(["unrelated"] * 10 + ["doc3"] + ["unrelated"] * 10)
+    real_encode = detector.model.encode
+
+    def fake_encode(texts, **kwargs):
+        return real_encode(
+            ["doc3" if "doc3" in t and len(t) < len(text) else "unrelated" for t in texts],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(detector.model, "encode", fake_encode)
+    whole = detector.search(text)
+    assert whole and max(whole.values()) < 0.5  # orthogonal query: no document close
+
+    detector.chunked, detector.chunk_chars, detector.chunk_overlap = True, 30, 0.5
+    result = detector.search(text)
+    assert len(result) == detector.top_k
+    assert max(result, key=result.get) == 3
+    assert result[3] == pytest.approx(1.0, abs=1e-3)
+    assert all(isinstance(k, int) and isinstance(v, float) for k, v in result.items())
+
+    # Documents found by several windows keep their best similarity, and the
+    # unchunked result is unchanged when chunking is off.
+    detector.chunked = False
+    assert detector.search(text) == whole
+
+
+def test_chunk_parameters_are_validated(db_dir, monkeypatch):
+    pytest.importorskip("faiss")
+    path, vectors = db_dir
+    monkeypatch.setattr(
+        baselines.DenseRetrievalDetector,
+        "_load_model",
+        lambda self, device, max_seq_length: FakeModel(vectors),
+    )
+    with pytest.raises(ValueError, match="chunk_overlap"):
+        baselines.DenseRetrievalDetector(str(path), chunk_overlap=1.0)
+    with pytest.raises(ValueError, match="chunk_chars"):
+        baselines.DenseRetrievalDetector(str(path), chunk_chars=0)
+
+
 def test_build_database_renames_download_and_writes_meta(tmp_path, monkeypatch):
     pytest.importorskip("huggingface_hub")
     vectors = np.arange(12, dtype=np.float32).reshape(3, 4)

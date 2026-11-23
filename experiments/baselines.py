@@ -4,6 +4,13 @@
 and returns the closest documents of a database of pre-computed document embeddings
 (exact cosine similarity, via a faiss ``IndexFlatIP``).
 
+The query can be embedded as a whole (``chunked=False``) or, for containment detection,
+cut into overlapping windows of ``chunk_chars`` characters that are embedded and
+searched separately (``chunked=True``); a document is then scored by its best cosine
+similarity over the windows (and over the whole text, which is always searched as
+well).  A single embedding of a long text is dominated by its main topic, so a short
+passage copied into an unrelated text is only found with chunked queries.
+
 The database is a directory containing:
 
 - ``base.fbin``: the embeddings in the DiskANN "fbin" format, i.e. a header of two
@@ -25,7 +32,7 @@ Evaluating it, from Python::
     from eval import Evaluator
 
     evaluator = Evaluator(None)  # or Evaluator("my_index") to compare with the default detectors
-    evaluator.add_detector("dense", DenseRetrievalDetector("wiki_dense_db"))
+    evaluator.add_detector("dense", DenseRetrievalDetector("wiki_dense_db", chunked=True))
     evaluator.run("eval_set.jsonl")
 
 Requires ``faiss-cpu``, ``sentence-transformers`` and ``huggingface_hub`` (see
@@ -76,6 +83,15 @@ class DenseRetrievalDetector:
     chunk_size : int
         Number of vectors read from ``base.fbin`` at a time when loading the faiss index
         (default: 50 000).
+    chunked : bool
+        If ``True``, :meth:`search` also embeds overlapping windows of the query text
+        and scores each document by its best similarity over the windows and the whole
+        text (default: ``False``, i.e. one embedding of the whole text).
+    chunk_chars : int
+        Length of the windows in characters (default: 500).
+    chunk_overlap : float
+        Overlap between consecutive windows, as a fraction of ``chunk_chars`` in
+        ``[0, 1)`` (default: 0.5).
 
     """
 
@@ -89,13 +105,23 @@ class DenseRetrievalDetector:
         instruction: Optional[str] = None,
         batch_size: int = 8,
         chunk_size: int = 50_000,
+        chunked: bool = False,
+        chunk_chars: int = 500,
+        chunk_overlap: float = 0.5,
     ):
+        if chunk_chars < 1:
+            raise ValueError("chunk_chars must be at least 1")
+        if not 0.0 <= chunk_overlap < 1.0:
+            raise ValueError("chunk_overlap must be in [0, 1)")
         self.db_dir = db_dir
         self.meta = read_meta(db_dir)
         self.model_name = model_name or self.meta["model_name"]
         self.top_k = top_k
         self.instruction = instruction
         self.batch_size = batch_size
+        self.chunked = chunked
+        self.chunk_chars = chunk_chars
+        self.chunk_overlap = chunk_overlap
 
         self.vectors = read_fbin(os.path.join(db_dir, FBIN_NAME))
         self.n_docs, self.dim = self.vectors.shape
@@ -143,10 +169,48 @@ class DenseRetrievalDetector:
     def search(self, text: str) -> dict[int, float]:
         """Return the ``top_k`` closest documents as ``{doc_id: cosine_similarity}``.
 
+        With ``chunked=True`` the whole text and each of its windows (see
+        :meth:`split_windows`) are searched, each with ``top_k`` results; a document's
+        similarity is the highest it obtained over these searches, and the ``top_k``
+        best documents are returned.
         """
-        query = self.embed([text])
-        scores, ids = self.index.search(query, min(self.top_k, self.n_docs))
-        return {int(i): float(s) for s, i in zip(scores[0], ids[0]) if i >= 0}
+        queries = [text]
+        if self.chunked:
+            queries += self.split_windows(text)
+        scores, ids = self.index.search(self.embed(queries), min(self.top_k, self.n_docs))
+        best: dict[int, float] = {}
+        for s, i in zip(scores.ravel(), ids.ravel()):
+            if i >= 0 and (int(i) not in best or float(s) > best[int(i)]):
+                best[int(i)] = float(s)
+        if len(best) > self.top_k:
+            kept = sorted(best, key=best.get, reverse=True)[: self.top_k]
+            best = {i: best[i] for i in kept}
+        return best
+
+    def split_windows(self, text: str) -> list[str]:
+        """Overlapping windows of about ``chunk_chars`` characters covering ``text``.
+
+        Windows start every ``chunk_chars * (1 - chunk_overlap)`` characters (at least
+        1); their start and end are moved to the nearest whitespace within a quarter of
+        ``chunk_chars`` so that words are not cut.  A text no longer than ``chunk_chars``
+        gives no window at all (it is already searched as a whole), and empty windows
+        are dropped.
+        """
+        if len(text) <= self.chunk_chars:
+            return []
+        stride = max(1, int(round(self.chunk_chars * (1.0 - self.chunk_overlap))))
+        max_shift = self.chunk_chars // 4
+        windows = []
+        start = 0
+        while start < len(text):
+            end = min(start + self.chunk_chars, len(text))
+            snapped = text[_snap(text, start, max_shift) : _snap(text, end, max_shift)].strip()
+            if snapped:
+                windows.append(snapped)
+            if end >= len(text):
+                break
+            start += stride
+        return windows
 
     # --------------------------------------------------------------- building
 
@@ -194,6 +258,19 @@ class DenseRetrievalDetector:
 
 
 # ------------------------------------------------------------------- helpers
+
+
+def _snap(text: str, pos: int, max_shift: int) -> int:
+    """Nearest whitespace position to ``pos`` in ``text`` (or ``pos`` itself when at
+    an end of the text or when no whitespace lies within ``max_shift`` characters)."""
+    if pos <= 0 or pos >= len(text):
+        return max(0, min(pos, len(text)))
+    for shift in range(max_shift + 1):
+        if pos + shift < len(text) and text[pos + shift].isspace():
+            return pos + shift
+        if pos - shift > 0 and text[pos - shift].isspace():
+            return pos - shift
+    return pos
 
 
 def read_fbin(path: str) -> np.ndarray:

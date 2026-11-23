@@ -65,7 +65,7 @@ The detection code reuses the repo's modules, so use the repo's virtualenv.
 
 ```bash
 # from the repo root, one-time: install the web deps (this also pulls in the
-# core requirements: numpy, numba, polars, scipy, ...)
+# core requirements: numpy, numba, scipy, ...)
 .venv/bin/python -m pip install -r web/requirements.txt
 
 # start the dev server

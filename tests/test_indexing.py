@@ -6,12 +6,13 @@ depending on the hashing; one test goes end to end through the Winnower.
 """
 
 import os
+from types import SimpleNamespace
 
 import numpy as np
-import polars as pl
 import pytest
 
 from findmytext import index_builder, indexing
+from findmytext.detectors import RarityWeighting
 from findmytext.winnower import Winnower
 
 U64_MAX = 2**64 - 1
@@ -34,6 +35,11 @@ def build_index(path, docs, meta=None):
 
 def u64(*values):
     return np.array(values, dtype=np.uint64)
+
+
+def posting_counts(reader, fingerprints):
+    """Posting counts via the detectors' RarityWeighting, the only consumer of them."""
+    return RarityWeighting(reader).posting_counts(fingerprints)
 
 
 # Four documents whose shared fingerprints 1-4 are all in the query below: A shares
@@ -124,9 +130,9 @@ def test_closest_matches_with_positions_report_each_documents_positions(tmp_path
     assert list(matches) == ["A", "B", "C"]
     assert all(type(fp) is int for doc in matches.values() for fp in doc)
 
-    series = pl.Series(RANKED_QUERY)
-    assert series.dtype == pl.UInt64
-    assert reader.get_closest_matches_with_positions(series, min_fingerprints=1, top_k=5, verbose=False) == matches
+    # Anything exposing to_numpy() (e.g. a dataframe column) is accepted as query.
+    column = SimpleNamespace(to_numpy=lambda: RANKED_QUERY)
+    assert reader.get_closest_matches_with_positions(column, min_fingerprints=1, top_k=5, verbose=False) == matches
     assert reader.get_closest_matches_with_positions(RANKED_QUERY, min_fingerprints=1, top_k=5, verbose=True) == matches
 
     with pytest.raises(ValueError, match="query must be"):
@@ -141,6 +147,44 @@ def test_closest_matches_with_positions_report_each_documents_positions(tmp_path
     assert reader.get_closest_matches_with_positions(RANKED_QUERY, verbose=False) == {}
     assert reader.get_closest_matches_with_positions(u64(5, 6), min_fingerprints=1, verbose=False) == {}
     assert reader.get_closest_matches_with_positions(np.empty(0, dtype=np.uint64), min_fingerprints=1) == {}
+
+
+def test_closest_hits_is_a_flat_table_in_closeness_order(tmp_path):
+    reader = build_index(tmp_path / "index", RANKED_DOCS)
+    hits = reader.get_closest_hits(RANKED_QUERY, min_fingerprints=1, top_k=5, verbose=False)
+
+    assert hits.doc_ids == ["A", "B", "C"] and len(hits) == 3
+    assert hits.table.dtype == indexing.HIT_DTYPE
+    assert hits.starts.tolist() == [0, 5, 7, 8]
+    # Within a document, rows are sorted by (hash, position); the structured array
+    # keeps the uint64 hash and the position of every occurrence.
+    a = hits.block(0)
+    assert a["hash"].dtype == np.uint64
+    assert a["hash"].tolist() == [1, 2, 3, 4, 4] and a["position"].tolist() == [0, 1, 2, 3, 8]
+    assert len({int(d) for d in a["doc"]}) == 1
+    assert [(doc_id, len(block)) for doc_id, block in hits] == [("A", 5), ("B", 2), ("C", 1)]
+    assert hits.to_dict() == reader.get_closest_matches_with_positions(
+        RANKED_QUERY, min_fingerprints=1, top_k=5, verbose=False
+    )
+
+    # Shared-fingerprint counts are over distinct fingerprints (A's 4 occurs twice).
+    assert reader.get_closest_hits(RANKED_QUERY, min_fingerprints=4, verbose=False).doc_ids == ["A"]
+    assert reader.get_closest_hits(RANKED_QUERY, min_fingerprints=5, verbose=False).doc_ids == []
+    top1 = reader.get_closest_hits(RANKED_QUERY, min_fingerprints=1, top_k=1, verbose=False)
+    assert top1.doc_ids == ["A"] and top1.starts.tolist() == [0, 5]
+
+    for empty in (
+        reader.get_closest_hits(u64(5, 6), min_fingerprints=1, verbose=False),
+        reader.get_closest_hits(np.empty(0, dtype=np.uint64), min_fingerprints=1, verbose=False),
+        indexing.Hits(),
+    ):
+        assert len(empty) == 0 and len(empty.table) == 0 and empty.starts.tolist() == [0]
+        assert list(empty) == [] and empty.to_dict() == {}
+
+    # Hashes above 2**63 survive the round trip through the table.
+    big = build_index(tmp_path / "big", {"doc": [(U64_MAX, 3), (2**63, 1)]})
+    block = big.get_closest_hits(u64(U64_MAX, 2**63), min_fingerprints=1, verbose=False).block(0)
+    assert block["hash"].tolist() == [2**63, U64_MAX] and block["position"].tolist() == [1, 3]
 
 
 def test_lookups_across_many_blocks_and_posting_counts(tmp_path):
@@ -158,18 +202,18 @@ def test_lookups_across_many_blocks_and_posting_counts(tmp_path):
     assert len(reader._lookup.block_starts) > 2  # queries span several 512-entry blocks
     assert reader.fingerprints.tolist() == values.tolist()
 
-    np.testing.assert_array_equal(reader.get_posting_counts(values), expected_counts)
+    np.testing.assert_array_equal(posting_counts(reader, values), expected_counts)
     shuffled = rng.permutation(n)
-    np.testing.assert_array_equal(reader.get_posting_counts(values[shuffled]), expected_counts[shuffled])
-    np.testing.assert_array_equal(reader.get_posting_counts(values.tolist()[:10]), expected_counts[:10])
+    np.testing.assert_array_equal(posting_counts(reader, values[shuffled]), expected_counts[shuffled])
+    np.testing.assert_array_equal(posting_counts(reader, values.tolist()[:10]), expected_counts[:10])
 
     gaps = values[:-1] + np.uint64(1)
     absent = gaps[gaps != values[1:]]
     assert len(absent) > 0
-    assert not reader.get_posting_counts(absent).any()
-    assert reader.get_posting_counts(u64(0, U64_MAX)).tolist() == [0, 0]
+    assert not posting_counts(reader, absent).any()
+    assert posting_counts(reader, u64(0, U64_MAX)).tolist() == [0, 0]
     mixed = np.concatenate([values[shuffled[:50]], absent[:50]])
-    mixed_counts = reader.get_posting_counts(mixed)
+    mixed_counts = posting_counts(reader, mixed)
     np.testing.assert_array_equal(mixed_counts[:50], expected_counts[shuffled[:50]])
     assert not mixed_counts[50:].any()
 
@@ -191,8 +235,10 @@ def test_index_without_fingerprints_answers_every_query_with_nothing(tmp_path):
     assert list(reader.to_external_doc_id) == ["lonely"]
 
     query = u64(0, 7, U64_MAX)
-    assert reader.get_posting_counts(query).tolist() == [0, 0, 0]
-    assert reader.get_posting_counts(np.empty(0, dtype=np.uint64)).tolist() == []
+    weighting = RarityWeighting(reader)  # calibrates without dividing by zero
+    assert (weighting.mean, weighting.extra_dispersion) == (1.0, 0.0)
+    assert weighting.posting_counts(query).tolist() == [0, 0, 0] and weighting(query).tolist() == [0, 0, 0]
+    assert posting_counts(reader, np.empty(0, dtype=np.uint64)).tolist() == []
     assert reader._get_postings(query) == {}
     assert reader.get_match_counts(query, min_fingerprints=1) == {}
     assert reader.get_closest_matches(query, min_fingerprints=1) == []
@@ -219,7 +265,7 @@ def test_text_indexed_through_winnower_is_found_with_shifted_positions(tmp_path)
 
     # Every winnowed k-gram of the query is a k-gram of B (identical) and of A
     # (shifted by the ten filler tokens); C shares nothing.
-    assert reader.get_posting_counts(query_fps).tolist() == [2] * n
+    assert posting_counts(reader, query_fps).tolist() == [2] * n
     assert reader.get_match_counts(query_fps, min_fingerprints=1) == {"A": n, "B": n}
     assert reader.get_closest_matches(query_fps, min_fingerprints=n) == ["A", "B"]
     matches = reader.get_closest_matches_with_positions(query_fps, min_fingerprints=1, verbose=False)

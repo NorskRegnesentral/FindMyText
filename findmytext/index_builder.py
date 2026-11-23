@@ -295,7 +295,7 @@ class Indexer:
                 yield batch_winnower(batch)
             return
         n_extractors = self.n_workers - 1
-        # Spawned workers (not forked: the parent may hold numpy/polars threads).  The
+        # Spawned workers (not forked: the parent may hold numpy threads).  The
         # corpus generator stays in the parent, since it cannot be pickled.
         pool = ProcessPoolExecutor(n_extractors, mp_context=mp.get_context("spawn"))
         try:
@@ -420,7 +420,7 @@ class PostingBuffer:
         np.save(os.path.join(index_dir, "fingerprints.npy"), fingerprints[starts])
         np.save(
             os.path.join(index_dir, indexing.FINGERPRINT_BLOCKS_FILE),
-            indexing.compute_fingerprint_blocks(fingerprints[starts]),
+            compute_fingerprint_blocks(fingerprints[starts]),
         )
         np.save(
             os.path.join(index_dir, "offsets.npy"),
@@ -567,7 +567,7 @@ class Merger:
                 [f"{task[-1]}.{name}" for task in tasks],
                 os.path.join(output_dir, f"{name}.npy"), dtype, n_fingerprints,
             )
-        indexing.write_fingerprint_blocks(output_dir)
+        write_fingerprint_blocks(output_dir)
         shutil.rmtree(parts_dir)
         # meta.json is written last: its presence marks a complete index directory.
         with open(os.path.join(output_dir, "meta.json"), "wb") as f:
@@ -755,6 +755,38 @@ def _concatenate_parts(part_paths: List[str], npy_path: str, dtype: np.dtype, co
         output[start : start + len(part)] = part
         start += len(part)
     output.flush()
+
+
+def compute_fingerprint_blocks(
+    fingerprints: np.ndarray, block: int = indexing.FINGERPRINT_BLOCK
+) -> np.ndarray:
+    """Return ``fingerprints[::block]``, the top level of the two-level fingerprint
+    lookup (indexing._TwoLevelSearch).
+
+    Reads the (possibly memory-mapped) array in large sequential chunks: a strided
+    ``fingerprints[::block]`` on a memmap would instead fault in every page one at a
+    time, which takes minutes on a network filesystem.
+    """
+    chunk = block * (1 << 15)  # ~128 MiB of uint64 for the default block size
+    parts = [
+        np.asarray(fingerprints[i : i + chunk])[::block]
+        for i in range(0, len(fingerprints), chunk)
+    ]
+    if not parts:
+        return np.zeros(0, dtype=np.uint64)
+    return np.ascontiguousarray(np.concatenate(parts))
+
+
+def write_fingerprint_blocks(index_dir: str) -> None:
+    """Derive fingerprint_blocks.npy from fingerprints.npy in index_dir.
+
+    Also the way to repair an index directory that lacks the file.
+    """
+    fingerprints = np.load(os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r")
+    np.save(
+        os.path.join(index_dir, indexing.FINGERPRINT_BLOCKS_FILE),
+        compute_fingerprint_blocks(fingerprints),
+    )
 
 
 if __name__ == "__main__":

@@ -5,7 +5,6 @@ msgpack
 numba
 numpy
 orjson
-polars
 scipy
 tqdm
 zstandard

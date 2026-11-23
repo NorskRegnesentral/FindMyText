@@ -7,7 +7,13 @@ The examples are deliberately sampled to be "difficult":
 of text from a document, while ensuring that the edited text still contain a substantial
 shared segment according to an oracle function. The edits include adding hyphenation,
 changing casing, adding boilerplate segments, and switching normalisation of unicode
-characters. If the edited text is shorter than a target length, it is expanded by
+characters. The length of the chunk is drawn between the oracle threshold and a share of
+the final query length (``max_fragment_share``, default one half); the edits are bounded
+so that a longer chunk remains one long shared segment rather than being edited down to
+the threshold, and so that at most a fraction ``max_word_edit_rate`` of the words of the
+chunk are changed (the character-level oracle is lenient with casing and hyphenation,
+which exact word-matching methods are not). If the edited text is shorter than a target
+length, it is expanded by
 concatenating random samples of text from the corpus before and after it, until the
 target length is reached.
 
@@ -44,7 +50,7 @@ over several GPU jobs appending to the same file), using the same intermediate f
     1. ``sample_corpus(corpus, nb_docs, 'corpus_sample.jsonl')``
     2. ``generate_negatives('corpus_sample.jsonl', 'negatives.jsonl', 1000, sw_threshold=100)``
     3. ``generate_positives('corpus_sample.jsonl', 'outofcorpus.jsonl', 'positives.jsonl',
-       1000, sw_threshold=1000, target_length='negatives.jsonl')``
+       1000, sw_threshold=1000, target_length='negatives.jsonl', max_fragment_share=0.5)``
     4. ``merge_examples('positives.jsonl', 'negatives.jsonl', 'benchmark.jsonl', 2000)``
 
 ``build_benchmark`` is resumable: it reuses the intermediate files of its work directory
@@ -52,6 +58,7 @@ and only tops up the negatives / positives files to the required number of examp
 """
 
 import collections
+import difflib
 import io
 import os
 import random
@@ -150,6 +157,7 @@ def build_benchmark(
     seed: Optional[int] = None,
     min_doc_length: int = 1_200,
     max_doc_length: int = 15_000,
+    max_fragment_share: Optional[float] = 0.5,
 ) -> str:
     """Build a benchmark JSONL file (nb_examples examples, half positives and half
     negatives) from a corpus in one call, chaining sample_corpus, generate_negatives,
@@ -177,6 +185,8 @@ def build_benchmark(
         use_llm, paraphrase_fraction: see generate_negatives.
         seed: seed of the final sampling and shuffling.
         min_doc_length, max_doc_length: see sample_corpus.
+        max_fragment_share: see generate_positives (None: fragments of about
+            pos_sw_threshold characters only).
 
     The positives are padded to the median length of the negatives.  Returns
     output_path.
@@ -212,6 +222,7 @@ def build_benchmark(
         nb_examples=nb_pos,
         sw_threshold=pos_sw_threshold,
         target_length=negatives_path,
+        max_fragment_share=max_fragment_share,
     )
 
     print(f"[4/4] Merging into {output_path}", flush=True)
@@ -260,9 +271,30 @@ class PositiveExampleGenerator:
         other_corpus: Optional[Corpus] = None,
         min_oracle_score: float = 1000,
         target_text_length: int = 2000,
+        max_fragment_length: Optional[int] = None,
+        max_score_loss: Optional[float] = None,
+        max_word_edit_rate: float = 0.1,
     ):
         """Initialize the PositiveExampleGenerator with a hyphenation dictionary and an
-        oracle."""
+        oracle.
+
+        The shared fragment of a positive has a length drawn uniformly between
+        min_oracle_score and max_fragment_length characters (None: fragments of about
+        min_oracle_score characters, the hardest positives).  Whatever its length, the
+        fragment is edited until its Smith-Waterman score with the source would fall
+        below max(min_oracle_score, length - max_score_loss): max_score_loss (default:
+        5 % of min_oracle_score) thus bounds the edit intensity of the fragment, so that
+        longer fragments remain one long aligned segment instead of being edited down
+        to the threshold.
+
+        The character-level oracle charges little for a case flip or a hyphen, so that
+        budget alone lets a large share of the words be altered, which destroys most
+        word n-grams (and fingerprints) of the fragment.  Editing therefore also stops
+        before more than a fraction max_word_edit_rate of the words of the fragment
+        differ from the source (see word_edit_rate; default 0.1, the word-edit rate the
+        detectors are calibrated for).  The edited fragment is padded with text from
+        other_corpus up to target_text_length characters.
+        """
         self.corpus = corpus
         if other_corpus is not None:
             self.other_corpus = other_corpus
@@ -272,38 +304,45 @@ class PositiveExampleGenerator:
         self.local_aligner = oracle.LocalAligner()
         self.min_oracle_score = min_oracle_score
         self.target_text_length = target_text_length
+        if max_fragment_length is not None and max_fragment_length < min_oracle_score:
+            raise ValueError("max_fragment_length must be at least min_oracle_score")
+        self.max_fragment_length = max_fragment_length
+        self.max_score_loss = (
+            0.05 * min_oracle_score if max_score_loss is None else max_score_loss
+        )
+        if self.max_score_loss <= 0:
+            raise ValueError("max_score_loss must be positive")
+        if not 0.0 <= max_word_edit_rate <= 1.0:
+            raise ValueError("max_word_edit_rate must be in [0, 1]")
+        self.max_word_edit_rate = max_word_edit_rate
 
     def sample_positive(self) -> Optional[dict]:
         """Sample a positive example pair from the corpus.
 
         The method first samples a document from the corpus, then selects a random chunk
-        of text from that document to edit. It applies a series of random edits to the
-        selected chunk, while ensuring that the edited text remains sufficiently similar
-        to the original text according to an oracle function. In case the edited text is
+        of text from that document to edit (of a length drawn between min_oracle_score
+        and max_fragment_length). It applies a series of random edits to the selected
+        chunk, while ensuring that the edited text remains sufficiently similar to the
+        original text according to an oracle function. In case the edited text is
         shorter than the target length, the method expands it by concatenating random
         samples of text from the corpus.
 
         Returns: A dictionary containing the original text, the edited text, their pair
-        type (positive), and metadata about the source document and any documents used
-        for expansion.
+        type (positive), the length of the fragment, and metadata about the source
+        document and any documents used for expansion.
         """
         doc = self.corpus.sample_doc(int(self.min_oracle_score * 1.1), 50000)
         doc_text = doc["text"]
 
-        # We select a random chunk of text from the document to edit, with a minimum
-        # length equal to the minimum oracle score to ensure that we have enough room
-        # for edits while still retaining a shared segment that is sufficiently long.
-        min_chunk_size = int(self.min_oracle_score)
-        chunks = chunk_min(doc_text, min_chunk_size=min_chunk_size)
-        suitable_chunks = [
-            c
-            for c in chunks
-            if len(c) < self.min_oracle_score * 1.05 and len(c) >= min_chunk_size + 10
-        ]
-        if not suitable_chunks:
+        # We select a random passage of the document to edit, whose length (at least
+        # the minimum oracle score, so that a shared segment of that score fits in it)
+        # is drawn uniformly up to max_fragment_length, within what the document can
+        # provide.
+        fragment_length = self._draw_fragment_length(len(doc_text))
+        chunk_to_edit = self._select_fragment(doc_text, fragment_length)
+        if chunk_to_edit is None:
             print("No suitable chunks found. Skipping.")
             return None
-        chunk_to_edit = np.random.choice(suitable_chunks)
 
         doc_id = doc.get("u", doc.get("id", "unknown"))
         print(
@@ -311,7 +350,9 @@ class PositiveExampleGenerator:
             flush=True,
         )
 
-        edited_text, region_score = self.edit_text(chunk_to_edit)
+        edited_text, region_score = self.edit_text(
+            chunk_to_edit, min_region_score=self.min_region_score(len(chunk_to_edit))
+        )
         if region_score < self.min_oracle_score:
             print("\nCould not edit text:", chunk_to_edit)
             print("Final score:", region_score)
@@ -321,6 +362,7 @@ class PositiveExampleGenerator:
 
         # If the edited text is shorter than the target length, we expand it by concatenating random
         # samples of text from the corpus before and after it, until the target length is reached.
+        edited_fragment = edited_text
         edited_text, expansion_meta = self.expand_to_target_length(edited_text)
 
         result = {
@@ -328,10 +370,64 @@ class PositiveExampleGenerator:
             "text2": edited_text,
             "pair_type": "positive",
             "score": region_score,
+            "fragment_length": len(chunk_to_edit),
+            "word_edit_rate": word_edit_rate(chunk_to_edit, edited_fragment),
             "meta": meta_data,
             **expansion_meta,
         }
         return result
+
+    def _draw_fragment_length(self, doc_length: int) -> int:
+        """Length of the fragment to edit from a document of doc_length characters:
+        uniform between min_oracle_score and max_fragment_length, capped so that the
+        fragment and its room for edits fit in the document."""
+        lower = int(self.min_oracle_score)
+        upper = lower if self.max_fragment_length is None else int(self.max_fragment_length)
+        upper = min(upper, int(doc_length / 1.1))
+        if upper <= lower:
+            return lower
+        return int(np.random.randint(lower, upper + 1))
+
+    def min_region_score(self, fragment_length: int) -> float:
+        """Smallest Smith-Waterman score the edited fragment must keep with its source:
+        the oracle threshold, or fragment_length - max_score_loss for longer fragments."""
+        return max(self.min_oracle_score, fragment_length - self.max_score_loss)
+
+    def _select_fragment(self, text: str, fragment_length: int) -> Optional[str]:
+        """Random passage of text of fragment_length characters, plus some room for the
+        edits above the minimum region score (at least 10 characters, less than
+        max_score_loss).
+
+        The passage starts at a sentence boundary and ends at one when possible; when
+        the last sentence would make it too long, only its beginning is taken, cut at a
+        clause or word boundary.  Returns None if no passage fits (text too short, or
+        a word longer than the room for edits at the cut)."""
+        min_slack = min(10.0, self.max_score_loss / 2)
+        min_length = fragment_length + min_slack
+        max_length = fragment_length + self.max_score_loss
+        sentences = split_units(text)
+        # Sentences from which enough text follows (joined with single spaces)
+        remaining = np.cumsum([len(s) + 1 for s in reversed(sentences)])[::-1] - 1
+        starts = np.flatnonzero(remaining >= min_length)
+        if len(starts) == 0:
+            return None
+        start = int(np.random.choice(starts))
+
+        fragment = ""
+        for sentence in sentences[start:]:
+            candidate = f"{fragment} {sentence}" if fragment else sentence
+            if len(candidate) < min_length:
+                fragment = candidate
+                continue
+            if len(candidate) < max_length:
+                return candidate
+            # The sentence overshoots: cut it at a clause or word boundary instead
+            for unit in split_units(sentence, max_unit_size=int(max_length - min_length)):
+                fragment = f"{fragment} {unit}" if fragment else unit
+                if len(fragment) >= min_length:
+                    return fragment if len(fragment) < max_length else None
+            return None
+        return None
 
     def expand_to_target_length(self, text: str) -> Tuple[str, Dict[str, Any]]:
         """If the input text is shorter than the target length, expand it by
@@ -358,7 +454,13 @@ class PositiveExampleGenerator:
 
         return expanded_text, meta_data
 
-    def edit_text(self, text, nb_attempts=500, timeout=300) -> Tuple[str, float]:
+    def edit_text(
+        self,
+        text,
+        nb_attempts=500,
+        timeout=300,
+        min_region_score: Optional[float] = None,
+    ) -> Tuple[str, float]:
         """Apply a series of random edits to the input text, while ensuring that the
         edited text remains sufficiently similar to the original text according to an
         oracle function.
@@ -366,17 +468,24 @@ class PositiveExampleGenerator:
         The edits include adding hyphenation, changing casing, adding boilerplate
         segments, and switching normalisation of unicode characters. The function
         returns the final edited text after applying a series of edits that are accepted
-        by the oracle.
+        by the oracle.  Edits are applied until one of them is rejected, either because
+        the Smith-Waterman score of the largest aligned region drops below
+        min_region_score, or because more than a fraction self.max_word_edit_rate of
+        the words of the original text would differ (see word_edit_rate).
 
         Args:
             text: The input text to edit.
             nb_attempts: The maximum number of edit attempts to apply to the text.
             timeout: The maximum time in seconds to spend on editing the text.
+            min_region_score: The Smith-Waterman score the largest aligned region must
+                keep with the original text (default: self.min_oracle_score).
 
         Returns:
             A tuple containing the final edited text and its oracle score compared to the original text.
 
         """
+        if min_region_score is None:
+            min_region_score = self.min_oracle_score
 
         initial_text = str(text)
         successive_edits = []
@@ -399,11 +508,18 @@ class PositiveExampleGenerator:
                 continue
 
             print(".", end="", flush=True)
-            region_score = self.local_aligner.get_largest_region_score(
-                initial_text, edited_text
+            # The word-level check is cheap, so the alignment is only computed for
+            # edits that keep enough of the original words.
+            accepted = (
+                word_edit_rate(initial_text, edited_text) <= self.max_word_edit_rate
             )
+            if accepted:
+                region_score = self.local_aligner.get_largest_region_score(
+                    initial_text, edited_text
+                )
+                accepted = region_score >= min_region_score
 
-            if region_score < self.min_oracle_score:
+            if not accepted:
                 if len(successive_edits) > 0:
                     print("OK", flush=True)
                     return successive_edits[-1]
@@ -460,29 +576,23 @@ class PositiveExampleGenerator:
         return text  # Return original if no suitable word found
 
     def change_casing(self, text, nb_to_change=3) -> str:
-        """Randomly changes the casing of a few words in the text."""
+        """Randomly changes the casing of a few words in the text: titled words are
+        lower-cased, lower-case words are upper-cased or titled.  Words with no
+        changeable casing (all caps, digits, mixed case) are left alone, and the text is
+        returned unchanged if it has none of the former."""
         words = text.split()
-
-        nb_changed = 0
-        while nb_changed < nb_to_change:
-            # In 50% of cases, we change the casing of a titled word to lowercase
-            if np.random.rand() < 0.5:
-                titled_indices = [i for i, w in enumerate(words) if w.istitle()]
-                if titled_indices:
-                    idx = np.random.choice(titled_indices)
-                    words[idx] = words[idx].lower()
-                    nb_changed += 1
-            # Otherwise, we change the casing of a lowercase word to either uppercase or title case
+        candidates = [i for i, w in enumerate(words) if w.istitle() or w.islower()]
+        if not candidates:
+            return text
+        np.random.shuffle(candidates)
+        for idx in candidates[:nb_to_change]:
+            word = words[idx]
+            if word.istitle():
+                words[idx] = word.lower()
+            elif np.random.rand() < 0.5:
+                words[idx] = word.upper()
             else:
-                lowercase_indices = [i for i, w in enumerate(words) if w.islower()]
-                if lowercase_indices:
-                    idx = np.random.choice(lowercase_indices)
-                    if np.random.rand() < 0.5:
-                        words[idx] = words[idx].upper()
-                    else:
-                        words[idx] = words[idx].title()
-                    nb_changed += 1
-
+                words[idx] = word.title()
         return " ".join(words)
 
     def add_boilerplate_segment(self, text) -> str:
@@ -742,7 +852,9 @@ class NegativeExampleGenerator:
         paraphrases = [e for e in edits if e["operation"] == "paraphrase"]
         for edit in permutations:
             edit["edited"] = self.permute_chunks(
-                edit["original"], target_chunk_size=0.7 * self.min_oracle_score
+                edit["original"],
+                target_chunk_size=0.7 * self.min_oracle_score,
+                reference=source,
             )
         self._paraphrase_edits(paraphrases, "conservative", temperature=1.0 if stuck else 0.8)
         applied, rejected = self._check_edits(source, edits)
@@ -1052,9 +1164,12 @@ class NegativeExampleGenerator:
         text: str,
         target_chunk_size: Optional[float] = None,
         max_chunks: Optional[int] = None,
+        reference: Optional[str] = None,
         nb_candidates: int = 3,
     ) -> str:
-        """Randomly permute the order of a few chunks of the input text.
+        """Randomly permute the order of a few chunks of the input text so that it no
+        longer aligns with the reference text (the original document; by default the
+        input text itself, when it has not been edited yet).
 
         Without target_chunk_size, the text is split into 2 to 8 chunks of random
         (Dirichlet-distributed) sizes. With target_chunk_size, it is split into chunks of
@@ -1065,9 +1180,11 @@ class NegativeExampleGenerator:
         does not break their alignment (the aligner bridges it as a cheap gap) while
         its boundaries still destroy word n-grams.
 
-        The chunks are reordered with _random_block_reversal, which keeps the source
-        order only locally *decreasing*; nb_candidates such orders are drawn and the one
-        aligning least with the input text (according to the oracle) is kept.
+        The chunks are then located in the reference and reordered by *decreasing*
+        position in it, in shuffled blocks (see _descending_block_order). Up to
+        nb_candidates such orders are drawn: the first one whose largest region aligned
+        with the reference falls below self.min_oracle_score is kept, otherwise the one
+        with the lowest score.
         """
         if target_chunk_size is None:
             nb_chunks = np.random.randint(2, 9)
@@ -1089,40 +1206,57 @@ class NegativeExampleGenerator:
             "Permuting %i chunks of sizes: %s"
             % (len(chunks), [len(c) for c in chunks])
         )
+        if reference is None:
+            reference = text
+            positions = np.arange(len(chunks), dtype=float)
+        else:
+            positions = self._locate_chunks(reference, chunks)
+
         best_text, best_score = text, float("inf")
         for _ in range(max(1, nb_candidates)):
-            order = self._random_block_reversal(len(chunks))
+            order = self._descending_block_order(positions)
             candidate = " ".join(chunks[i] for i in order)
-            score = (
-                self.aligner.get_largest_region_score(text, candidate)
-                if nb_candidates > 1
-                else 0.0
-            )
+            score = self.aligner.get_largest_region_score(reference, candidate)
             if score < best_score:
                 best_text, best_score = candidate, score
+            if score < self.min_oracle_score:
+                break
         return best_text
 
+    def _locate_chunks(self, reference: str, chunks: List[str]) -> np.ndarray:
+        """Return the position in the reference text of each chunk (the start of the
+        region of the reference it aligns best with). Chunks which do not align with at
+        least half of their length (e.g. paraphrased ones) get a random position."""
+        positions = np.random.uniform(0, len(reference), len(chunks))
+        for i, chunk in enumerate(chunks):
+            regions = self.aligner.run(reference, chunk).regions
+            if regions:
+                best = max(regions, key=lambda r: r["score"])
+                if best["score"] >= 0.5 * len(chunk):
+                    positions[i] = best["start1"]
+        return positions
+
     @staticmethod
-    def _random_block_reversal(nb_chunks: int) -> List[int]:
-        """Draw a random order of nb_chunks chunks in which the original order is only
-        ever locally *decreasing*: the chunks are grouped into blocks of consecutive
-        chunks (random number and sizes), each block is reversed and the blocks are
+    def _descending_block_order(positions: np.ndarray, max_blocks: int = 8) -> List[int]:
+        """Draw a random order of the chunks in which their positions in the reference
+        text are only ever locally *decreasing*: the chunks sorted by decreasing position
+        are grouped into a random number of blocks (at most max_blocks), which are then
         shuffled.
 
         The oracle (Smith-Waterman) can only chain chunks that appear in increasing
-        order in both texts, and the substitution of a chunk by an unrelated one of the
-        same length is much cheaper than its length (shared characters, spaces...), so
-        a plain random permutation typically leaves chains of two or three chunks in
-        increasing order, close enough to be bridged, which keeps the region above the
-        threshold. With reversed blocks, a chain can use at most one chunk per block,
-        and two originally adjacent chunks never stay adjacent in the same order.
+        order in both texts, and substituting a chunk by an unrelated one of the same
+        length is much cheaper than its length (shared characters, spaces...), so a plain
+        random permutation typically leaves chains of two or three chunks in increasing
+        order, close enough to be bridged, which keeps the region above the threshold.
+        With descending blocks, a chain can use at most one chunk per block, and two
+        originally adjacent chunks never stay adjacent in the same order.
         """
-        nb_blocks = np.random.randint(1, max(1, nb_chunks // 2) + 1)
+        descending = np.argsort(-positions, kind="stable")
+        nb_chunks = len(descending)
+        nb_blocks = np.random.randint(1, max(1, min(nb_chunks // 3, max_blocks)) + 1)
         cuts = np.sort(np.random.choice(np.arange(1, nb_chunks), nb_blocks - 1, replace=False))
-        blocks = np.split(np.arange(nb_chunks), cuts)
-        return [
-            int(i) for b in np.random.permutation(len(blocks)) for i in blocks[b][::-1]
-        ]
+        blocks = np.split(descending, cuts)
+        return [int(i) for b in np.random.permutation(len(blocks)) for i in blocks[b]]
 
 
 # Boundary patterns used to split a text into units, from strongest to weakest: sentence
@@ -1269,6 +1403,26 @@ def word_ngram_overlap(source_text: str, edited_text: str, n: int = 5) -> float:
         tuple(edited_words[i : i + n]) for i in range(len(edited_words) - n + 1)
     ]
     return sum(1 for ng in edited_ngrams if ng in source_ngrams) / len(edited_ngrams)
+
+
+def word_edit_rate(source_text: str, edited_text: str) -> float:
+    """Fraction of the words of the source text that do not survive unchanged, in
+    order, in the edited text (0 for identical texts, 1 if nothing is kept).
+
+    Words are whitespace-delimited and compared exactly, so a case flip, a hyphen or a
+    ligature counts as one changed word, as it does for exact word-matching methods;
+    inserted words (e.g. boilerplate) do not count as changes.  This bounds the share
+    of word n-grams a positive can lose independently of the oracle alignment score,
+    which is lenient with such edits.
+    """
+    source_words = source_text.split()
+    if not source_words:
+        return 0.0
+    matcher = difflib.SequenceMatcher(
+        None, source_words, edited_text.split(), autojunk=False
+    )
+    kept = sum(block.size for block in matcher.get_matching_blocks())
+    return 1.0 - kept / len(source_words)
 
 
 # ===================================================================== pipeline
@@ -1526,6 +1680,9 @@ def generate_positives(
     sw_threshold: float = 1000,
     target_length: Union[int, str, None] = None,
     overwrite: bool = False,
+    max_fragment_share: Optional[float] = 0.5,
+    max_score_loss: Optional[float] = None,
+    max_word_edit_rate: float = 0.1,
 ) -> str:
     """Step 3: generate positive examples from the documents of corpus_sample and
     append them to output_path until it holds nb_examples lines.
@@ -1548,10 +1705,17 @@ def generate_positives(
             means "the median text length of that file", so that the positives have the
             same length as the negatives; None disables padding.
         overwrite: delete output_path first instead of appending to it.
+        max_fragment_share: the length of the shared fragment is drawn uniformly between
+            sw_threshold and this share of target_length (default 0.5: the fragment
+            makes up to half of the query).  None, or no target_length, gives
+            fragments of about sw_threshold characters only (the hardest positives).
+        max_score_loss: see PositiveExampleGenerator (default: 5 % of sw_threshold).
+        max_word_edit_rate: largest fraction of the words of the fragment the edits may
+            change (see PositiveExampleGenerator; default 0.1).
 
     Each line has the fields ``text``, ``type`` ("positive"), ``source_doc_id``,
-    ``source_text``, ``oracle_score`` and the padding texts in ``before`` / ``after``.
-    Returns output_path.
+    ``source_text``, ``oracle_score``, ``fragment_length``, ``word_edit_rate`` and the
+    padding texts in ``before`` / ``after``.  Returns output_path.
     """
     if nb_examples is not None and not overwrite and count_lines(output_path) >= nb_examples:
         print(f"{output_path} already holds {nb_examples} examples, nothing to do")
@@ -1563,11 +1727,19 @@ def generate_positives(
     elif target_length is None:
         target_length = 0
 
+    max_fragment_length = None
+    if max_fragment_share is not None and target_length > 0:
+        max_fragment_length = max(int(max_fragment_share * target_length), int(sw_threshold))
+        print(f"Fragment length of the positives: {sw_threshold:g} to {max_fragment_length}")
+
     generator = PositiveExampleGenerator(
         corpus=Corpus(corpus_sample),
         other_corpus=Corpus(out_of_corpus_sample),
         min_oracle_score=sw_threshold,
         target_text_length=target_length,
+        max_fragment_length=max_fragment_length,
+        max_score_loss=max_score_loss,
+        max_word_edit_rate=max_word_edit_rate,
     )
 
     def make_example() -> Optional[dict]:
@@ -1580,6 +1752,8 @@ def generate_positives(
             "source_doc_id": ex["meta"]["id"],
             "source_text": ex["text1"],
             "oracle_score": ex["score"],
+            "fragment_length": ex.get("fragment_length"),
+            "word_edit_rate": ex.get("word_edit_rate"),
         }
         for side in ("before", "after"):
             if side in ex:

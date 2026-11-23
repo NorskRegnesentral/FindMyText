@@ -147,13 +147,14 @@ def test_raw_scores_are_what_score_candidates_normalises(corpus_and_eval_set):
         probs = detector.score_candidates(candidates, 300)
         assert probs == pytest.approx(detector._to_probabilities(raw, 300))
         assert probs == pytest.approx(detector.search(positive["text"], 300))
-        empty = detectors.Candidates(candidates.query, candidates.matches.clear())
-        assert detector.raw_scores(empty) == {}
+        empty = detectors.Candidates(candidates.hashes, candidates.positions)
+        assert empty.is_empty and detector.raw_scores(empty) == {}
         # A wider retrieval (as shared between detectors) only adds candidates,
         # which scoring then drops: same probabilities.
         wide = detector.retrieve(positive["text"], 300, top_k=1000, min_fingerprints=1)
-        assert wide.query.equals(candidates.query)
-        assert set(wide.matches["doc_match_id"]) >= set(candidates.matches["doc_match_id"])
+        assert np.array_equal(wide.hashes, candidates.hashes)
+        assert np.array_equal(wide.positions, candidates.positions)
+        assert set(wide.hits.doc_ids) >= set(candidates.hits.doc_ids)
         assert detector.score_candidates(wide, 300) == pytest.approx(probs)
 
 

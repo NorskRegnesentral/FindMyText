@@ -6,8 +6,9 @@ import subprocess
 import sys
 
 import numpy as np
-import polars as pl
 import pytest
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
 
 from findmytext import detectors, index_builder, indexing
 from findmytext.winnower import HASH_METHOD, ROLLING_BASE64, Winnower, winnow
@@ -55,8 +56,6 @@ def test_hashing_matches_independent_unsigned_reference_and_rightmost_winnowing(
     assert Winnower.from_metadata(configured.to_metadata()).to_metadata() == configured.to_metadata()
     with pytest.raises(TypeError, match="hash_method"):
         Winnower(hash_method="legacy31")
-    frame = detectors.convert_closest_matches_with_positions_to_df({"document": {2**63 + 9: [3]}})
-    assert frame["hash"].dtype == pl.UInt64 and frame["hash"][0] == 2**63 + 9
 
 
 def make_corpus(path, count=7):
@@ -105,7 +104,8 @@ def test_multiple_sub_thousand_flushes_preserve_every_occurrence_and_query(tmp_p
     for cls in (detectors.NbSharedFingerprintsDetector, detectors.FingerprintChainDetector):
         for rarity in (False, True):
             detector = cls(str(target), rarity_weighted=rarity)
-            assert detector.get_fingerprints(query).schema["hash"] == pl.UInt64
+            hashes, positions = detector.get_fingerprints(query)
+            assert hashes.dtype == np.uint64 and len(hashes) == len(positions) > 0
             scores = detector.search(query, min_fragment_length=100)
             assert scores[records[0]["id"]] > 0.5
             assert min(scores.values()) >= detector.min_probability
@@ -159,29 +159,122 @@ def test_rarity_weights_are_idf_like_and_normalised_to_unit_occurrence_mean(tmp_
         index_builder.Indexer().index_file(str(source), str(tmp_path / "shards")), str(target)
     )
     detector = detectors.NbSharedFingerprintsDetector(str(target), rarity_weighted=True, dispersion=0.5)
+    weighting = detector.weighting
     n_docs = len(records)
     counts = np.asarray(detector.index.lengths, dtype=float)
     idf = np.log1p(n_docs / counts)
-    assert detector._mean_weight == pytest.approx(np.average(idf, weights=counts))
-    assert detector._score_dispersion == pytest.approx(
-        0.5 + np.average(idf**2, weights=counts) / detector._mean_weight**2 - 1
+    assert weighting.mean == pytest.approx(np.average(idf, weights=counts))
+    assert weighting.extra_dispersion == pytest.approx(
+        np.average(idf**2, weights=counts) / weighting.mean**2 - 1
     )
-    assert detector._score_dispersion > 0.5  # unequal weights add variance
-    assert detectors.NbSharedFingerprintsDetector(str(target))._score_dispersion == 0.5
+    assert weighting.extra_dispersion > 0  # unequal weights add variance
+    assert detector._score_dispersion == pytest.approx(0.5 + weighting.extra_dispersion)
+    assert weighting.max == pytest.approx(np.log1p(n_docs) / weighting.mean)
+    plain = detectors.NbSharedFingerprintsDetector(str(target))
+    assert plain.weighting is None and plain._score_dispersion == 0.5
 
     # Weights follow log(1 + N / cf) / mean and so decrease with the posting count;
     # the corpus has fingerprints seen 7 and 14 times (the shared text is repeated).
-    weights = detector._get_fingerprint_weights(detector.get_fingerprints(records[0]["text"])["hash"])
-    hashes = np.fromiter(weights, dtype=np.uint64)
-    posting_counts = detector.index.get_posting_counts(hashes)
+    hashes = np.unique(detector.get_fingerprints(records[0]["text"])[0])
+    values = detector._fingerprint_weights(hashes)
+    posting_counts = weighting.posting_counts(hashes)
     assert posting_counts.min() >= 1 and posting_counts.min() < posting_counts.max()
-    values = np.array([weights[int(h)] for h in hashes])
-    assert values == pytest.approx(np.log1p(n_docs / posting_counts) / detector._mean_weight)
+    assert values == pytest.approx(np.log1p(n_docs / posting_counts) / weighting.mean)
+    assert np.array_equal(values, weighting(hashes))
     order = np.argsort(posting_counts)
     assert np.all(np.diff(values[order]) <= 1e-12)
-    # Unknown fingerprints are absent from the weights and have a posting count of 0.
-    assert detector.index.get_posting_counts(np.array([0], dtype=np.uint64)).tolist() == [0]
-    assert 0 not in weights
+    # Unknown fingerprints have a posting count of 0 and weight 0; uniform weights are 1.
+    unknown = np.array([0], dtype=np.uint64)
+    assert weighting.posting_counts(unknown).tolist() == [0]
+    assert detector._fingerprint_weights(unknown).tolist() == [0.0]
+    assert plain._fingerprint_weights(unknown).tolist() == [1.0]
+
+
+def test_rectangle_clustering_matches_chebyshev_linkage_and_dense_reference():
+    # Four dense clusters plus noise on an integer grid, so that many pairwise
+    # distances fall exactly on the thresholds.
+    rng = np.random.default_rng(0)
+    points = np.concatenate(
+        [c + rng.integers(-20, 21, size=(60, 2)) for c in rng.integers(0, 2000, size=(4, 2))]
+        + [rng.integers(0, 2000, size=(40, 2))]
+    )
+    pos, offset = points[:, 0], points[:, 1]
+
+    def labels(method, position_threshold, offset_threshold, min_cluster_size=5):
+        if method == "rectangle":
+            return detectors.cluster_rectangle(pos, offset, position_threshold, offset_threshold, min_cluster_size)
+        return detectors.cluster_linkage(pos, offset, method, position_threshold, min_cluster_size)
+
+    def dense_reference(position_threshold, offset_threshold, min_cluster_size=5):
+        diff = np.abs(points[:, None, :] - points[None, :, :])
+        adjacency = (diff[..., 0] <= position_threshold) & (diff[..., 1] <= offset_threshold)
+        _, raw = connected_components(csr_matrix(adjacency), directed=False)
+        return detectors._relabel_small_clusters(raw, min_cluster_size)
+
+    def assert_same_partition(a, b):  # equal up to the numbering of the valid clusters
+        np.testing.assert_array_equal(a == -1, b == -1)
+        pairs = set(zip(a[a != -1].tolist(), b[b != -1].tolist()))
+        assert len(pairs) == len(set(a.tolist()) - {-1}) == len(set(b.tolist()) - {-1})
+
+    for t in (10, 30):
+        rect = labels("rectangle", t, t)
+        assert rect.dtype == np.int32 and rect.min() == -1 and rect.max() >= 1
+        np.testing.assert_array_equal(rect, dense_reference(t, t))
+        assert_same_partition(rect, labels("chebyshev", t, t))
+    for thresholds in ((10, 40), (40, 10)):
+        np.testing.assert_array_equal(labels("rectangle", *thresholds), dense_reference(*thresholds))
+    assert labels("rectangle", 1, 1, min_cluster_size=1).max() > labels("rectangle", 1, 1).max()
+    assert detectors.cluster_rectangle(np.array([3]), np.array([5]), 30, 30, 1).tolist() == [0]
+    assert detectors.cluster_linkage(np.array([3]), np.array([5]), "euclidean", 30, 1).tolist() == [0]
+    # The detector dispatches on its method and rejects unknown ones.
+    chain = detectors.FingerprintChainDetector.__new__(detectors.FingerprintChainDetector)
+    chain.method, chain.position_threshold, chain.offset_threshold = "rectangle", 30, 30
+    chain.distance_threshold, chain.min_cluster_size = 30, 5
+    np.testing.assert_array_equal(chain.cluster(pos, offset), labels("rectangle", 30, 30))
+    chain.method = "dbscan"
+    with pytest.raises(ValueError, match="Unknown clustering method"):
+        chain.cluster(pos, offset)
+
+    relabelled = detectors._relabel_small_clusters(np.array([7, 3, 7, 3, 9, 7]), 2)
+    assert relabelled.dtype == np.int32 and relabelled.tolist() == [1, 0, 1, 0, -1, 1]
+    assert detectors._relabel_small_clusters(np.empty(0, dtype=np.int32), 1).tolist() == []
+
+
+def test_candidates_join_expands_repeated_hashes_and_cluster_weights_count_hashes_once():
+    # Hash 10 occurs twice in the query (positions 0 and 7), hash 20 once, hash 30 once
+    # but never in the document.
+    candidates = detectors.Candidates.from_query(
+        np.array([10, 20, 10, 30], dtype=np.uint64), np.array([0, 1, 7, 2])
+    )
+    assert candidates.is_empty and len(candidates.hits) == 0
+    assert candidates.hashes.tolist() == [10, 10, 20, 30] and candidates.hashes.dtype == np.uint64
+    assert candidates.positions.tolist() == [0, 7, 1, 2]
+    weights = candidates.hashes.astype(float) / 10  # one weight per query k-gram
+
+    block = np.array(
+        [(0, 10, 100), (0, 10, 105), (0, 20, 101)], dtype=indexing.HIT_DTYPE
+    )
+    # A fingerprint is identified by the index of its first query occurrence.
+    assert candidates.shared_fingerprints(block).tolist() == [0, 2]
+    fingerprint, pos_query, pos_doc = candidates.join(block)
+    # Every (query occurrence x document occurrence) pair, as an inner join would give.
+    pairs = sorted(zip(fingerprint.tolist(), pos_query.tolist(), pos_doc.tolist()))
+    assert pairs == [(0, 0, 100), (0, 0, 105), (0, 7, 100), (0, 7, 105), (2, 1, 101)]
+    assert pos_query.dtype == pos_doc.dtype == np.int64
+
+    # One cluster holding hash 10 (several pairs) and hash 20: each hash counts once.
+    labels = np.zeros(5, dtype=np.int32)
+    assert detectors.largest_cluster_weight(labels, fingerprint, weights) == pytest.approx(3.0)
+    # Two clusters: the largest weight wins, noise (-1) is ignored.
+    labels = np.array([1, 1, -1, 0, 0], dtype=np.int32)
+    expected = max(
+        weights[np.unique(fingerprint[labels == c])].sum() for c in (0, 1)
+    )
+    assert detectors.largest_cluster_weight(labels, fingerprint, weights) == pytest.approx(expected)
+    assert detectors.largest_cluster_weight(np.full(5, -1, dtype=np.int32), fingerprint, weights) == 0.0
+
+    empty = candidates.join(np.empty(0, dtype=indexing.HIT_DTYPE))
+    assert all(len(part) == 0 for part in empty)
 
 
 @pytest.mark.parametrize("start_method", [name for name in ("spawn", "forkserver") if name in mp.get_all_start_methods()])
@@ -471,14 +564,15 @@ def test_shard_directory_is_a_complete_index_across_buffer_growth(tmp_path, monk
 
 def test_two_level_search_matches_searchsorted_and_touches_only_needed_blocks():
     array = np.unique(np.random.default_rng(0).integers(0, 2**64, 10_000, dtype=np.uint64))
-    search = indexing._TwoLevelSearch(array, block=64)
+    search = indexing._TwoLevelSearch(array, array[::64], block=64)
     queries = np.concatenate([
         array[::7], array[::64], array[63::64],  # present values, incl. block edges
         array[::7] + np.uint64(1), array[::64] - np.uint64(1),  # just above / below
         np.array([0, 2**64 - 1], dtype=np.uint64),  # beyond both ends
     ])
     np.testing.assert_array_equal(search(queries), np.searchsorted(array, queries))
-    assert len(indexing._TwoLevelSearch(np.zeros(0, dtype=np.uint64))(queries)) == len(queries)
+    empty = np.zeros(0, dtype=np.uint64)
+    assert len(indexing._TwoLevelSearch(empty, empty)(queries)) == len(queries)
 
     class Counting(np.ndarray):
         reads = 0
@@ -488,13 +582,12 @@ def test_two_level_search_matches_searchsorted_and_touches_only_needed_blocks():
                 Counting.reads += 1
             return np.ndarray.__getitem__(self, item)
 
-    counted = indexing._TwoLevelSearch(array.view(Counting), block=64)
-    Counting.reads = 0  # ignore the sampling slice done at construction
+    counted = indexing._TwoLevelSearch(array.view(Counting), array[::64], block=64)
     assert counted(array[:3]).tolist() == [0, 1, 2]
     assert Counting.reads == 1  # all three queries fall in the first block
 
 
-def test_fingerprint_blocks_are_cached_on_disk_and_rebuilt_for_legacy_indexes(tmp_path):
+def test_fingerprint_blocks_are_written_by_the_builder_and_required_by_the_reader(tmp_path):
     source = tmp_path / "corpus.jsonl"
     records = make_corpus(source, count=3)
     index_dir = tmp_path / "index"
@@ -504,25 +597,25 @@ def test_fingerprint_blocks_are_cached_on_disk_and_rebuilt_for_legacy_indexes(tm
     expected = fingerprints[:: indexing.FINGERPRINT_BLOCK]
     np.testing.assert_array_equal(np.load(blocks_path), expected)
 
-    # A side file of the wrong length is ignored and rebuilt.
+    # The reader does not derive the file itself: it is loaded like every other array.
     blocks_path.unlink()
-    np.save(blocks_path, np.array([], dtype=np.uint64))
-    reader = indexing.DiskBasedIndex(str(index_dir))
-    np.testing.assert_array_equal(reader._lookup.block_starts, expected)
-    np.testing.assert_array_equal(np.load(blocks_path), expected)  # re-cached
+    with pytest.raises(FileNotFoundError):
+        indexing.DiskBasedIndex(str(index_dir))
 
-    blocks_path.unlink()  # legacy index without the side file
+    # The builder provides the repair path for an index directory lacking the file.
+    index_builder.write_fingerprint_blocks(str(index_dir))
+    np.testing.assert_array_equal(np.load(blocks_path), expected)
     reader = indexing.DiskBasedIndex(str(index_dir))
     np.testing.assert_array_equal(reader._lookup.block_starts, expected)
-    assert blocks_path.is_file()
     assert_index_matches_source(index_dir, records)
 
     # Sequential chunked computation equals the strided sample for any block size.
     array = np.sort(np.random.default_rng(1).integers(0, 2**64, 5_000, dtype=np.uint64))
     for block in (1, 7, 64, indexing.FINGERPRINT_BLOCK):
         np.testing.assert_array_equal(
-            indexing.compute_fingerprint_blocks(array, block), array[::block]
+            index_builder.compute_fingerprint_blocks(array, block), array[::block]
         )
+    assert len(index_builder.compute_fingerprint_blocks(array[:0])) == 0
 
 
 def test_default_posting_reads_avoid_pool_and_equal_explicit_threaded_reads(tmp_path, monkeypatch):

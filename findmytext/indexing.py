@@ -8,8 +8,8 @@ An index directory contains:
 - postings.dat: concatenated postings lists, POSTING_DTYPE records (doc_id, position)
 - doc_name_offsets.npy / doc_name_bytes.npy: UTF-8 document names, concatenated,
   indexed by internal doc_id
-- fingerprint_blocks.npy: every FINGERPRINT_BLOCK-th fingerprint, the in-RAM top level
-  of the lookup (derived from fingerprints.npy; rebuilt and cached if missing)
+- fingerprint_blocks.npy: every FINGERPRINT_BLOCK-th entry of fingerprints.npy, the
+  in-RAM top level of the fingerprint lookup
 
 Directories in this format are written by index_builder.PostingBuffer.
 """
@@ -17,7 +17,8 @@ Directories in this format are written by index_builder.PostingBuffer.
 import heapq
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import Dict, Iterator, List, Tuple
 
 import numpy as np
 import orjson  # 3-5x faster JSON parsing
@@ -27,37 +28,63 @@ from . import winnower
 
 POSTING_DTYPE = np.dtype([("doc_id", np.uint32), ("position", np.uint32)])
 
+# One row of Hits.table: a query fingerprint found at a position of a candidate doc.
+HIT_DTYPE = np.dtype([("doc", np.uint32), ("hash", np.uint64), ("position", np.uint32)])
+
 # Fingerprints per block of the two-level lookup: 512 uint64 = one 4 KiB page.
 FINGERPRINT_BLOCK = 512
 FINGERPRINT_BLOCKS_FILE = "fingerprint_blocks.npy"
 
 
-def compute_fingerprint_blocks(
-    fingerprints: np.ndarray, block: int = FINGERPRINT_BLOCK
-) -> np.ndarray:
-    """Return the first fingerprint of every block-sized block.
+@dataclass(frozen=True, eq=False)
+class Hits:
+    """Occurrences of query fingerprints in the closest candidate documents.
 
-    Reads the (possibly memory-mapped) array in large sequential chunks: a strided
-    ``fingerprints[::block]`` on a memmap would instead fault in every page one at a
-    time, which takes minutes on a network filesystem.
+    Rows are grouped by document in closeness order (most shared fingerprints first) 
+    and sorted by ``(hash, position)`` within a document, so the hits of candidate 
+    ``i`` are ``table[starts[i]:starts[i + 1]]`` (a view, do not mutate) 
+    and ``doc_ids[i]`` is its external id.
+
+    Attributes
+    ----------
+    table : np.ndarray
+        Structured array of :data:`HIT_DTYPE` (``doc``, ``hash``, ``position``).
+    starts : np.ndarray
+        int64 block boundaries, ``len(doc_ids) + 1`` entries, from 0 to ``len(table)``.
+    doc_ids : list[str]
+        External ids of the candidate documents, in closeness order.
+
     """
-    chunk = block * (1 << 15)  # ~128 MiB of uint64 for the default block size
-    parts = [
-        np.asarray(fingerprints[i : i + chunk])[::block]
-        for i in range(0, len(fingerprints), chunk)
-    ]
-    if not parts:
-        return np.zeros(0, dtype=np.uint64)
-    return np.ascontiguousarray(np.concatenate(parts))
 
+    table: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=HIT_DTYPE))
+    starts: np.ndarray = field(default_factory=lambda: np.zeros(1, dtype=np.int64))
+    doc_ids: List[str] = field(default_factory=list)
 
-def write_fingerprint_blocks(index_dir: str) -> None:
-    """Derive fingerprint_blocks.npy from fingerprints.npy in index_dir."""
-    fingerprints = np.load(os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r")
-    np.save(
-        os.path.join(index_dir, FINGERPRINT_BLOCKS_FILE),
-        compute_fingerprint_blocks(fingerprints),
-    )
+    def __len__(self) -> int:
+        return len(self.doc_ids)
+
+    def block(self, i: int) -> np.ndarray:
+        """Hits of the ``i``-th candidate document (a view into ``table``)."""
+        return self.table[self.starts[i] : self.starts[i + 1]]
+
+    def __iter__(self) -> Iterator[Tuple[str, np.ndarray]]:
+        """Iterate over ``(doc_id, block)`` pairs in closeness order."""
+        for i, doc_id in enumerate(self.doc_ids):
+            yield doc_id, self.block(i)
+
+    def to_dict(self) -> Dict[str, Dict[int, List[int]]]:
+        """The nested ``{doc_id: {hash: [positions]}}`` form of the same hits."""
+        result: Dict[str, Dict[int, List[int]]] = {}
+        for doc_id, block in self:
+            hashes = block["hash"]
+            # Blocks are sorted by hash: a run of equal hashes is one fingerprint.
+            bounds = np.flatnonzero(np.r_[True, hashes[1:] != hashes[:-1], True])
+            positions = block["position"]
+            result[doc_id] = {
+                int(hashes[lo]): positions[lo:hi].tolist()
+                for lo, hi in zip(bounds[:-1].tolist(), bounds[1:].tolist())
+            }
+        return result
 
 
 class DiskBasedIndex:
@@ -89,7 +116,7 @@ class DiskBasedIndex:
             os.path.join(index_dir, "fingerprints.npy"), mmap_mode="r"
         )
         self._lookup = _TwoLevelSearch(
-            self.fingerprints, self._load_fingerprint_blocks(index_dir)
+            self.fingerprints, np.load(os.path.join(index_dir, FINGERPRINT_BLOCKS_FILE))
         )
         self.offsets = np.load(os.path.join(index_dir, "offsets.npy"), mmap_mode="r")
         self.lengths = np.load(os.path.join(index_dir, "lengths.npy"), mmap_mode="r")
@@ -113,26 +140,6 @@ class DiskBasedIndex:
             ThreadPoolExecutor(max_workers=n_workers)
             if n_workers > 1 else None
         )
-
-    def _load_fingerprint_blocks(self, index_dir: str) -> np.ndarray:
-        """Top level of the fingerprint lookup, read from fingerprint_blocks.npy.
-
-        Indexes built before that file existed get it computed (one sequential pass
-        over fingerprints.npy) and cached next to the index if the directory is
-        writable.
-        """
-        path = os.path.join(index_dir, FINGERPRINT_BLOCKS_FILE)
-        expected = -(-len(self.fingerprints) // FINGERPRINT_BLOCK)
-        if os.path.isfile(path):
-            blocks = np.load(path)
-            if len(blocks) == expected:
-                return blocks
-        blocks = compute_fingerprint_blocks(self.fingerprints)
-        try:
-            np.save(path, blocks)
-        except OSError:
-            pass  # read-only index directory: recompute on every load
-        return blocks
 
     def get_metadata(self) -> dict:
         """Fingerprint parameters the index was built with (see ``Winnower.to_metadata``).
@@ -215,6 +222,84 @@ class DiskBasedIndex:
             for i in top_idx
         }
 
+    def get_closest_hits(
+        self,
+        query: np.ndarray,
+        min_fingerprints: int = 5,
+        top_k: int = 5,
+        verbose: bool = True,
+    ) -> Hits:
+        """Retrieve the documents sharing the most fingerprints with ``query``, with
+        every occurrence of a shared fingerprint, as one flat :class:`Hits` table.
+
+        Args:
+            query: Winnowed fingerprints of the query document (uint64 array, or an
+                object with ``to_numpy``).
+            min_fingerprints: Minimum number of distinct shared fingerprints for a
+                document to be a candidate (default: 5).
+            top_k: Number of candidates to return, by descending shared-fingerprint
+                count (default: 5).
+            verbose: Display a progress bar while reading the posting lists.
+
+        Returns:
+            The hits of the top-k candidates (empty :class:`Hits` when none qualifies).
+
+        """
+        if self.to_external_doc_id is None or self.fingerprints is None:
+            raise ValueError("Index not initialized")
+
+        if isinstance(query, np.ndarray):
+            query_fps = query
+        elif hasattr(query, "to_numpy"):
+            query_fps = query.to_numpy()
+        else:
+            raise ValueError("query must be an array of fingerprints")
+
+        postings = self._get_postings(query_fps, only_doc_ids=False, verbose=verbose)
+        if not postings:
+            return Hits()
+
+        # One flat (doc, hash, position) table over every posting read, sorted by
+        # (doc, hash, position) so that each document, and each fingerprint within
+        # it, is a contiguous run.
+        arrays = list(postings.values())
+        fps = np.fromiter(postings.keys(), dtype=np.uint64, count=len(arrays))
+        lengths = np.fromiter((len(a) for a in arrays), dtype=np.int64, count=len(arrays))
+        flat = np.concatenate(arrays)
+        hashes = np.repeat(fps, lengths)
+        order = np.lexsort((flat["position"], hashes, flat["doc_id"]))
+        docs, hashes, positions = flat["doc_id"][order], hashes[order], flat["position"][order]
+
+        # Shared-fingerprint count per document = number of distinct (doc, hash)
+        # runs; a fingerprint occurring several times in a document counts once.
+        new_run = np.r_[True, (docs[1:] != docs[:-1]) | (hashes[1:] != hashes[:-1])]
+        unique_docs, doc_counts = np.unique(docs[new_run], return_counts=True)
+
+        mask = doc_counts >= min_fingerprints
+        candidates = unique_docs[mask]
+        if len(candidates) == 0:
+            return Hits()
+        candidate_counts = doc_counts[mask]
+        top_idx = heapq.nlargest(
+            min(top_k, len(candidates)),
+            range(len(candidates)),
+            key=lambda i: candidate_counts[i],
+        )
+        top_docs = candidates[top_idx]
+
+        # Gather the (already sorted) run of each top document, in closeness order.
+        lo = np.searchsorted(docs, top_docs, side="left")
+        hi = np.searchsorted(docs, top_docs, side="right")
+        starts = np.zeros(len(top_docs) + 1, dtype=np.int64)
+        np.cumsum(hi - lo, out=starts[1:])
+        rows = np.concatenate([np.arange(a, b) for a, b in zip(lo.tolist(), hi.tolist())])
+        table = np.empty(len(rows), dtype=HIT_DTYPE)
+        table["doc"] = docs[rows]
+        table["hash"] = hashes[rows]
+        table["position"] = positions[rows]
+        doc_ids = [self.to_external_doc_id[int(d)] for d in top_docs]
+        return Hits(table, starts, doc_ids)
+
     def get_closest_matches_with_positions(
         self,
         query: np.ndarray,
@@ -225,6 +310,8 @@ class DiskBasedIndex:
         """Given an array of query fingerprints, retrieve the closest matching documents
         from the index based on shared fingerprints, along with the positions of the
         shared fingerprints in the index for each matching document.
+
+        This is :meth:`get_closest_hits` in nested-dictionary form.
 
         Args:
             query: Winnowed fingerprints of the query document.
@@ -240,73 +327,9 @@ class DiskBasedIndex:
         occur in the index for that document.
 
         """
-        if self.to_external_doc_id is None or self.fingerprints is None:
-            raise ValueError("Index not initialized")
-
-        if isinstance(query, np.ndarray):
-            query_fps = query
-        elif hasattr(query, "to_numpy"):
-            query_fps = query.to_numpy()
-        else:
-            raise ValueError("query must be an array of fingerprints")
-
-        # Retrieve the postings lists for each fingerprint in the query
-        # (NB: we ignore the positions in the postings here)
-        postings = self._get_postings(query_fps, only_doc_ids=False, verbose=verbose)
-
-        if not postings:
-            return {}  # Return an empty dictionary if no postings are found
-
-        # Sparse counting: work only over doc_ids that actually appeared in postings.
-        all_doc_ids = np.concatenate(
-            [np.unique(posting_arr["doc_id"]) for posting_arr in postings.values()]
-        )
-        unique_docs, doc_counts = np.unique(all_doc_ids, return_counts=True)
-
-        # Filter documents that have at least the minimum number of shared fingerprints
-        # and return the top-k matches
-        mask = doc_counts >= min_fingerprints
-        candidates = unique_docs[mask]
-        if len(candidates) == 0:
-            return {}
-        candidate_counts = doc_counts[mask]
-        top_idx = heapq.nlargest(
-            min(top_k, len(candidates)),
-            range(len(candidates)),
-            key=lambda i: candidate_counts[i],
-        )
-        top_docs = [int(candidates[i]) for i in top_idx]
-
-        # For each of the top matching documents, retrieve the positions of the shared fingerprints in the index
-        top_docs_external = {}
-        for doc_id in top_docs:
-            doc_id_external = self.to_external_doc_id[doc_id]
-            top_docs_external[doc_id_external] = {}
-
-            for fp, postings_array in postings.items():
-                postings_with_doc = postings_array[postings_array["doc_id"] == doc_id]
-                if len(postings_with_doc["position"]) > 0:
-                    top_docs_external[doc_id_external][int(fp)] = postings_with_doc[
-                        "position"
-                    ].tolist()
-
-        return top_docs_external
-
-    def get_posting_counts(self, fingerprints: np.ndarray) -> np.ndarray:
-        """Number of postings of each fingerprint in the index (0 when absent).
-
-        Only the fingerprint and length arrays are consulted, so this is much
-        cheaper than reading the postings themselves.
-        """
-        queries = np.asarray(fingerprints, dtype=np.uint64)
-        counts = np.zeros(len(queries), dtype=np.int64)
-        if not len(self.fingerprints):
-            return counts
-        idx = self._lookup(queries)
-        idx_clipped = np.clip(idx, 0, len(self.fingerprints) - 1)
-        found = (idx < len(self.fingerprints)) & (self.fingerprints[idx_clipped] == queries)
-        counts[found] = self.lengths[idx_clipped[found]]
-        return counts
+        return self.get_closest_hits(
+            query, min_fingerprints=min_fingerprints, top_k=top_k, verbose=verbose
+        ).to_dict()
 
     def _get_postings(
         self,
@@ -393,14 +416,15 @@ class _TwoLevelSearch:
     uint64); the first entry of each block is kept in RAM (0.2% of the array), located
     with an in-memory binary search, and only the matching block is then searched on
     disk.  Positions returned are identical to np.searchsorted(array, queries).
+
+    ``block_starts`` must equal ``array[::block]`` (index_builder writes it to
+    fingerprint_blocks.npy).
     """
 
-    def __init__(self, array: np.ndarray, block_starts: np.ndarray = None,
+    def __init__(self, array: np.ndarray, block_starts: np.ndarray,
                  block: int = FINGERPRINT_BLOCK):
         self.array = array
         self.block = block
-        if block_starts is None:
-            block_starts = compute_fingerprint_blocks(array, block)
         self.block_starts = block_starts  # in RAM, 0.2% of the array
 
     def __call__(self, queries: np.ndarray) -> np.ndarray:

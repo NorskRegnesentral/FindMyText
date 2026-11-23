@@ -12,7 +12,7 @@ from importlib import import_module
 from .oracle import align
 
 # Lazily resolved so that lightweight submodules (oracle, utils) can be imported
-# in environments without the indexing/detection dependencies (polars, scipy, ...).
+# in environments without the indexing/detection dependencies (scipy, numba, ...).
 _LAZY_ATTRS = {
     "FingerprintChainDetector": ".detectors",
     "NbSharedFingerprintsDetector": ".detectors",

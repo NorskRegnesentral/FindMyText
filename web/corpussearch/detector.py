@@ -8,15 +8,17 @@ the general detector modules. It intentionally exposes the small API expected by
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Dict
 
 import numpy as np
-import polars as pl
 
 from findmytext import indexing, winnower
 from findmytext.detectors import (
-    FingerprintChainDetector,
-    convert_closest_matches_with_positions_to_df,
+    Candidates,
+    cluster_linkage,
+    cluster_rectangle,
+    largest_cluster_weight,
 )
 
 DEFAULT_CLUSTERING_PARAMS: Dict[str, object] = {
@@ -61,21 +63,31 @@ def _validate_score(score: str) -> None:
         raise ValueError(f"score must be 'count' or 'rarity', got {score!r}.")
 
 
-def _compute_fingerprint_rarity(
-    index: indexing.DiskBasedIndex,
-    fingerprints: np.ndarray,
-    index_num_documents: int,
-) -> pl.DataFrame:
-    postings = index._get_postings(fingerprints, only_doc_ids=True)
-    hashes = np.fromiter(postings.keys(), dtype=np.uint64, count=len(postings))
-    rarities = np.fromiter(
-        (1 - len(np.unique(doc_ids)) / index_num_documents for doc_ids in postings.values()),
-        dtype=np.float64,
-        count=len(postings),
-    )
-    return pl.DataFrame({"hash": hashes, "rarity": rarities}).sort(
-        "rarity", descending=True
-    )
+def _fingerprint_rarity(
+    index: indexing.DiskBasedIndex, hashes: np.ndarray, num_documents: int
+) -> np.ndarray:
+    """Rarity ``1 - df(h) / N`` of each fingerprint in ``hashes`` (sorted, possibly
+    repeated), 0.0 for those absent from the index."""
+    unique, inverse = np.unique(hashes, return_inverse=True)
+    postings = index._get_postings(unique, only_doc_ids=True)
+    rarity = np.zeros(len(unique), dtype=np.float64)
+    if postings:
+        found = np.fromiter(postings.keys(), dtype=np.uint64, count=len(postings))
+        rarity[np.searchsorted(unique, found)] = [
+            1 - len(np.unique(doc_ids)) / num_documents for doc_ids in postings.values()
+        ]
+    return rarity[inverse]
+
+
+@dataclass(frozen=True, eq=False)
+class _Prepared:
+    """A query with its candidate hits, and the rarity of each query fingerprint."""
+
+    candidates: Candidates
+    rarity: np.ndarray  # aligned with candidates.hashes
+
+    def weights(self, score: str) -> np.ndarray:
+        return self.rarity if score == "rarity" else np.ones(len(self.candidates.hashes))
 
 
 class TextContainmentDetector:
@@ -92,10 +104,14 @@ class TextContainmentDetector:
         )
 
     def find_matches_jaccard(self, text: str, score: str = "count") -> Dict[str, float]:
+        """Per candidate, the number (or rarity sum) of distinct shared fingerprints."""
         _validate_score(score)
-        df = self.find_matches_jaccard_df(text)
-        col = "num_shared_unique_hashes" if score == "count" else "rarity_sum_unique"
-        return self._df_to_dict(df, col)
+        prepared = self._prepare(text)
+        candidates, weights = prepared.candidates, prepared.weights(score)
+        return {
+            doc_id: float(weights[candidates.shared_fingerprints(block)].sum())
+            for doc_id, block in candidates.hits
+        }
 
     def find_matches_clustering(
         self,
@@ -103,47 +119,18 @@ class TextContainmentDetector:
         clustering_params: Dict[str, object] | None = None,
         score: str = "count",
     ) -> Dict[str, float]:
+        """Per candidate, the number (or rarity sum) of distinct shared fingerprints
+        in its largest cluster (0 when no cluster survives ``min_cluster_size``)."""
         _validate_score(score)
-        df = self.find_matches_clustering_df(text, clustering_params)
-        col = (
-            "num_shared_unique_hashes_in_largest_cluster"
-            if score == "count"
-            else "rarity_sum_in_top_rarity_cluster_unique"
-        )
-        return self._df_to_dict(df, col)
-
-    def find_matches_jaccard_df(self, text: str) -> pl.DataFrame:
-        _, fingerprints_rarity, df_closest = self._prepare(text)
-        return self._jaccard_from_closest(df_closest, fingerprints_rarity)
-
-    def find_matches_clustering_df(
-        self, text: str, clustering_params: Dict[str, object] | None = None
-    ) -> pl.DataFrame:
         params = {**DEFAULT_CLUSTERING_PARAMS, **(clustering_params or {})}
-        df_query, fingerprints_rarity, df_closest = self._prepare(text)
-        df_jaccard = self._jaccard_from_closest(df_closest, fingerprints_rarity)
-
-        if df_closest.height == 0:
-            return df_jaccard.with_columns([
-                pl.lit(0, dtype=pl.Int64).alias("num_shared_unique_hashes_in_largest_cluster"),
-                pl.lit(0.0, dtype=pl.Float64).alias("rarity_sum_in_top_rarity_cluster_unique"),
-            ])
-
-        df_cluster = self._cluster_scores_per_match(
-            df_query=df_query,
-            df_closest=df_closest,
-            fingerprints_rarity=fingerprints_rarity,
-            params=params,
-        )
-        return (
-            df_jaccard
-            .join(df_cluster, on=["doc_match_id", "doc_match_closeness_rank"], how="left")
-            .with_columns([
-                pl.col("num_shared_unique_hashes_in_largest_cluster").fill_null(0),
-                pl.col("rarity_sum_in_top_rarity_cluster_unique").fill_null(0.0),
-            ])
-            .sort("doc_match_closeness_rank")
-        )
+        prepared = self._prepare(text)
+        candidates, weights = prepared.candidates, prepared.weights(score)
+        scores: Dict[str, float] = {}
+        for doc_id, block in candidates.hits:
+            fingerprint, pos_query, pos_doc = candidates.join(block)
+            labels = self._cluster(pos_query, pos_doc - pos_query, params)
+            scores[doc_id] = largest_cluster_weight(labels, fingerprint, weights)
+        return scores
 
     def get_match_highlight_positions(
         self,
@@ -165,208 +152,60 @@ class TextContainmentDetector:
         method: str = "clustering",
         which: str = "largest",
     ) -> list[list[int]]:
+        """Query positions (k-gram indices) shared with ``doc_id``, grouped by cluster
+        (largest first by distinct fingerprints) or as a single group for
+        ``method="jaccard"``."""
         if method not in ("clustering", "jaccard"):
             raise ValueError(f"method must be 'clustering' or 'jaccard', got {method!r}.")
         if which not in ("largest", "all"):
             raise ValueError(f"which must be 'largest' or 'all', got {which!r}.")
 
-        df_query, _, df_closest = self._prepare(text)
-        if df_closest.height == 0:
+        candidates = self._prepare(text).candidates
+        if doc_id not in candidates.hits.doc_ids:
             return []
-
-        df_match = df_closest.filter(pl.col("doc_match_id") == doc_id)
-        if df_match.height == 0:
-            return []
+        block = candidates.hits.block(candidates.hits.doc_ids.index(doc_id))
+        fingerprint, pos_query, pos_doc = candidates.join(block)
 
         if method == "jaccard":
-            shared_hashes = df_match.select("hash").unique()
-            positions = (
-                df_query
-                .join(shared_hashes, on="hash", how="inner")
-                .get_column("position")
-                .to_list()
-            )
-            pos = sorted({int(p) for p in positions})
-            return [pos] if pos else []
+            return [np.unique(pos_query).tolist()]
 
         params = {**DEFAULT_CLUSTERING_PARAMS, **(clustering_params or {})}
-        df_shared = self._shared_positions(df_query, df_match)
-        if df_shared.height == 0:
+        labels = self._cluster(pos_query, pos_doc - pos_query, params)
+        keep = labels >= 0
+        if not keep.any():
             return []
+        labels, fingerprint, pos_query = labels[keep], fingerprint[keep], pos_query[keep]
 
-        df_clustered = self._cluster_shared(df_shared, params)
-        non_noise = df_clustered.filter(pl.col("cluster_id") != -1)
-        if non_noise.height == 0:
-            return []
-
-        sizes = (
-            non_noise
-            .group_by("cluster_id")
-            .agg(pl.col("hash").n_unique().alias("n_unique"))
-            .sort("n_unique", descending=True)
-        )
-        cluster_ids = sizes.get_column("cluster_id").to_list()
+        # Distinct fingerprints per cluster, to rank the clusters by size.
+        _, first = np.unique(labels.astype(np.int64) * len(candidates.hashes) + fingerprint, return_index=True)
+        n_unique = np.bincount(labels[first])
+        cluster_ids = np.argsort(-n_unique, kind="stable")
         if which == "largest":
             cluster_ids = cluster_ids[:1]
+        return [np.unique(pos_query[labels == c]).tolist() for c in cluster_ids.tolist()]
 
-        groups: list[list[int]] = []
-        for cluster_id in cluster_ids:
-            pos = sorted({
-                int(p)
-                for p in non_noise
-                .filter(pl.col("cluster_id") == cluster_id)
-                .get_column("position_doc1")
-                .to_list()
-            })
-            if pos:
-                groups.append(pos)
-        return groups
-
-    def _prepare(self, text: str) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-        fingerprints, positions = self.runtime_winnower.get_winnowed_fingerprints(text)
-        df_query = pl.DataFrame({"hash": fingerprints, "position": positions}).with_columns(
-            pl.col("hash").cast(pl.UInt64)
+    def _prepare(self, text: str) -> _Prepared:
+        hashes, positions = self.runtime_winnower.get_winnowed_fingerprints(text)
+        hits = self.index.get_closest_hits(
+            query=hashes, top_k=self.top_k, min_fingerprints=self.min_fingerprints, verbose=False
         )
-        fingerprints_rarity = _compute_fingerprint_rarity(
-            index=self.index,
-            fingerprints=fingerprints,
-            index_num_documents=self.num_documents,
-        )
-        closest = self.index.get_closest_matches_with_positions(
-            query=fingerprints,
-            top_k=self.top_k,
-            min_fingerprints=self.min_fingerprints,
-            verbose=False,
-        )
-        return df_query, fingerprints_rarity, convert_closest_matches_with_positions_to_df(closest)
+        candidates = Candidates.from_query(hashes, positions, hits)
+        rarity = _fingerprint_rarity(self.index, candidates.hashes, self.num_documents)
+        return _Prepared(candidates, rarity)
 
     @staticmethod
-    def _jaccard_from_closest(
-        df_closest: pl.DataFrame, fingerprints_rarity: pl.DataFrame
-    ) -> pl.DataFrame:
-        if df_closest.height == 0:
-            return pl.DataFrame(schema={
-                "doc_match_id": pl.Utf8,
-                "doc_match_closeness_rank": pl.Int32,
-                "num_shared_unique_hashes": pl.UInt32,
-                "rarity_sum_unique": pl.Float64,
-            })
-
-        df_unique = (
-            df_closest
-            .select(["doc_match_id", "doc_match_closeness_rank", "hash"])
-            .unique(maintain_order=True)
-            .join(fingerprints_rarity, on="hash", how="left")
-            .with_columns(pl.col("rarity").fill_null(0.0))
-        )
-        return (
-            df_unique
-            .group_by(["doc_match_id", "doc_match_closeness_rank"], maintain_order=True)
-            .agg([
-                pl.len().alias("num_shared_unique_hashes"),
-                pl.col("rarity").sum().alias("rarity_sum_unique"),
-            ])
-            .sort("doc_match_closeness_rank")
-        )
-
-    def _cluster_scores_per_match(
-        self,
-        df_query: pl.DataFrame,
-        df_closest: pl.DataFrame,
-        fingerprints_rarity: pl.DataFrame,
-        params: Dict[str, object],
-    ) -> pl.DataFrame:
-        df_closest_ids = (
-            df_closest
-            .select(["doc_match_id", "doc_match_closeness_rank"])
-            .group_by("doc_match_id", maintain_order=True)
-            .first()
-        )
-
-        rows = []
-        for doc_id, rank in df_closest_ids.iter_rows():
-            df_match = (
-                df_closest
-                .filter(pl.col("doc_match_id") == doc_id)
-                .select(["hash", "position"])
-                .join(fingerprints_rarity, on="hash", how="left")
-                .with_columns(pl.col("rarity").fill_null(0.0))
+    def _cluster(pos_query: np.ndarray, offset: np.ndarray, params: Dict[str, object]) -> np.ndarray:
+        method = params["method"]
+        if method == "rectangle":
+            return cluster_rectangle(
+                pos_query, offset,
+                params["position_threshold"], params["offset_threshold"], params["min_cluster_size"],
             )
-            df_shared = self._shared_positions(df_query, df_match, include_rarity=True)
-
-            n_largest_cluster, rarity_top_cluster = 0, 0.0
-            if df_shared.height > 0:
-                df_clustered = self._cluster_shared(df_shared, params)
-                df_clusters = (
-                    df_clustered
-                    .filter(pl.col("cluster_id") != -1)
-                    .group_by("cluster_id", maintain_order=True)
-                    .agg([
-                        pl.col("hash").n_unique().alias("n_unique"),
-                        pl.struct(["hash", "rarity"]).unique().struct.field("rarity").sum().alias("rarity_unique"),
-                    ])
-                )
-                if df_clusters.height > 0:
-                    n_largest_cluster = int(df_clusters.select(pl.col("n_unique").max()).item())
-                    rarity_top_cluster = float(df_clusters.select(pl.col("rarity_unique").max()).item())
-
-            rows.append({
-                "doc_match_id": doc_id,
-                "doc_match_closeness_rank": rank,
-                "num_shared_unique_hashes_in_largest_cluster": n_largest_cluster,
-                "rarity_sum_in_top_rarity_cluster_unique": rarity_top_cluster,
-            })
-
-        return pl.DataFrame(
-            rows,
-            schema={
-                "doc_match_id": pl.Utf8,
-                "doc_match_closeness_rank": pl.Int32,
-                "num_shared_unique_hashes_in_largest_cluster": pl.Int64,
-                "rarity_sum_in_top_rarity_cluster_unique": pl.Float64,
-            },
-        )
-
-    @staticmethod
-    def _shared_positions(
-        df_query: pl.DataFrame, df_match: pl.DataFrame, include_rarity: bool = False
-    ) -> pl.DataFrame:
-        selected = [
-            pl.col("hash"),
-            pl.col("position").alias("position_doc1"),
-            pl.col("position_doc2"),
-        ]
-        if include_rarity:
-            selected.insert(1, pl.col("rarity"))
-        return (
-            df_query
-            .join(df_match, on="hash", how="inner", suffix="_doc2")
-            .select(selected)
-            .with_columns(
-                (pl.col("position_doc2") - pl.col("position_doc1")).alias("position_offset")
+        if method in {"euclidean", "cityblock", "chebyshev"}:
+            return cluster_linkage(
+                pos_query, offset, method, params["distance_threshold"], params["min_cluster_size"]
             )
-            .sort("position_doc1")
-        )
-
-    @staticmethod
-    def _cluster_shared(df_shared: pl.DataFrame, params: Dict[str, object]) -> pl.DataFrame:
-        chain = FingerprintChainDetector.__new__(FingerprintChainDetector)
-        chain.method = params["method"]
-        chain.position_threshold = params["position_threshold"]
-        chain.offset_threshold = params["offset_threshold"]
-        chain.distance_threshold = params["distance_threshold"]
-        chain.min_cluster_size = params["min_cluster_size"]
-        if chain.method == "rectangle":
-            return FingerprintChainDetector._get_df_hash_cluster_rectangle(chain, df_shared)
-        if chain.method in {"euclidean", "cityblock", "chebyshev"}:
-            return FingerprintChainDetector._get_df_hash_cluster_linkage(chain, df_shared)
         raise ValueError(
-            f"Unknown clustering method {chain.method!r}; must be one of "
+            f"Unknown clustering method {method!r}; must be one of "
             "'rectangle', 'euclidean', 'cityblock', or 'chebyshev'."
         )
-
-    @staticmethod
-    def _df_to_dict(df: pl.DataFrame, score_col: str) -> Dict[str, float]:
-        if df.height == 0:
-            return {}
-        return dict(zip(df["doc_match_id"].to_list(), df[score_col].to_list()))

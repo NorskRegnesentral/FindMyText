@@ -20,49 +20,100 @@ the matching documents from the index into a :class:`Candidates` object, and
 ``raw_scores``: shared fingerprint count or largest-cluster weight).  Several
 detectors bound to the same index can thus score one shared retrieval.
 
+Everything is plain NumPy: the index returns one flat ``(doc, hash, position)``
+table (:class:`findmytext.indexing.Hits`), the query is kept sorted by hash, and
+joining the two is a ``searchsorted`` of the hits into the query (every hit's hash
+is a query hash by construction).
+
 """
 
 from __future__ import annotations
 
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import numpy as np
-import polars as pl
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
 from scipy.stats import norm
 
 from . import indexing, winnower
+from .indexing import Hits
 
 # Average number of characters per word (including trailing space) for typical
 # English text.  This is the size of one k-gram sliding step and is used to
 # convert a fragment length in characters to an expected fingerprint count.
 _AVG_CHARS_PER_WORD: float = 5.5
 
+_LINKAGE_METRICS = {"euclidean", "cityblock", "chebyshev"}
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, eq=False)
 class Candidates:
     """Result of :meth:`_BaseDetector.retrieve`: a query and its candidate matches.
 
+    Build with :meth:`from_query`, which sorts the query by hash so that
+    :meth:`join` can pair hits with query positions by binary search.
+
     Attributes
     ----------
-    query : pl.DataFrame
-        Fingerprints of the query text, with columns ``hash`` (UInt64) and
-        ``position`` (see :meth:`_BaseDetector.get_fingerprints`).
-    matches : pl.DataFrame
-        One row per (document, shared hash, position in that document), with
-        columns ``doc_match_id``, ``doc_match_closeness_rank``, ``hash`` and
-        ``position`` (see :func:`convert_closest_matches_with_positions_to_df`).
+    hashes : np.ndarray
+        uint64 fingerprints of the query text, one per k-gram, sorted (with repeats
+        when a k-gram occurs several times in the query).
+    positions : np.ndarray
+        int64 position (k-gram index) of each query fingerprint, aligned with ``hashes``.
+    hits : Hits
+        Every occurrence of a query fingerprint in each candidate document, grouped
+        by document in closeness order (see :class:`findmytext.indexing.Hits`).
         Empty when no document shares enough fingerprints.
 
     """
 
-    query: pl.DataFrame
-    matches: pl.DataFrame
+    hashes: np.ndarray
+    positions: np.ndarray
+    hits: Hits = field(default_factory=Hits)
+
+    @classmethod
+    def from_query(
+        cls, hashes: np.ndarray, positions: np.ndarray, hits: Optional[Hits] = None
+    ) -> Candidates:
+        """Build from the aligned ``(hashes, positions)`` of a query in text order."""
+        hashes = np.asarray(hashes, dtype=np.uint64)
+        order = np.argsort(hashes, kind="stable")
+        return cls(
+            hashes[order],
+            np.asarray(positions, dtype=np.int64)[order],
+            Hits() if hits is None else hits,
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.hits) == 0
+
+    def join(self, block: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Pair every hit of ``block`` (a document's rows of ``hits.table``) with
+        every query position of its hash, like an inner join on the hash.
+
+        Returns aligned arrays ``(fingerprint, pos_query, pos_doc)`` with one entry
+        per pair.  ``fingerprint`` is the index into ``hashes`` of the first query
+        occurrence of the hash: an id of the fingerprint that also indexes any
+        array aligned with ``hashes`` (e.g. weights).  Positions are int64.
+        """
+        lo = np.searchsorted(self.hashes, block["hash"], side="left")
+        hi = np.searchsorted(self.hashes, block["hash"], side="right")
+        reps = hi - lo  # query occurrences of each hit's hash
+        hit = np.repeat(np.arange(len(block)), reps)
+        # Row r of hit i (r = 0 .. reps[i] - 1) takes the r-th query occurrence.
+        query = lo[hit] + np.arange(len(hit)) - np.repeat(np.cumsum(reps) - reps, reps)
+        return lo[hit], self.positions[query], block["position"][hit].astype(np.int64)
+
+    def shared_fingerprints(self, block: np.ndarray) -> np.ndarray:
+        """Fingerprint ids (as in :meth:`join`) of the distinct hashes in ``block``."""
+        return np.unique(np.searchsorted(self.hashes, block["hash"]))
 
 
 class _BaseDetector(ABC):
@@ -84,7 +135,7 @@ class _BaseDetector(ABC):
         hopeless candidates.
     rarity_weighted : bool
         If ``True``, score by an IDF-weighted fingerprint sum rather than raw count
-        (default: ``False``; see :meth:`_get_fingerprint_weights`).
+        (default: ``False``; see :class:`RarityWeighting`).
     dispersion : float
         Ratio of the variance to the mean of the shared-fingerprint count, used to
         convert raw scores to probabilities (default: 0.5; see
@@ -143,18 +194,13 @@ class _BaseDetector(ABC):
             {**self.index_metadata, "window_size": 1}
         )
 
-        # Rarity weights are divided by their occurrence-weighted mean over the index
-        # (the expected weight of a fingerprint met in running text), so that a
-        # verbatim passage still scores N0 on average; the extra variance of summing
-        # unequal weights is folded into the dispersion (see _normalise_scores).
-        self._mean_weight = 1.0
-        self._score_dispersion = dispersion
-        if rarity_weighted:
-            counts = _sample_posting_counts(self.index.lengths).astype(np.float64)
-            weights = self._idf_weights(counts)
-            self._mean_weight = float(np.average(weights, weights=counts))
-            mean_sq_weight = float(np.average(weights**2, weights=counts))
-            self._score_dispersion = dispersion + mean_sq_weight / self._mean_weight**2 - 1.0
+        # Rarity weights are calibrated once from the index so that scores stay on
+        # the scale of a plain count (see RarityWeighting); summing unequal weights
+        # widens the score distribution, which the dispersion accounts for.
+        self.weighting = RarityWeighting(self.index) if rarity_weighted else None
+        self._score_dispersion = dispersion + (
+            self.weighting.extra_dispersion if self.weighting else 0.0
+        )
 
     def search(self, text: str, min_fragment_length: float = 1000.0) -> dict[str, float]:
         """Find the indexed documents likely to contain a passage of ``text``.
@@ -222,16 +268,16 @@ class _BaseDetector(ABC):
                 UserWarning,
                 stacklevel=3,
             )
-        query = self.get_fingerprints(text)
+        query_hash, query_pos = self.get_fingerprints(text)
         if min_fingerprints is None:
             min_fingerprints = self._min_shared_fingerprints(min_fragment_length)
-        closest = self.index.get_closest_matches_with_positions(
-            query=query["hash"],
+        hits = self.index.get_closest_hits(
+            query=query_hash,
             top_k=self.top_k if top_k is None else top_k,
             min_fingerprints=min_fingerprints,
             verbose=False,
         )
-        return Candidates(query, convert_closest_matches_with_positions_to_df(closest))
+        return Candidates.from_query(query_hash, query_pos, hits)
 
     def score_candidates(
         self, candidates: Candidates, min_fragment_length: float = 1000.0
@@ -276,22 +322,16 @@ class _BaseDetector(ABC):
         -------
         dict[str, float]
             Mapping from external document id to raw score, for every document of
-            ``candidates.matches`` (empty if the table is empty).
+            ``candidates.hits`` (empty if there are no hits).
 
         """
         raise NotImplementedError
 
-    def get_fingerprints(self, text: str) -> pl.DataFrame:
-        """Return the winnowed fingerprints of ``text`` as a Polars DataFrame.
-
-        The returned DataFrame has columns ``hash`` and ``position``.
-        """
-        fingerprints, fingerprints_pos = (
-            self.runtime_winnower.get_winnowed_fingerprints(text)
-        )
-        return pl.DataFrame({"hash": fingerprints, "position": fingerprints_pos}).with_columns(
-            pl.col("hash").cast(pl.UInt64)
-        )
+    def get_fingerprints(self, text: str) -> tuple[np.ndarray, np.ndarray]:
+        """Return the fingerprints of ``text`` as aligned ``(hashes, positions)``
+        arrays (uint64 and int64), one entry per k-gram."""
+        hashes, positions = self.runtime_winnower.get_winnowed_fingerprints(text)
+        return np.asarray(hashes, dtype=np.uint64), np.asarray(positions, dtype=np.int64)
 
     def _to_probabilities(
         self, raw_scores: dict[str, float], min_fragment_length: float
@@ -322,9 +362,8 @@ class _BaseDetector(ABC):
         if self.min_fingerprints is not None:
             return self.min_fingerprints
         min_score = self._min_raw_score(min_fragment_length)
-        if self.rarity_weighted:
-            max_weight = float(self._idf_weights(np.array(1.0))) / self._mean_weight
-            min_score /= max(max_weight, 1.0)
+        if self.weighting:
+            min_score /= max(self.weighting.max, 1.0)
         return max(1, int(np.ceil(min_score)))
 
     def _expected_fingerprints(self, min_fragment_length: float, edit_rate: float = 0.1) -> float:
@@ -337,28 +376,12 @@ class _BaseDetector(ABC):
         corrected_ngrams = (1- edit_rate) ** k * n_kgrams
         return corrected_ngrams * 2 / (w + 1)
 
-    def _idf_weights(self, posting_counts: np.ndarray) -> np.ndarray:
-        """Unnormalised rarity weight ``log(1 + N / cf)`` of fingerprints with the
-        given (positive) posting counts ``cf``, ``N`` being the number of documents."""
-        return np.log1p(self.num_documents / posting_counts)
-
-    def _get_fingerprint_weights(self, fingerprints) -> dict[int, float]:
-        """Per-fingerprint weights for scoring: uniform (1.0) or IDF-like.
-
-        Returns a ``{hash: weight}`` mapping over the fingerprints present in the
-        index.  When ``rarity_weighted=False`` every fingerprint gets weight 1.0.
-        When ``rarity_weighted=True`` the weight is ``log(1 + N / cf(h))``, with
-        ``N`` the number of indexed documents and ``cf(h)`` the number of postings
-        of ``h``, divided by the occurrence-weighted mean of that quantity over the
-        index so that a fingerprint met in running text has weight 1.0 on average.
-        """
-        hashes = np.unique(np.asarray(fingerprints, dtype=np.uint64))
-        if not self.rarity_weighted:
-            return dict.fromkeys(hashes.tolist(), 1.0)
-        counts = self.index.get_posting_counts(hashes)
-        found = counts > 0
-        weights = self._idf_weights(counts[found].astype(np.float64)) / self._mean_weight
-        return dict(zip(hashes[found].tolist(), weights.tolist()))
+    def _fingerprint_weights(self, hashes: np.ndarray) -> np.ndarray:
+        """Scoring weight of each fingerprint in ``hashes``: 1.0 for every
+        fingerprint, or its :class:`RarityWeighting` weight when ``rarity_weighted``."""
+        if self.weighting is None:
+            return np.ones(len(hashes), dtype=np.float64)
+        return self.weighting(hashes)
 
     def _normalise_scores(
         self, raw_scores: dict[str, float], min_fragment_length: float
@@ -405,7 +428,7 @@ class _BaseDetector(ABC):
         mean is still :math:`N_0`, but a random sum of unequal terms has variance
         :math:`\mathrm{Var}(n)\,E[W]^2 + E[n]\,\mathrm{Var}(W)`, i.e. the effective
         dispersion becomes :math:`\text{dispersion} + E[W^2] - 1`; both moments are
-        estimated from the index's posting counts when the detector is created.
+        estimated by :class:`RarityWeighting` when the detector is created.
 
         Parameters
         ----------
@@ -426,21 +449,87 @@ class _BaseDetector(ABC):
         return dict(zip(raw_scores.keys(), probs.tolist()))
 
 
-def _sample_posting_counts(
-    lengths: np.ndarray, n_chunks: int = 1000, chunk_size: int = 10_000
-) -> np.ndarray:
-    """Posting counts of up to n_chunks * chunk_size fingerprints, read as evenly
-    spaced contiguous chunks of the (memory-mapped) lengths array.
+class RarityWeighting:
+    r"""IDF-like fingerprint weights, on the scale of a plain fingerprint count.
 
-    Fingerprints are stored in hash order, which is unrelated to their frequency,
-    so the chunks form an unbiased sample at a tiny fraction of the I/O of a full
-    pass over a multi-GB array.
+    A fingerprint with ``cf`` postings in an index of ``N`` documents gets the raw
+    weight :math:`\log(1 + N / cf)` (:meth:`raw`).  Raw weights are divided by their
+    mean over fingerprint *occurrences* — a fingerprint met in running text is drawn
+    with probability proportional to ``cf`` — so that a verbatim passage of
+    :math:`n` fingerprints still scores :math:`n` on average and the count-based
+    probability model of :meth:`_BaseDetector._normalise_scores` applies unchanged.
+    Summing unequal weights :math:`W` does widen the score distribution: its
+    variance-to-mean ratio grows by :math:`E[W^2] / E[W]^2 - 1` (``extra_dispersion``).
+    Both moments are estimated when the object is created, from a sample of the
+    index's posting counts.
+
+    Attributes
+    ----------
+    mean : float
+        Mean raw weight over fingerprint occurrences (the normalisation constant).
+    extra_dispersion : float
+        :math:`E[W^2] / E[W]^2 - 1` of the scaled weights.
+    max : float
+        Largest scaled weight, that of a fingerprint with a single posting.
+
     """
-    n = len(lengths)
-    if n <= n_chunks * chunk_size:
-        return np.asarray(lengths)
-    starts = np.linspace(0, n - chunk_size, n_chunks).astype(np.int64)
-    return np.concatenate([lengths[s : s + chunk_size] for s in starts])
+
+    def __init__(self, index: indexing.DiskBasedIndex):
+        self.index = index
+        counts = self._sample_posting_counts(index.lengths).astype(np.float64)
+        if counts.sum() == 0:  # index without fingerprints
+            self.mean, self.extra_dispersion = 1.0, 0.0
+        else:
+            raw = self.raw(counts)
+            self.mean = float(np.average(raw, weights=counts))
+            self.extra_dispersion = float(np.average(raw**2, weights=counts)) / self.mean**2 - 1.0
+        self.max = float(self.raw(np.float64(1.0))) / self.mean
+
+    def raw(self, counts: np.ndarray) -> np.ndarray:
+        """Unscaled weight ``log(1 + N / cf)`` of fingerprints with (positive) posting counts ``cf``."""
+        return np.log1p(self.index.num_documents / counts)
+
+    def __call__(self, hashes: np.ndarray) -> np.ndarray:
+        """Scaled weight of each fingerprint in ``hashes`` (0.0 when absent from the index)."""
+        counts = self.posting_counts(hashes)
+        weights = np.zeros(len(hashes), dtype=np.float64)
+        found = counts > 0
+        weights[found] = self.raw(counts[found].astype(np.float64)) / self.mean
+        return weights
+
+    def posting_counts(self, hashes: np.ndarray) -> np.ndarray:
+        """Number of postings of each fingerprint in the index (0 when absent).
+
+        Only the fingerprint and length arrays are consulted, so this is much
+        cheaper than reading the postings themselves.
+        """
+        index = self.index
+        queries = np.asarray(hashes, dtype=np.uint64)
+        counts = np.zeros(len(queries), dtype=np.int64)
+        if not len(index.fingerprints):
+            return counts
+        idx = index._lookup(queries)
+        idx_clipped = np.clip(idx, 0, len(index.fingerprints) - 1)
+        found = (idx < len(index.fingerprints)) & (index.fingerprints[idx_clipped] == queries)
+        counts[found] = index.lengths[idx_clipped[found]]
+        return counts
+
+    @staticmethod
+    def _sample_posting_counts(
+        lengths: np.ndarray, n_chunks: int = 1000, chunk_size: int = 10_000
+    ) -> np.ndarray:
+        """Posting counts of up to n_chunks * chunk_size fingerprints, read as evenly
+        spaced contiguous chunks of the (memory-mapped) lengths array.
+
+        Fingerprints are stored in hash order, which is unrelated to their frequency,
+        so the chunks form an unbiased sample at a tiny fraction of the I/O of a full
+        pass over a multi-GB array.
+        """
+        n = len(lengths)
+        if n <= n_chunks * chunk_size:
+            return np.asarray(lengths)
+        starts = np.linspace(0, n - chunk_size, n_chunks).astype(np.int64)
+        return np.concatenate([lengths[s : s + chunk_size] for s in starts])
 
 
 class NbSharedFingerprintsDetector(_BaseDetector):
@@ -449,7 +538,7 @@ class NbSharedFingerprintsDetector(_BaseDetector):
     Scores each candidate document by the sum of fingerprint weights over its
     unique shared fingerprints — either the raw count (uniform weights, default)
     or a rarity-weighted sum (IDF-like weights, see
-    :meth:`_BaseDetector._get_fingerprint_weights`).
+    :class:`RarityWeighting`).
 
     Parameters
     ----------
@@ -477,31 +566,13 @@ class NbSharedFingerprintsDetector(_BaseDetector):
         query (the plain count when ``rarity_weighted=False``).  See
         :meth:`_BaseDetector.raw_scores` for the parameters.
         """
-        df_query, df_candidates = candidates.query, candidates.matches
-        if df_candidates.height == 0:
+        if candidates.is_empty:
             return {}
-
-        # Compute the weight of each fingerprint in the query (uniform or rarity-weighted).
-        fingerprint_weights = self._get_fingerprint_weights(df_query["hash"])
-        weights_df = pl.DataFrame(
-            list(fingerprint_weights.items()),
-            schema={"hash": pl.UInt64, "weight": pl.Float64},
-            orient="row",
-        )
-
-        # Compute the total weight of unique shared fingerprints for each candidate document.
-        df_unique = (
-            df_candidates.select(["doc_match_id", "hash"])
-            .unique(maintain_order=True)
-            .join(weights_df, on="hash", how="left")
-            .with_columns(pl.col("weight").fill_null(0.0))
-        )
-
-        # Aggregate the weights by candidate document to get the raw score for each candidate.
-        df_scores = df_unique.group_by("doc_match_id", maintain_order=True).agg(
-            pl.col("weight").sum().alias("raw_score")
-        )
-        return dict(zip(df_scores["doc_match_id"], df_scores["raw_score"]))
+        weights = self._fingerprint_weights(candidates.hashes)
+        return {
+            doc_id: float(weights[candidates.shared_fingerprints(block)].sum())
+            for doc_id, block in candidates.hits
+        }
 
 
 class FingerprintChainDetector(_BaseDetector):
@@ -583,172 +654,143 @@ class FingerprintChainDetector(_BaseDetector):
         (0.0 when no cluster survives ``min_cluster_size``).  See
         :meth:`_BaseDetector.raw_scores` for the parameters.
         """
-        df_query, df_candidates = candidates.query, candidates.matches
-        if df_candidates.height == 0:
+        if candidates.is_empty:
             return {}
+        weights = self._fingerprint_weights(candidates.hashes)
+        scores = {}
+        for doc_id, block in candidates.hits:
+            fingerprint, pos_query, pos_doc = candidates.join(block)
+            labels = self.cluster(pos_query, pos_doc - pos_query)
+            scores[doc_id] = largest_cluster_weight(labels, fingerprint, weights)
+        return scores
 
-        fingerprint_weights = self._get_fingerprint_weights(df_query["hash"])
-
-        raw_scores = {}
-        for doc_id in df_candidates["doc_match_id"].unique(maintain_order=True):
-            raw_scores[doc_id] = self._score_doc(
-                df_query, df_candidates, fingerprint_weights, doc_id
-            )
-        return raw_scores
-
-    def _score_doc(
-        self,
-        df_query: pl.DataFrame,
-        df_candidates: pl.DataFrame,
-        fingerprint_weights: dict[int, float],
-        doc_id: str,
-    ) -> float:
-        """Cluster the shared fingerprints for one candidate doc.
-
-        Returns the maximum per-cluster sum of fingerprint weights, or 0.0 when
-        no cluster survives the ``min_cluster_size`` filter.
-        """
-        df_match = (
-            df_candidates.filter(pl.col("doc_match_id") == doc_id)
-            .select(["hash", "position"])
-            .with_columns(
-                pl.col("hash")
-                .map_elements(
-                    lambda h: fingerprint_weights.get(h, 0.0), return_dtype=pl.Float64
-                )
-                .alias("weight")
-            )
-        )
-
-        # Shared fingerprints with their positions in both documents and the offset.
-        df_shared = (
-            df_query.join(df_match, on="hash", how="inner", suffix="_doc2")
-            .select(
-                [
-                    pl.col("hash"),
-                    pl.col("weight"),
-                    pl.col("position").alias("position_doc1"),
-                    pl.col("position_doc2"),
-                ]
-            )
-            .with_columns(
-                (pl.col("position_doc2") - pl.col("position_doc1")).alias(
-                    "position_offset"
-                )
-            )
-            .sort("position_doc1")
-        )
-
-        if df_shared.height == 0:
-            return 0.0
-
+    def cluster(self, pos_query: np.ndarray, offset: np.ndarray) -> np.ndarray:
+        """Cluster shared fingerprints given their query positions and offsets,
+        with the detector's method and thresholds (see :func:`cluster_rectangle`
+        and :func:`cluster_linkage`).  Returns int32 labels, −1 for noise."""
         if self.method == "rectangle":
-            df_clustered = self._get_df_hash_cluster_rectangle(df_shared)
-        elif self.method in {"euclidean", "cityblock", "chebyshev"}:
-            df_clustered = self._get_df_hash_cluster_linkage(df_shared)
-        else:
-            raise ValueError(
-                f"Unknown clustering method '{self.method}'; must be one of "
-                "'rectangle', 'euclidean', 'cityblock', or 'chebyshev'."
+            return cluster_rectangle(
+                pos_query, offset,
+                self.position_threshold, self.offset_threshold, self.min_cluster_size,
             )
-
-        df_clusters = (
-            df_clustered.filter(pl.col("cluster_id") != -1)
-            .group_by("cluster_id", maintain_order=True)
-            .agg(
-                pl.struct(["hash", "weight"])
-                .unique()
-                .struct.field("weight")
-                .sum()
-                .alias("score")
+        if self.method in _LINKAGE_METRICS:
+            return cluster_linkage(
+                pos_query, offset, self.method, self.distance_threshold, self.min_cluster_size
             )
+        raise ValueError(
+            f"Unknown clustering method '{self.method}'; must be one of "
+            "'rectangle', 'euclidean', 'cityblock', or 'chebyshev'."
         )
 
-        if df_clusters.height == 0:
-            return 0.0
 
-        return float(df_clusters["score"].max())
+def cluster_rectangle(
+    pos_query: np.ndarray,
+    offset: np.ndarray,
+    position_threshold: int,
+    offset_threshold: int,
+    min_cluster_size: int,
+) -> np.ndarray:
+    """Cluster shared fingerprints using rectangle-neighbourhood connected components.
 
-    def _get_df_hash_cluster_rectangle(
-        self, df_shared_hashes: pl.DataFrame
-    ) -> pl.DataFrame:
-        """Cluster shared fingerprints using rectangle-neighbourhood connected components.
+    Two points are *connected* iff both ``|Δpos_query| ≤ position_threshold`` and
+    ``|Δoffset| ≤ offset_threshold``.  Connected components form initial clusters;
+    those with fewer than ``min_cluster_size`` members are relabelled −1 (noise).
 
-        Two points are *connected* iff both
-        ``|Δposition_doc1| ≤ position_threshold`` and
-        ``|Δposition_offset| ≤ offset_threshold``.
-        Connected components form initial clusters; those with fewer than
-        ``min_cluster_size`` unique members are relabelled −1 (noise).
+    The neighbour pairs come from a k-d tree query within the larger threshold
+    (Chebyshev distance), refined per axis, so the cost grows with the number of
+    neighbouring pairs rather than quadratically with the number of points.
 
-        Parameters
-        ----------
-        df_shared_hashes : pl.DataFrame
-            Shared-hash DataFrame with at least columns ``position_doc1`` and
-            ``position_offset``.
+    Parameters
+    ----------
+    pos_query, offset : np.ndarray
+        Aligned coordinates of the shared fingerprints: position in the query and
+        ``position_in_doc - position_in_query``.
 
-        Returns
-        -------
-        pl.DataFrame
-            Input DataFrame with an added ``cluster_id`` column (Int32; −1 = noise).
+    Returns
+    -------
+    np.ndarray
+        int32 cluster label of each point, −1 for noise.
 
-        """
-        pos1 = df_shared_hashes["position_doc1"].to_numpy()
-        offsets = df_shared_hashes["position_offset"].to_numpy()
-        diff_pos1 = np.abs(pos1[:, None] - pos1[None, :])
-        diff_offsets = np.abs(offsets[:, None] - offsets[None, :])
+    """
+    points = np.column_stack([pos_query, offset]).astype(np.float64)
+    radius = max(position_threshold, offset_threshold) + 0.5
+    pairs = cKDTree(points).query_pairs(radius, p=np.inf, output_type="ndarray")
+    diff = np.abs(points[pairs[:, 0]] - points[pairs[:, 1]])
+    pairs = pairs[(diff[:, 0] <= position_threshold) & (diff[:, 1] <= offset_threshold)]
 
-        _, raw_labels = connected_components(
-            csr_matrix(
-                (diff_pos1 <= self.position_threshold)
-                & (diff_offsets <= self.offset_threshold)
-            ),
-            directed=False,
-        )
-        cluster_ids = _relabel_small_clusters(raw_labels, self.min_cluster_size)
-        return df_shared_hashes.with_columns(pl.Series("cluster_id", cluster_ids))
+    n = len(points)
+    graph = csr_matrix((np.ones(len(pairs), dtype=bool), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    _, raw_labels = connected_components(graph, directed=False)
+    return _relabel_small_clusters(raw_labels, min_cluster_size)
 
-    def _get_df_hash_cluster_linkage(
-        self, df_shared_hashes: pl.DataFrame
-    ) -> pl.DataFrame:
-        """Cluster shared fingerprints via single-linkage hierarchical clustering.
 
-        Clustering is performed on the 2-D feature space ``(position_doc1,
-        position_offset)`` using ``scipy.cluster.hierarchy.linkage`` with
-        ``method="single"`` and the given distance metric.
+def cluster_linkage(
+    pos_query: np.ndarray,
+    offset: np.ndarray,
+    metric: str,
+    distance_threshold: int,
+    min_cluster_size: int,
+) -> np.ndarray:
+    """Cluster shared fingerprints via single-linkage hierarchical clustering.
 
-        .. note::
-           Single linkage with the Chebyshev metric and ``distance_threshold`` *t*
-           is mathematically equivalent to
-           :meth:`_get_df_hash_cluster_rectangle` with
-           ``position_threshold = offset_threshold = t``.
+    Clustering is performed on the 2-D feature space ``(pos_query, offset)`` using
+    ``scipy.cluster.hierarchy.linkage`` with ``method="single"`` and the given
+    distance ``metric`` (``"euclidean"``, ``"cityblock"`` or ``"chebyshev"``);
+    clusters are cut at ``distance_threshold`` and those with fewer than
+    ``min_cluster_size`` members relabelled −1 (noise).
 
-        Parameters
-        ----------
-        df_shared_hashes : pl.DataFrame
-            Shared-hash DataFrame with at least columns ``position_doc1`` and
-            ``position_offset``.
+    .. note::
+       Single linkage with the Chebyshev metric and ``distance_threshold`` *t*
+       is mathematically equivalent to :func:`cluster_rectangle` with
+       ``position_threshold = offset_threshold = t``.
 
-        Returns
-        -------
-        pl.DataFrame
-            Input DataFrame with an added ``cluster_id`` column (Int32; −1 = noise).
+    Returns
+    -------
+    np.ndarray
+        int32 cluster label of each point, −1 for noise.
 
-        """
-        n = len(df_shared_hashes)
+    """
+    n = len(pos_query)
+    if n == 0:
+        raw_labels = np.empty(0, dtype=np.int32)
+    elif n == 1:
+        raw_labels = np.array([1], dtype=np.int32)
+    else:
+        X = np.column_stack([pos_query, offset]).astype(np.float64)
+        Z = linkage(X, method="single", metric=metric, optimal_ordering=False)
+        raw_labels = fcluster(Z, t=distance_threshold, criterion="distance")
+    return _relabel_small_clusters(raw_labels, min_cluster_size)
 
-        if n == 0:
-            raw_labels = np.empty(0, dtype=np.int32)
-        elif n == 1:
-            raw_labels = np.array([1], dtype=np.int32)
-        else:
-            pos1 = df_shared_hashes["position_doc1"].to_numpy()
-            offsets = df_shared_hashes["position_offset"].to_numpy()
-            X = np.column_stack([pos1, offsets]).astype(np.float64)
-            Z = linkage(X, method="single", metric=self.method, optimal_ordering=False)
-            raw_labels = fcluster(Z, t=self.distance_threshold, criterion="distance")
 
-        cluster_ids = _relabel_small_clusters(raw_labels, self.min_cluster_size)
-        return df_shared_hashes.with_columns(pl.Series("cluster_id", cluster_ids))
+def largest_cluster_weight(
+    labels: np.ndarray, fingerprint: np.ndarray, weights: np.ndarray
+) -> float:
+    """Largest per-cluster sum of fingerprint weights, each distinct fingerprint
+    counted once per cluster.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Cluster label of each shared-fingerprint pair (−1 = noise, ignored).
+    fingerprint : np.ndarray
+        Id of the pair's fingerprint, indexing ``weights`` (see :meth:`Candidates.join`).
+    weights : np.ndarray
+        Weight of each fingerprint.
+
+    Returns
+    -------
+    float
+        0.0 when every point is noise.
+
+    """
+    keep = labels >= 0
+    if not keep.any():
+        return 0.0
+    labels, fingerprint = labels[keep].astype(np.int64), fingerprint[keep].astype(np.int64)
+    # One row per distinct (cluster, fingerprint) pair.
+    _, first = np.unique(labels * len(weights) + fingerprint, return_index=True)
+    sums = np.bincount(labels[first], weights=weights[fingerprint[first]])
+    return float(sums.max())
 
 
 def _relabel_small_clusters(
@@ -770,64 +812,10 @@ def _relabel_small_clusters(
         noise points set to −1.
 
     """
-    result = np.full(len(raw_labels), -1, dtype=np.int32)
-    unique, counts = np.unique(raw_labels, return_counts=True)
-    new_id = 0
-    for label, count in zip(unique, counts):
-        if count >= min_cluster_size:
-            result[raw_labels == label] = new_id
-            new_id += 1
-    return result
-
-
-def convert_closest_matches_with_positions_to_df(
-    closest_with_positions: dict,
-) -> pl.DataFrame:
-    """Convert ``{doc_id: {hash: [positions]}}`` into a tidy Polars DataFrame.
-
-    Parameters
-    ----------
-    closest_with_positions : dict
-        Mapping returned by the index's ``get_closest_matches_with_positions``.
-
-    Returns
-    -------
-    pl.DataFrame
-        One row per (doc, hash, position) with columns ``doc_match_id``,
-        ``doc_match_closeness_rank``, ``hash`` (UInt64), ``position`` (Int32).
-        Returns an empty DataFrame with the correct schema when the input is
-        empty.
-
-    """
-    if not closest_with_positions:
-        return pl.DataFrame(
-            {
-                "doc_match_id": pl.Series([], dtype=pl.Utf8),
-                "doc_match_closeness_rank": pl.Series([], dtype=pl.Int32),
-                "hash": pl.Series([], dtype=pl.UInt64),
-                "position": pl.Series([], dtype=pl.Int32),
-            }
-        )
-
-    frames = []
-    for rank, (doc_id, hash_positions) in enumerate(
-        closest_with_positions.items(), start=1
-    ):
-        # Flatten {hash: [positions]} directly rather than via explode(): no empty
-        # lists are involved, so the frame is simpler and Polars-version independent.
-        hashes = [h for h, positions in hash_positions.items() for _ in positions]
-        positions = [p for positions in hash_positions.values() for p in positions]
-        frames.append(
-            pl.DataFrame(
-                {
-                    "doc_match_id": pl.Series([doc_id] * len(hashes), dtype=pl.Utf8),
-                    "doc_match_closeness_rank": pl.Series([rank] * len(hashes), dtype=pl.Int32),
-                    "hash": pl.Series(hashes, dtype=pl.UInt64),
-                    "position": pl.Series(positions, dtype=pl.Int32),
-                }
-            )
-        )
-    return pl.concat(frames)
+    _, inverse, counts = np.unique(raw_labels, return_inverse=True, return_counts=True)
+    valid = counts >= min_cluster_size
+    new_ids = np.where(valid, np.cumsum(valid) - 1, -1).astype(np.int32)
+    return new_ids[inverse]
 
 
 # ---------------------------------------------------------------------------

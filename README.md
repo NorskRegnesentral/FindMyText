@@ -150,7 +150,7 @@ the two versions side by side.
 The evaluation described in the FindMyText [paper](https://arxiv.org/abs/2306.17100) relies on a novel benchmarking procedure. This procedure is deliberately designed to be "adversarial", in order to assess whether detectors can distinguish content reuse from mere similarity between documents. 
 
 Concretely, based on an corpus, the benchmarking procedure generates a set of examples consisting of both positive and negative cases:
-- *Positive examples* are perturbed chunks of corpus documents that still share a segment of Smith-Waterman score ≥ `pos_sw_threshold` with their source. Those pertubed chunks are concatenated with out-of-corpus texts.
+- *Positive examples* are perturbed chunks of corpus documents that still share a segment of Smith-Waterman score ≥ `pos_sw_threshold` with their source. Those pertubed chunks are concatenated with out-of-corpus texts. The length of the shared chunk is drawn between `pos_sw_threshold` and a share `max_fragment_share` (default 0.5) of the final text length; `max_fragment_share=None` gives the hardest positives, whose shared segment is barely longer than the threshold.
 - *Negative examples* are corpus documents that have been permuted and paraphrased (LLM) until no segment scores ≥ `neg_sw_threshold`. 
 
 A new benchmark can be created with the following command:
@@ -158,7 +158,8 @@ A new benchmark can be created with the following command:
 ```python
 import experiments.benchmark as b
 b.build_benchmark("corpus_dir/", "outofcorpus_sample.jsonl", "eval_set.jsonl",
-                  nb_examples=2000, pos_sw_threshold=1000, neg_sw_threshold=100)
+                  nb_examples=2000, pos_sw_threshold=1000, neg_sw_threshold=100,
+                  max_fragment_share=0.5)
 ```
 
 The steps (`sample_corpus`, `generate_negatives`, `generate_positives`,

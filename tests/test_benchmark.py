@@ -64,6 +64,21 @@ def test_ngram_overlap_of_shuffled_sentences_is_high(rng):
     assert benchmark.word_ngram_overlap(text, ". ".join(sentences)) > 0.6
 
 
+# --- word_edit_rate ----------------------------------------------------------------
+
+
+def test_word_edit_rate_counts_changed_source_words_only():
+    text = "the quick brown fox jumps over the lazy dog again"
+    assert benchmark.word_edit_rate(text, text) == 0.0
+    assert benchmark.word_edit_rate("", "anything") == 0.0
+    # A case flip or a hyphen changes one word each, as for exact word matching
+    assert benchmark.word_edit_rate(text, text.replace("quick", "Quick")) == pytest.approx(0.1)
+    assert benchmark.word_edit_rate(text, text.replace("jumps", "ju-\nmps")) == pytest.approx(0.1)
+    # Insertions leave the source words intact
+    assert benchmark.word_edit_rate(text, text.replace("fox", "fox Next Page > ")) == 0.0
+    assert benchmark.word_edit_rate(text, "something else entirely") == 1.0
+
+
 # --- permute_chunks ---------------------------------------------------------------
 
 
@@ -360,25 +375,173 @@ def test_median_text_length_sets_positive_target(tmp_path, monkeypatch):
     captured = {}
 
     class FakeGenerator:
-        def __init__(self, corpus, other_corpus, min_oracle_score, target_text_length):
+        def __init__(
+            self, corpus, other_corpus, min_oracle_score, target_text_length,
+            max_fragment_length, max_score_loss, max_word_edit_rate,
+        ):
             captured["target"] = target_text_length
             captured["threshold"] = min_oracle_score
+            captured["max_fragment"] = max_fragment_length
+            captured["max_loss"] = max_score_loss
+            captured["max_edit_rate"] = max_word_edit_rate
 
         def sample_positive(self):
-            return {"text1": "src", "text2": "edited", "score": 1000.0, "meta": {"id": "d1"}, "before": []}
+            return {
+                "text1": "src", "text2": "edited", "score": 1000.0, "fragment_length": 1020,
+                "word_edit_rate": 0.05, "meta": {"id": "d1"}, "before": [],
+            }
 
     monkeypatch.setattr(benchmark, "PositiveExampleGenerator", FakeGenerator)
     monkeypatch.setattr(benchmark, "Corpus", lambda path: None)
     out = tmp_path / "pos.jsonl"
-    benchmark.generate_positives("c.jsonl", "o.jsonl", str(out), nb_examples=2, sw_threshold=1000, target_length=neg_path)
+    benchmark.generate_positives("c.jsonl", "o.jsonl", str(out), nb_examples=2, sw_threshold=1000, target_length=neg_path, max_fragment_share=None)
 
-    assert captured == {"target": 500, "threshold": 1000}
+    assert captured == {
+        "target": 500, "threshold": 1000, "max_fragment": None, "max_loss": None,
+        "max_edit_rate": 0.1,
+    }
     rows = [orjson.loads(l) for l in out.read_bytes().splitlines()]
     assert len(rows) == 2
     assert rows[0] == {
         "text": "edited", "type": benchmark.POSITIVE, "source_doc_id": "d1",
-        "source_text": "src", "oracle_score": 1000.0, "before": [],
+        "source_text": "src", "oracle_score": 1000.0, "fragment_length": 1020,
+        "word_edit_rate": 0.05, "before": [],
     }
+
+    # With a fragment share, the maximum fragment length is that share of the target
+    # length, but never below the threshold
+    benchmark.generate_positives("c.jsonl", "o.jsonl", str(out), nb_examples=1, sw_threshold=100, target_length=neg_path, overwrite=True)
+    assert captured["max_fragment"] == 250  # 0.5 * 500
+    benchmark.generate_positives("c.jsonl", "o.jsonl", str(out), nb_examples=1, sw_threshold=1000, target_length=neg_path, overwrite=True, max_fragment_share=0.5)
+    assert captured["max_fragment"] == 1000
+    # Without padding there is no target length to take a share of
+    benchmark.generate_positives("c.jsonl", "o.jsonl", str(out), nb_examples=1, sw_threshold=100, target_length=None, overwrite=True)
+    assert captured["max_fragment"] is None and captured["target"] == 0
+
+
+# --- PositiveExampleGenerator ------------------------------------------------------
+
+
+@pytest.fixture
+def positive_generator(rng):
+    """Generator on a corpus of long random prose documents, with an out-of-corpus
+    padding corpus and a threshold of 200 characters."""
+    corpus = benchmark.Corpus()
+    corpus.data = [{"id": f"d{i}", "text": random_text(rng, 40)} for i in range(4)]
+    other = benchmark.Corpus()
+    other.data = [{"id": f"o{i}", "text": random_text(rng, 40)} for i in range(4)]
+    return corpus, other
+
+
+def test_positive_generator_validates_parameters(positive_generator):
+    corpus, other = positive_generator
+    with pytest.raises(ValueError, match="max_fragment_length"):
+        benchmark.PositiveExampleGenerator(corpus, other, min_oracle_score=200, max_fragment_length=100)
+    with pytest.raises(ValueError, match="max_score_loss"):
+        benchmark.PositiveExampleGenerator(corpus, other, min_oracle_score=200, max_score_loss=0)
+    gen = benchmark.PositiveExampleGenerator(corpus, other, min_oracle_score=200)
+    assert gen.max_fragment_length is None and gen.max_score_loss == 10.0
+    assert gen.min_region_score(200) == 200 and gen.min_region_score(500) == 490
+    assert gen.max_word_edit_rate == 0.1
+    with pytest.raises(ValueError, match="max_word_edit_rate"):
+        benchmark.PositiveExampleGenerator(corpus, other, min_oracle_score=200, max_word_edit_rate=1.5)
+
+
+def test_edit_text_stops_at_the_word_edit_rate(positive_generator, rng):
+    corpus, other = positive_generator
+    np.random.seed(5)
+    text = random_text(rng, 8)  # 96 words
+    gen = benchmark.PositiveExampleGenerator(
+        corpus, other, min_oracle_score=200, max_word_edit_rate=0.05
+    )
+    # Only casing edits (3 words each), and no oracle cut (min_region_score=0): the
+    # word-level cap is the only thing that can stop the edits, after 1 or 2 of them.
+    for name in ("add_hyphenation", "add_boilerplate_segment", "switch_normalisation"):
+        setattr(gen, name, lambda t: t)
+    edited, score = gen.edit_text(text, nb_attempts=50, min_region_score=0)
+    assert edited != text and score > 0
+    assert 0 < benchmark.word_edit_rate(text, edited) <= 0.05
+
+
+def test_fragment_length_is_drawn_in_range_and_capped_by_document(positive_generator, rng):
+    corpus, other = positive_generator
+    gen = benchmark.PositiveExampleGenerator(
+        corpus, other, min_oracle_score=200, max_fragment_length=800
+    )
+    np.random.seed(0)
+    lengths = {gen._draw_fragment_length(5000) for _ in range(200)}
+    assert min(lengths) >= 200 and max(lengths) <= 800 and len(lengths) > 50
+    # The fragment must fit in the document (with the slack chunk_min needs)
+    assert all(200 <= gen._draw_fragment_length(330) <= 300 for _ in range(20))
+    assert gen._draw_fragment_length(100) == 200
+    # Without max_fragment_length, the fragment length is the threshold
+    gen = benchmark.PositiveExampleGenerator(corpus, other, min_oracle_score=200)
+    assert gen._draw_fragment_length(5000) == 200
+
+
+def test_select_fragment_fits_the_room_for_edits(positive_generator, rng):
+    corpus, other = positive_generator
+    gen = benchmark.PositiveExampleGenerator(
+        corpus, other, min_oracle_score=200, max_score_loss=20
+    )
+    text = random_text(rng, 40)
+    np.random.seed(0)
+    starts = set()
+    for length in (200, 350, 500):
+        for _ in range(20):
+            fragment = gen._select_fragment(text, length)
+            assert fragment is not None
+            # Between min_slack (10) and max_score_loss above the fragment length,
+            # a verbatim passage of the text, starting at a sentence boundary
+            assert length + 10 <= len(fragment) < length + 20
+            assert fragment in text and fragment[0] == "W"
+            starts.add(text.index(fragment))
+    assert len(starts) > 10
+    assert gen._select_fragment("Too short a text.", 200) is None
+
+
+def test_change_casing_terminates_without_changeable_words(positive_generator):
+    corpus, other = positive_generator
+    gen = benchmark.PositiveExampleGenerator(corpus, other, min_oracle_score=200)
+    # No titled or lower-case word: nothing to change (this used to loop forever)
+    assert gen.change_casing("ABC 123 iPhone X-RAY") == "ABC 123 iPhone X-RAY"
+    text = "the Quick brown Fox"
+    changed = gen.change_casing(text, nb_to_change=2)
+    assert changed.lower() == text.lower()
+    assert sum(a != b for a, b in zip(text.split(), changed.split())) == 2
+
+
+def test_sample_positive_keeps_long_fragments_as_one_region(positive_generator, rng):
+    corpus, other = positive_generator
+    np.random.seed(3)
+    gen = benchmark.PositiveExampleGenerator(
+        corpus, other, min_oracle_score=200, target_text_length=1500,
+        max_fragment_length=700, max_score_loss=20,
+    )
+    gen.edit_text = lambda text, min_region_score=None: _fake_edit(gen, text, min_region_score)
+
+    examples = [gen.sample_positive() for _ in range(20)]
+    examples = [ex for ex in examples if ex is not None]
+    assert examples, "no suitable chunk found in 20 attempts"
+    for ex in examples:
+        fragment = ex["fragment_length"]
+        assert 200 + 5 <= fragment < 700 + 20
+        # The edit budget is the loss (or what is left above the threshold)
+        assert ex["score"] >= max(200, fragment - 20)
+        assert ex["score"] <= fragment
+        assert len(ex["text2"]) >= 1500 and ex["before"]
+        assert ex["pair_type"] == "positive" and ex["meta"]["id"].startswith("d")
+
+
+def _fake_edit(gen, text, min_region_score):
+    """Stand-in for edit_text: check that the requested minimum region score follows
+    min_region_score(), then lower-case the first word (a tiny edit the oracle still
+    aligns) and return the real oracle score."""
+    assert min_region_score == gen.min_region_score(len(text))
+    edited = text[:1].lower() + text[1:]
+    score = gen.local_aligner.get_largest_region_score(text, edited)
+    assert score >= min_region_score
+    return edited, score
 
 
 def test_append_until_resumes_and_skips_failures(tmp_path):
