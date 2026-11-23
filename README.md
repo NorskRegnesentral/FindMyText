@@ -6,7 +6,7 @@
 
 **FindMyText** is an open-source Python package for efficiently detecting whether a given text appears, in part or in full, within a large text corpus. It is particularly suited for verifying the presence of copyrighted or licensed material in large, web-crawled corpora. This can notably provide important insights into which texts have been used to pre-train LLMs. 
 
-The tool builds on standard document fingerprinting techniques, and extends them with a novel mechanism that explicitly captures *sequences* (chains) of matching fingerprints. This makes it robust to near-verbatim copies — texts that share the same content but with minor differences due to OCR errors, formatting variants, text normalisation, or added boilerplate. Leveraging a distributed, disk-based indexing framework, FindMyText scales to large corpora that cannot be held in memory.
+The tool builds on standard document fingerprinting techniques, and extends them with an efficient mechanism to capture *sequences* (chains) of matching fingerprints. This makes it robust to near-verbatim copies — texts that share the same content but with minor differences due to OCR errors, formatting variants, text normalisation, or added boilerplate. Leveraging a distributed, disk-based indexing framework, FindMyText scales to large corpora that cannot be held in memory.
 
 A full step-by-step walkthrough is available in [`demo.ipynb`](demo.ipynb).  See our [paper](https://arxiv.org/abs/2306.17100) for more details.
 
@@ -147,9 +147,9 @@ the two versions side by side.
 
 ## Evaluation details
 
-The evaluation described in the FindMyText [paper](https://arxiv.org/abs/2306.17100) relies on a novel benchmarking procedure. This procedure is deliberately designed to be "adversarial", in order to assess whether detectors can distinguish content reuse from mere similarity between documents. 
+The evaluation described in the FindMyText [paper](https://arxiv.org/abs/2306.17100) relies on an "adversarial" benchmarking procedure, in order to assess whether detectors can distinguish content reuse from mere similarity between documents. 
 
-Concretely, based on an corpus, the benchmarking procedure generates a set of examples consisting of both positive and negative cases:
+Concretely, based on an corpus, we first generate a set of examples consisting of both positive and negative cases:
 - *Positive examples* are perturbed chunks of corpus documents that still share a segment of Smith-Waterman score ≥ `pos_sw_threshold` with their source. Those pertubed chunks are concatenated with out-of-corpus texts. The length of the shared chunk is drawn between `pos_sw_threshold` and a share `max_fragment_share` (default 0.5) of the final text length; `max_fragment_share=None` gives the hardest positives, whose shared segment is barely longer than the threshold.
 - *Negative examples* are corpus documents that have been permuted and paraphrased (LLM) until no segment scores ≥ `neg_sw_threshold`. 
 
