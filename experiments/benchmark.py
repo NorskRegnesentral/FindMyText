@@ -59,13 +59,10 @@ and only tops up the negatives / positives files to the required number of examp
 
 import collections
 import difflib
-import io
 import os
 import random
 import re
-import sys
 import time
-import unicodedata
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import tqdm

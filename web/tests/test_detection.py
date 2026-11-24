@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from findmytext import index_builder, indexing
+from findmytext import index_builder
 from web.corpussearch import create_app
 
 

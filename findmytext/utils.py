@@ -10,7 +10,6 @@ import uuid
 import multiprocessing as mp
 from tqdm import tqdm
 import zstandard
-import re
 
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 

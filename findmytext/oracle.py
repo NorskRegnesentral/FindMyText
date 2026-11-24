@@ -7,7 +7,7 @@ for performance and includes options for verbose output and handling long sequen
 
 from __future__ import annotations
 
-from typing import Dict, Tuple, Union
+from typing import Dict, Tuple
 
 import numpy as np
 from numba import jit, objmode

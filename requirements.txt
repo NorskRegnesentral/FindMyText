@@ -1,26 +1,35 @@
-# Core dependencies for FindMyText
-datasets
-filelock
-msgpack
+# Core runtime dependencies of the findmytext package.
+# Keep in sync with [project.dependencies] in pyproject.toml.
 numba
 numpy
 orjson
+psutil
 scipy
 tqdm
 zstandard
 
-# Optional: faster gzip decompression (Intel ISA-L). Falls back to stdlib gzip if absent.
-isal
-
-# Optional: used only by experiments/eval.py (evaluation metrics).
-scikit-learn
-
-# Optional: used only by experiments/baselines.py (dense-retrieval baseline).
-# sentence-transformers pulls in torch and transformers. Install separately when needed:
+# Everything below is optional and mirrors the extras in pyproject.toml.
+# From a source checkout, install them with e.g. `pip install -e ".[test,experiments]"`.
+#
+# Tests (extra: test):
+#   pytest
+#
+# experiments/benchmark.py and experiments/eval.py (extra: experiments):
+#   filelock
+#   pyphen
+#   scikit-learn
+#
+# demo.ipynb and the alignment visualisation in findmytext/oracle.py (extra: demo):
+#   datasets
+#   ipykernel
+#   ipython
+#   nbformat
+#
+# experiments/baselines.py (dense-retrieval baseline; pulls in torch and transformers):
+#   datasets
 #   faiss-cpu
-#   sentence-transformers
 #   huggingface_hub
-
-# Optional (heavy, GPU): used only in experiments/eval_sampler.py for LLM generation.
-# Install separately when needed:
+#   sentence-transformers
+#
+# LLM paraphrasing in experiments/benchmark.py (heavy, GPU):
 #   vllm

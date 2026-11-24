@@ -204,7 +204,7 @@ If you use **FindMyText** in your research, please cite our [paper](https://arxi
 
 ```bibtex
 @article{findmytext2026,
-  authors = {Lars Henry Berge Olsen and Pierre Lison and Martin Jullum and Mark Anderson},
+  author = {Lars Henry Berge Olsen and Pierre Lison and Martin Jullum and Mark Anderson},
   title   = {FindMyText: Robust, Scalable Detection of Text Containment in Large Web-Crawled Corpora},
   year    = {2026}
 }

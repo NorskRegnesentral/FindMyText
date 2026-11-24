@@ -9,3 +9,5 @@ Flask>=3.0
 gunicorn>=21.0
 # Optional, only needed if you enable per-IP rate limiting in the config:
 # Flask-Limiter>=3.5
+# Optional, only needed by tools/build_wiki.py (reads the Wikipedia parquet shards):
+# pyarrow

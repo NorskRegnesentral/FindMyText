@@ -8,7 +8,7 @@ efficient array operations.
 """
 
 import re
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 from numba import njit
