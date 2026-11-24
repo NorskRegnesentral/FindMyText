@@ -2,6 +2,12 @@
   <img src="https://raw.githubusercontent.com/NorskRegnesentral/FindMyText/main/assets/findmytext_logo.png" alt="FindMyText logo" width="320"/>
 </p>
 
+<p align="center">
+  <a href="https://pypi.org/project/findmytext/"><img src="https://img.shields.io/pypi/v/findmytext" alt="PyPI version"/></a>
+  <a href="https://pypi.org/project/findmytext/"><img src="https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2FNorskRegnesentral%2FFindMyText%2Fmain%2Fpyproject.toml" alt="Supported Python versions"/></a>
+  <a href="https://github.com/NorskRegnesentral/FindMyText/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/findmytext" alt="License: MIT"/></a>
+</p>
+
 # **FindMyText**
 
 **FindMyText** is an open-source Python package for efficiently detecting whether a given text appears, in part or in full, within a large text corpus. It is particularly suited for verifying the presence of copyrighted or licensed material in large, web-crawled corpora. This can notably provide important insights into which texts have been used to pre-train LLMs. 
