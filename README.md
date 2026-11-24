@@ -16,6 +16,8 @@ The tool builds on standard document fingerprinting techniques, and extends them
 
 A full step-by-step walkthrough is available in [`demo.ipynb`](https://github.com/NorskRegnesentral/FindMyText/blob/main/demo.ipynb).  See our [paper](https://arxiv.org/abs/2607.10020) for more details.
 
+Try the [FindMyText web demo](https://findmytext.nr.no/) to check whether a passage appears in the indexed corpora and explore matching text.
+
 ---
 
 ## Installation
