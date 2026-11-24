@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/findmytext_logo.png" alt="FindMyText logo" width="320"/>
+  <img src="https://raw.githubusercontent.com/NorskRegnesentral/FindMyText/main/assets/findmytext_logo.png" alt="FindMyText logo" width="320"/>
 </p>
 
 # **FindMyText**
@@ -8,20 +8,26 @@
 
 The tool builds on standard document fingerprinting techniques, and extends them with an efficient mechanism to capture *sequences* (chains) of matching fingerprints. This makes it robust to near-verbatim copies — texts that share the same content but with minor differences due to OCR errors, formatting variants, text normalisation, or added boilerplate. Leveraging a distributed, disk-based indexing framework, FindMyText scales to large corpora that cannot be held in memory.
 
-A full step-by-step walkthrough is available in [`demo.ipynb`](demo.ipynb).  See our [paper](https://arxiv.org/abs/2306.17100) for more details.
+A full step-by-step walkthrough is available in [`demo.ipynb`](https://github.com/NorskRegnesentral/FindMyText/blob/main/demo.ipynb).  See our [paper](https://arxiv.org/abs/2607.10020) for more details.
 
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/NorskRegnesentral/FindMyText.git
-cd FindMyText
-pip install -e .
+pip install findmytext
 ```
 
-For the notebook and alignment visualizations: `pip install -e ".[demo]"`.
-For tests: `pip install -e ".[test]"`, then `python -m pytest`.
+For the notebook and alignment visualizations: `pip install "findmytext[demo]"`.
+
+To work on the code, install it from source instead:
+
+```bash
+git clone https://github.com/NorskRegnesentral/FindMyText.git
+cd FindMyText
+pip install -e ".[test]"
+python -m pytest
+```
 
 ---
 
@@ -101,10 +107,10 @@ alignment.show()
 
 **Fingerprinting.** Comparing a query against every document character by character
 would be hopeless at corpus scale, so each text is first reduced to a compact set of
-*fingerprints*. The text is tokenised into words, every run of $k$ consecutive words (a
-$k$-gram, $k=4$ by default) is hashed, and the *winnowing* algorithm then keeps only a
-small, deterministic subset of these hashes: within each sliding window of $w$ consecutive
-$k$-grams ($w=6$ by default), the smallest hash is selected. Because the choice depends
+*fingerprints*. The text is tokenised into words, every run of *k* consecutive words (a
+*k*-gram, *k* = 4 by default) is hashed, and the *winnowing* algorithm then keeps only a
+small, deterministic subset of these hashes: within each sliding window of *w* consecutive
+*k*-grams (*w* = 6 by default), the smallest hash is selected. Because the choice depends
 only on the local content, two texts sharing a passage end up selecting the same
 fingerprints for that passage, wherever it appears in the document and regardless of what
 surrounds it. Winnowing also guarantees that at least one fingerprint is picked per window,
@@ -149,6 +155,11 @@ the two versions side by side.
 
 The evaluation described in the FindMyText [paper](https://arxiv.org/abs/2306.17100) relies on an "adversarial" benchmarking procedure, in order to assess whether detectors can distinguish content reuse from mere similarity between documents. 
 
+The benchmarking and evaluation scripts live in the `experiments/` folder of the
+[repository](https://github.com/NorskRegnesentral/FindMyText) and are not part of the PyPI
+package. From a source checkout, their dependencies are installed with
+`pip install -e ".[experiments]"`.
+
 Concretely, based on an corpus, we first generate a set of examples consisting of both positive and negative cases:
 - *Positive examples* are perturbed chunks of corpus documents that still share a segment of Smith-Waterman score ≥ `pos_sw_threshold` with their source. Those pertubed chunks are concatenated with out-of-corpus texts. The length of the shared chunk is drawn between `pos_sw_threshold` and a share `max_fragment_share` (default 0.5) of the final text length; `max_fragment_share=None` gives the hardest positives, whose shared segment is barely longer than the threshold.
 - *Negative examples* are corpus documents that have been permuted and paraphrased (LLM) until no segment scores ≥ `neg_sw_threshold`. 
@@ -181,7 +192,7 @@ python experiments/eval.py run --index my_index --data eval_set.jsonl
 
 ## License
 
-**FindMyText** is released under an [MIT License](LICENSE).
+**FindMyText** is released under an [MIT License](https://github.com/NorskRegnesentral/FindMyText/blob/main/LICENSE).
 
 The MIT License is a short and simple permissive license allowing both commercial and non-commercial use of the software. The only requirement is to preserve the copyright and license notices (see file License). Licensed works, modifications, and larger works may be distributed under different terms and without source code.
 

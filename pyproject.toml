@@ -1,27 +1,59 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "findmytext"
 version = "0.1.0"
 description = "Text-containment detection via winnowed fingerprinting"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Lars Henry Berge Olsen" },
+    { name = "Pierre Lison" },
+    { name = "Martin Jullum" },
+    { name = "Mark Anderson" },
+]
+keywords = [
+    "fingerprinting",
+    "winnowing",
+    "text reuse",
+    "plagiarism detection",
+    "near-duplicate detection",
+    "copyright",
+    "training data",
+    "inverted index",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Text Processing :: Indexing",
+]
 dependencies = [
-    "datasets",
-    "filelock",
     "numba",
     "numpy",
     "orjson",
-    "polars",
+    "psutil",
     "scipy",
     "tqdm",
     "zstandard",
 ]
 
 [project.optional-dependencies]
-demo = ["ipykernel", "nbformat", "ipython"]
+demo = ["datasets", "ipykernel", "ipython", "nbformat"]
+experiments = ["filelock", "pyphen", "scikit-learn"]
 test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/NorskRegnesentral/FindMyText"
+Repository = "https://github.com/NorskRegnesentral/FindMyText"
+Issues = "https://github.com/NorskRegnesentral/FindMyText/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

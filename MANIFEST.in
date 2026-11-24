@@ -1,0 +1,2 @@
+# The tests also cover experiments/, which is not part of the distribution.
+prune tests
