@@ -14,15 +14,20 @@ step) and a thin Flask layer that **reuses the project's own detection code**.
 1. **Pick a corpus** — indexes live on the server and are loaded on demand.
 2. **Paste/type text** — choose a curated example (each linked to its source) or
    paste your own.
-3. **Pick algorithm(s)** and run:
-   - **Position-aware match (our method)** — the clustering score (largest
-     geometrically-coherent cluster of shared fingerprints), via
-   [`corpussearch.detector.TextContainmentDetector.find_matches_clustering`](corpussearch/detector.py).
-   - **Shared fingerprints (baseline)** — number of shared winnowed fingerprints,
-   via [`corpussearch.detector.TextContainmentDetector.find_matches_jaccard`](corpussearch/detector.py).
-4. **See results** — a score + best match per algorithm, a short ranking, and your
+3. **Set the minimum matching passage length** in characters (defaults to the
+   input length, up to 1,000; editable),
+   then pick algorithm(s): the core `FingerprintChainDetector` for position-aware
+   matching or `NbSharedFingerprintsDetector` for the shared-fingerprint baseline.
+4. **See results** — the core detector's model probability of a shared passage
+   at least that long, its raw fingerprint count, a best match per algorithm, a short ranking, and your
    text with the **matching passages highlighted**. Where possible each match
    shows the document's **title as a clickable link**.
+
+The passage length normalizes the model probability, not the raw fingerprint
+count or candidate retrieval. Results with positive fingerprint scores are shown
+even when their probability is below 1%. Retrieval remains bounded by `top_k`
+and `min_fingerprints`, so other matches may be missed. The baseline count does
+not require the fingerprints to form a coherent passage.
 
 While a check runs, the server streams progress events (newline-delimited JSON),
 so the page shows a live progress bar, stage label and elapsed time.
@@ -42,7 +47,7 @@ web/
     ├── samples_data.json   # curated per-corpus example texts (+ source links)
     ├── config.py           # loads the two JSON files into typed dataclasses
     ├── detection.py        # on-demand detector loading, streaming, highlight spans
-    ├── detector.py         # website-only count scoring and highlight adapter
+    ├── detector.py         # website-only highlight adapter
     ├── titles.py           # lazy resolver for title/url side-car maps + Wayback links
     ├── protection.py       # pluggable abuse protection (all OFF by default)
     ├── templates/index.html
@@ -52,8 +57,8 @@ web/
 Optional helper scripts under [`web/tools/`](tools/) build the side-car title/url
 maps for a corpus (`build_arxiv.py`, `build_hplt.py`, `build_wiki.py`).
 
-The FindMyText core provides fingerprinting, index access and positional
-clustering. The website-only count-scoring and highlight adapter lives in
+The FindMyText core provides fingerprinting, index access and probability
+scoring. The website-only highlight adapter lives in
 [`corpussearch/detector.py`](corpussearch/detector.py), alongside the Flask
 routing, progress streaming and corpus/LRU configuration.
 
@@ -96,7 +101,8 @@ Everything is driven by two files in `corpussearch/`:
 - [`config.json`](corpussearch/config.json) — paths (`index_root`, per-corpus
   `index_dir`, `title_map`, `url_map`), the detection `params`, abuse
   `protection`, and per-corpus metadata (`label`, `description`,
-  `doc_url_template`, `dataset_url`). Also set `github_url` and `paper_url`.
+  `doc_url_template`, `dataset_url`). The `paper_url` defaults to the FindMyText
+  arXiv paper and can be overridden or left empty to hide the link.
 - [`samples_data.json`](corpussearch/samples_data.json) — example texts keyed by
   corpus id, plus a shared `no_match` example. Each sample may carry a `url` and
   optional `archive_url` (e.g. a Wayback snapshot).
@@ -185,10 +191,27 @@ combine this with the rate limit above so one visitor can't tie up the box.
 
 ## How the visualization works
 
-The matched-passage highlighting maps shared-fingerprint **token positions** back
-to character offsets in your text using the winnower's exact tokenisation
-(`tokenize_with_offsets` in [`corpussearch/detector.py`](corpussearch/detector.py)) and the query
-positions from `TextContainmentDetector.get_match_highlight_clusters`. The UI can
-show either the largest aligned passage or all aligned passages from the
-position-aware method. No corpus document text is needed, which keeps the server
-lightweight.
+The query is fingerprinted using every word k-gram, while the corpus index stores
+only the fingerprints selected by winnowing. For a selected candidate document,
+the highlighter maps matching query fingerprint positions to character spans using
+the same tokenisation as the winnower
+(`tokenize_with_offsets` in [`corpussearch/detector.py`](corpussearch/detector.py)).
+Each highlighted span covers the words of a matching k-gram; overlapping spans
+are merged. No corpus document text is needed.
+
+The position-aware modes group matching fingerprint positions by query position
+and document-to-query offset, using the settings from the detection run. The
+largest-cluster mode shows a cluster attaining the chain score; the all-clusters
+mode also shows other clusters that meet the minimum size. That minimum counts
+matched position pairs (including repeated fingerprints), whereas the chain
+score counts distinct fingerprints within the largest cluster. The shared-fingerprint
+mode shows every query occurrence of a fingerprint found in the candidate,
+regardless of order or clustering. When modes overlap, the largest-cluster
+background takes precedence over the shared-fingerprint background; clusters
+are also indicated by coloured underlines.
+
+The highlighting API also returns coverage: the union of highlighted query
+character spans divided by query length. It is not shown in the UI and is not
+the model probability or an exact measure of character-for-character similarity.
+Winnowing, tokenisation and hash matching can leave parts of a matching passage
+unhighlighted or include punctuation within a highlighted span.

@@ -3,7 +3,7 @@
 This module owns only the Flask-facing glue: an LRU of loaded detectors,
 streaming progress events, and turning source-level highlight positions into
 character spans for the browser. Website-specific count scoring lives in
-``corpussearch.detector.TextContainmentDetector``.
+``findmytext.detectors``. Highlighting uses the website adapter.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from .detector import TextContainmentDetector, tokenize_with_offsets  # noqa: E402
+from findmytext.detectors import FingerprintChainDetector, NbSharedFingerprintsDetector  # noqa: E402
 
 from .config import AppConfig, CorpusConfig, AlgoParams  # noqa: E402
 
@@ -160,10 +161,10 @@ ALGORITHMS = {
 }
 
 
-def _ranking_from_scores(scores: dict) -> list[tuple[str, int]]:
-    """Turn a ``{doc_id: score}`` mapping into a descending (doc_id, score) list."""
-    ranking = [(doc_id, int(round(score))) for doc_id, score in scores.items()]
-    ranking.sort(key=lambda x: x[1], reverse=True)
+def _ranking_from_scores(scores: dict, raw_scores: dict) -> list[tuple[str, float]]:
+    """Rank probabilities, breaking ties by the raw fingerprint score."""
+    ranking = list(scores.items())
+    ranking.sort(key=lambda x: (x[1], raw_scores[x[0]]), reverse=True)
     return ranking
 
 
@@ -174,6 +175,7 @@ def run_detection(
     text: str,
     algorithms: list[str],
     cc_overrides: dict | None = None,
+    min_fragment_length: int = 1000,
 ) -> Iterator[dict]:
     """Generator yielding progress events and a final scoring result event.
 
@@ -221,7 +223,7 @@ def run_detection(
     yield progress("fingerprinting", 35)
     n_query_tokens = len(winnower.tokenize(text))
     if n_query_tokens == 0:
-        yield {"type": "result", **_empty_result(corpus, text, algorithms)}
+        yield {"type": "result", **_empty_result(corpus, text, algorithms, min_fragment_length)}
         return
 
     # 3. Score candidates with each requested algorithm (all scoring lives in
@@ -230,16 +232,26 @@ def run_detection(
     results: dict[str, dict] = {}
 
     if "jaccard" in algorithms:
-        scores = detector.find_matches_jaccard(text, score="count")
-        ranking = _ranking_from_scores(scores)
-        results["jaccard"] = _format_ranking(corpus, ranking, params.normalizing_constant)
+        baseline = NbSharedFingerprintsDetector(detector.index, top_k=params.top_k)
+        candidates = baseline.retrieve(
+            text, min_fragment_length=min_fragment_length,
+            min_fingerprints=params.min_fingerprints,
+        )
+        raw_scores = {doc: score for doc, score in baseline.raw_scores(candidates).items() if score > 0}
+        scores = baseline._normalise_scores(raw_scores, min_fragment_length)
+        ranking = _ranking_from_scores(scores, raw_scores)
+        results["jaccard"] = _format_ranking(corpus, ranking, raw_scores)
 
     if "connected_components" in algorithms:
-        scores = detector.find_matches_clustering(text, cparams, score="count")
-        ranking = _ranking_from_scores(scores)
-        results["connected_components"] = _format_ranking(
-            corpus, ranking, params.normalizing_constant
+        chain = FingerprintChainDetector(detector.index, top_k=params.top_k, **cparams)
+        candidates = chain.retrieve(
+            text, min_fragment_length=min_fragment_length,
+            min_fingerprints=params.min_fingerprints,
         )
+        raw_scores = {doc: score for doc, score in chain.raw_scores(candidates).items() if score > 0}
+        scores = chain._normalise_scores(raw_scores, min_fragment_length)
+        ranking = _ranking_from_scores(scores, raw_scores)
+        results["connected_components"] = _format_ranking(corpus, ranking, raw_scores)
 
     yield progress("done", 100)
     yield {
@@ -247,6 +259,7 @@ def run_detection(
         "corpus": corpus.id,
         "corpus_label": corpus.label,
         "query_length": len(text),
+        "min_fragment_length": min_fragment_length,
         "query_fingerprints": n_query_tokens,
         "algorithms": {k: ALGORITHMS[k] for k in algorithms if k in ALGORITHMS},
         "results": results,
@@ -269,16 +282,12 @@ HIGHLIGHT_MODES = {
         "method": "clustering",
         "which": "all",
     },
+    "jaccard": {
+        "label": "All shared fingerprints",
+        "method": "jaccard",
+        "which": "all",
+    },
 }
-
-# Keep the old baseline mode close to HIGHLIGHT_MODES so it can be restored by
-# adding ``"jaccard": SHARED_FINGERPRINT_HIGHLIGHT_MODE`` above.
-SHARED_FINGERPRINT_HIGHLIGHT_MODE = {
-    "label": "Shared fingerprints (baseline) — all overlapping passages",
-    "method": "jaccard",
-    "which": "largest",
-}
-
 
 def run_highlight(
     manager: IndexManager,
@@ -340,7 +349,7 @@ def run_highlight(
     }
 
 
-def _format_ranking(corpus: CorpusConfig, ranking, C: float, limit: int = 5) -> dict:
+def _format_ranking(corpus: CorpusConfig, ranking, raw_scores: dict, limit: int = 5) -> dict:
     items = []
     for doc_id, score in ranking[:limit]:
         meta = corpus.doc_meta(doc_id)
@@ -349,18 +358,20 @@ def _format_ranking(corpus: CorpusConfig, ranking, C: float, limit: int = 5) -> 
             "title": meta["title"],
             "url": meta["url"],
             "archive_url": meta["archive_url"],
-            "score": int(score),
-            "score_normalized": round(score / C, 2) if C else None,
+            "score": score,
+            "raw_score": raw_scores[doc_id],
         })
-    top = items[0] if items and items[0]["score"] > 0 else None
+    top = items[0] if items else None
     return {"top": top, "ranking": items}
 
 
-def _empty_result(corpus: CorpusConfig, text: str, algorithms: list[str]) -> dict:
+def _empty_result(corpus: CorpusConfig, text: str, algorithms: list[str],
+                  min_fragment_length: int) -> dict:
     return {
         "corpus": corpus.id,
         "corpus_label": corpus.label,
         "query_length": len(text),
+        "min_fragment_length": min_fragment_length,
         "query_fingerprints": 0,
         "algorithms": {k: ALGORITHMS[k] for k in algorithms if k in ALGORITHMS},
         "results": {k: {"top": None, "ranking": []} for k in algorithms},

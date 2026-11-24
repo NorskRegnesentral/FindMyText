@@ -167,7 +167,7 @@ class AppConfig:
     params: AlgoParams
     samples: list[SampleText]
     github_url: str = "https://github.com/NorskRegnesentral/FindMyText"
-    paper_url: str = ""
+    paper_url: str = "https://arxiv.org/abs/2607.10020"
     # How many corpus indexes may stay resident in RAM at once (LRU eviction).
     max_loaded_indexes: int = 1
     # Max length of pasted text accepted (characters).

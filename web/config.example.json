@@ -1,7 +1,7 @@
 {
     "index_root": "/path/to/prebuilt-indexes",
     "github_url": "https://github.com/NorskRegnesentral/FindMyText",
-    "paper_url": "",
+    "paper_url": "https://arxiv.org/abs/2607.10020",
     "max_loaded_indexes": 1,
     "max_text_chars": 50000,
     "corpora": [
