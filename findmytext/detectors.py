@@ -598,7 +598,8 @@ class FingerprintChainDetector(_BaseDetector):
         Maximum single-linkage distance (euclidean / cityblock / chebyshev only,
         default: 30).
     min_cluster_size : int
-        Minimum number of fingerprints for a cluster to be kept; smaller clusters
+        Minimum number of matched position pairs for a cluster to be kept;
+        repeated fingerprints can contribute multiple pairs. Smaller clusters
         are labelled noise (default: 5).
     rarity_weighted : bool
         If ``True``, score by the largest rarity-weighted cluster sum rather than
@@ -686,7 +687,8 @@ def cluster_rectangle(
 
     Two points are *connected* iff both ``|Δpos_query| ≤ position_threshold`` and
     ``|Δoffset| ≤ offset_threshold``.  Connected components form initial clusters;
-    those with fewer than ``min_cluster_size`` members are relabelled −1 (noise).
+    those with fewer than ``min_cluster_size`` matched position pairs are
+    relabelled −1 (noise).
 
     The neighbour pairs come from a k-d tree query within the larger threshold
     (Chebyshev distance), refined per axis, so the cost grows with the number of

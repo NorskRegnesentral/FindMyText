@@ -17,6 +17,7 @@ const STAGE_LABELS = {
 
 let lastText = "";
 let lastCorpus = "";
+let lastMethodParams = null;
 let highlightDoc = null;
 let highlightDocLabel = null;
 
@@ -87,7 +88,7 @@ function buildLinks() {
     };
     const top = document.getElementById("top-links");
     const gh = make(CONFIG.github_url, "Source code (GitHub)");
-    const paper = make(CONFIG.paper_url, "Read the paper");
+    const paper = make(CONFIG.paper_url, "Read the paper (arXiv)");
     if (gh) top.append(gh);
     if (paper) top.append(paper);
 
@@ -135,6 +136,7 @@ let corpusSearchSeq = 0;
 
 function renderCorpusSearch(corpus) {
     const box = document.getElementById("corpus-search");
+    const help = document.getElementById("search-help");
     const input = document.getElementById("corpus-search-input");
     const results = document.getElementById("corpus-search-results");
     if (corpusSearchTimer) {
@@ -143,6 +145,7 @@ function renderCorpusSearch(corpus) {
     }
     input.value = "";
     results.innerHTML = "";
+    help.classList.toggle("hidden", !corpus || !corpus.searchable);
     if (!corpus || !corpus.searchable) {
         box.classList.add("hidden");
         return;
@@ -271,10 +274,7 @@ function buildSamples(corpus) {
     });
     wrap.append(select, source, archive);
 
-    // Corpus-specific generic "filler" boilerplate. Appending it after a
-    // genuine excerpt dilutes the position-aware signal (our score drops)
-    // while the baseline keeps matching on the shared fingerprints — a live
-    // decoy demo the user can trigger on top of any text they like.
+    // Corpus-specific generic filler can be appended to any example.
     if (corpus && corpus.filler) {
         const fillerBtn = el("button", {
             type: "button", id: "filler-btn", class: "btn small ghost filler-btn",
@@ -305,9 +305,19 @@ function getAccessPassword() {
 function setupCharCount() {
     const ta = document.getElementById("text");
     const count = document.getElementById("char-count");
-    ta.addEventListener("input", () => {
-        count.textContent = ta.value.length.toLocaleString();
+    const minLength = document.getElementById("min-fragment-length");
+    let automatic = true;
+    const defaultLength = () => Math.min([...ta.value.trim()].length || 1000, 1000);
+    minLength.addEventListener("input", () => {
+        automatic = minLength.value === String(defaultLength());
     });
+    const update = () => {
+        count.textContent = [...ta.value.trim()].length.toLocaleString();
+        if (!ta.value.trim()) automatic = true;
+        if (automatic) minLength.value = String(defaultLength());
+    };
+    ta.addEventListener("input", update);
+    update();
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +340,7 @@ const METHOD_PARAM_FIELDS = [
     {
         key: "min_cluster_size",
         label: "Min. cluster size",
-        help: "Smallest number of aligned fingerprints counted as a passage.",
+        help: "Minimum matched position pairs; repeated fingerprints can contribute multiple pairs.",
     },
 ];
 
@@ -488,12 +498,18 @@ async function onSubmit(ev) {
     errorEl.textContent = "";
 
     const text = document.getElementById("text").value.trim();
+    const minFragmentLength = Number(document.getElementById("min-fragment-length").value);
     const corpus = document.getElementById("corpus").value;
     const algorithms = Array.from(
         document.querySelectorAll("input[name='algorithm']:checked")
     ).map((c) => c.value);
 
     if (!text) { errorEl.textContent = "Please enter some text to check."; return; }
+    if (!Number.isInteger(minFragmentLength) || minFragmentLength < 1 ||
+        minFragmentLength > [...text].length) {
+        errorEl.textContent = "Minimum passage length must be a positive whole number no greater than the text length.";
+        return;
+    }
     if (!algorithms.length) { errorEl.textContent = "Select at least one algorithm."; return; }
     if (CONFIG.max_text_chars && text.length > CONFIG.max_text_chars) {
         errorEl.textContent = `Text too long (max ${CONFIG.max_text_chars.toLocaleString()} characters).`;
@@ -502,9 +518,11 @@ async function onSubmit(ev) {
 
     lastText = text;
     lastCorpus = corpus;
+    lastMethodParams = getMethodParams();
     const payload = {
         text, corpus, algorithms,
-        method_params: getMethodParams(),
+        min_fragment_length: minFragmentLength,
+        method_params: lastMethodParams,
         password: getAccessPassword(),
     };
 
@@ -579,6 +597,11 @@ function updateProgress(ev) {
     if (ev.note) document.getElementById("progress-note").textContent = ev.note;
 }
 
+function formatProbability(probability) {
+    if (probability < 0.0001) return "<0.01%";
+    return `${(probability * 100).toFixed(probability < 0.01 ? 2 : 1)}%`;
+}
+
 function renderResult(res) {
     const card = document.getElementById("results-card");
     const summary = document.getElementById("summary");
@@ -590,12 +613,18 @@ function renderResult(res) {
         box.append(el("h4", {}, ALGO_LABELS[key] || key));
         const top = data.top;
         if (top) {
+            box.append(el("p", { class: "match-doc" },
+                `Model probability for a passage of at least ${res.min_fragment_length.toLocaleString()} characters`));
             const score = el("div", { class: "score" });
-            score.append(document.createTextNode(String(top.score)));
-            if (top.score_normalized != null) {
-                score.append(el("small", {}, ` (${top.score_normalized}× a sentence)`));
-            }
+            score.append(document.createTextNode(formatProbability(top.score)));
             box.append(score);
+            const rawLabel = key === "connected_components" ? "Chain score" : "Fingerprint score";
+            box.append(el("p", { class: "match-doc" },
+                `${rawLabel}: ${top.raw_score.toLocaleString()} fingerprints`));
+            if (key === "jaccard") {
+                box.append(el("p", { class: "hint" },
+                    "Shared fingerprints may be scattered rather than form a single passage."));
+            }
             const doc = el("p", { class: "match-doc" });
             doc.append(document.createTextNode("Best match: "));
             const label = docLabel(top);
@@ -618,8 +647,8 @@ function renderResult(res) {
             box.append(doc);
         } else {
             box.classList.add("nomatch");
-            box.append(el("div", { class: "score" }, "No match"));
-            box.append(el("p", { class: "match-doc muted" }, "No document passed the threshold."));
+            box.append(el("div", { class: "score" }, "No match found"));
+            box.append(el("p", { class: "match-doc muted" }, "No retrieved candidate met this method's criteria."));
         }
 
         if (data.ranking && data.ranking.length > 1) {
@@ -658,7 +687,8 @@ function renderResult(res) {
                     left.append(arc);
                 }
                 li.append(left);
-                li.append(el("span", {}, String(r.score)));
+                li.append(el("span", {},
+                    `${formatProbability(r.score)} · ${r.raw_score.toLocaleString()} fingerprints`));
                 ul.append(li);
             });
             box.append(ul);
@@ -668,9 +698,8 @@ function renderResult(res) {
     summary.append(grid);
 
     const meta = el("p", { class: "hint" });
-    meta.textContent = `Searched ${escapeText(res.corpus_label)} · `
-        + `${res.query_fingerprints.toLocaleString()} fingerprints from your text · `
-        + `${res.elapsed.toFixed(1)}s`;
+    meta.textContent = `Searched ${escapeText(res.corpus_label)} · ${res.elapsed.toFixed(1)}s. `
+        + "Only a limited number of candidates are scored; other matches may be missed.";
     summary.append(meta);
 
     renderSourceCaveat(res.corpus);
@@ -711,21 +740,23 @@ function renderHighlightControls(res) {
     err.textContent = "";
     select.innerHTML = "";
 
-    // Collect every candidate document from all algorithm rankings, keeping the
-    // best score each doc reached across methods (so a doc the baseline flagged
-    // but our method scored 0 is still available to compare against).
+    // Collect documents from both rankings, preserving each method's score.
     const byId = new Map();
     for (const key of Object.keys(res.results)) {
         const ranking = (res.results[key] && res.results[key].ranking) || [];
         ranking.forEach((r) => {
             if (!r || r.doc_id == null) return;
             const id = String(r.doc_id);
-            const prev = byId.get(id);
-            if (!prev) byId.set(id, { item: r, best: r.score || 0 });
-            else prev.best = Math.max(prev.best, r.score || 0);
+            let candidate = byId.get(id);
+            if (!candidate) {
+                candidate = { item: r, best: r.score, scores: {} };
+                byId.set(id, candidate);
+            }
+            candidate.scores[key] = r.score;
+            candidate.best = Math.max(candidate.best, r.score);
         });
     }
-    const candidates = [...byId.values()].filter((c) => c.best > 0);
+    const candidates = [...byId.values()];
     candidates.sort((a, b) => b.best - a.best);
 
     if (!candidates.length) {
@@ -746,8 +777,14 @@ function renderHighlightControls(res) {
             seen[lbl] = (seen[lbl] || 0) + 1;
             lbl = `${lbl} (${seen[lbl]})`;
         }
+        const scoreLabels = Object.keys(res.results).map((key) => {
+            const method = key === "connected_components" ? "Position-aware" : "Baseline";
+            const score = Object.hasOwn(c.scores, key)
+                ? formatProbability(c.scores[key]) : "not in results";
+            return `${method}: ${score}`;
+        });
         select.append(el("option", { value: String(c.item.doc_id) },
-            `${lbl} — score ${c.best}`));
+            `${lbl} — ${scoreLabels.join(" · ")}`));
     });
 
     // Default to the position-aware top match, else the baseline top match.
@@ -784,6 +821,10 @@ async function onHighlight() {
     if (!modes.length) { err.textContent = "Select at least one highlight style."; return; }
     if (!highlightDoc) { err.textContent = "No match to highlight."; return; }
 
+    const text = lastText, corpus = lastCorpus, docId = highlightDoc;
+    const params = lastMethodParams;
+    const isCurrent = () => lastText === text && lastCorpus === corpus &&
+        highlightDoc === docId && lastMethodParams === params;
     const btn = document.getElementById("hl-btn");
     btn.disabled = true;
     btn.textContent = "Highlighting…";
@@ -792,19 +833,20 @@ async function onHighlight() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                text: lastText,
-                corpus: lastCorpus,
-                doc_id: highlightDoc,
+                text,
+                corpus,
+                doc_id: docId,
                 modes,
-                method_params: getMethodParams(),
+                method_params: params,
                 password: getAccessPassword(),
             }),
         });
         const data = await resp.json().catch(() => ({}));
+        if (!isCurrent()) return;
         if (!resp.ok) throw new Error(data.error || `Request failed (${resp.status}).`);
         renderHighlightLayers(data);
     } catch (e) {
-        err.textContent = e.message || "Something went wrong.";
+        if (isCurrent()) err.textContent = e.message || "Something went wrong.";
     } finally {
         btn.disabled = false;
         btn.textContent = "Show highlighting";
@@ -827,7 +869,8 @@ function markRange(arr, clusters) {
 function renderHighlightLayers(data) {
     const target = document.getElementById("highlight");
     const meta = document.getElementById("highlight-meta");
-    const N = lastText.length;
+    const characters = Array.from(lastText);
+    const N = characters.length;
     const jac = new Uint8Array(N);
     const ccL = new Uint8Array(N);
     const ccAll = new Int16Array(N);
@@ -854,7 +897,7 @@ function renderHighlightLayers(data) {
         const kJ = jac[i], kL = ccL[i], kA = ccAll[i];
         let j = i + 1;
         while (j < N && jac[j] === kJ && ccL[j] === kL && ccAll[j] === kA) j++;
-        const chunk = escapeHtml(lastText.slice(i, j));
+        const chunk = escapeHtml(characters.slice(i, j).join(""));
         if (!kJ && !kL && kA < 0) {
             html += chunk;
         } else {
@@ -875,12 +918,10 @@ function renderHighlightLayers(data) {
 
     const parts = data.layers.map((l) => {
         const n = l.clusters.length;
-        const extra = l.mode === "cc_all" && n
-            ? ` (${n} cluster${n === 1 ? "" : "s"})`
-            : "";
-        return `${l.label}: ${l.coverage_pct}%${extra}`;
+        if (l.mode === "cc_all") return `${l.label}: ${n} cluster${n === 1 ? "" : "s"}`;
+        return n ? l.label : `${l.label}: no matches`;
     });
     meta.textContent = parts.length
-        ? `Overlap with “${highlightDocLabel || data.doc_id}” — ${parts.join(" · ")}`
+        ? `Highlights for “${highlightDocLabel || data.doc_id}” — ${parts.join(" · ")}`
         : `No overlapping passages found in “${highlightDocLabel || data.doc_id}” for the selected styles.`;
 }

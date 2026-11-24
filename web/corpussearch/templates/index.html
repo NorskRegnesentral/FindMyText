@@ -80,9 +80,9 @@
                     <span class="samples" id="samples"></span>
                 </div>
                 <p class="hint">
-                    Three ways to fill the box: <strong>search the corpus above</strong>
-                    to find a source it contains, then open it and copy a real passage
-                    in; <strong>load one of our premade examples</strong>; or
+                    <span id="search-help">Search the corpus above to find a source it contains,
+                    then copy a real passage in; </span>
+                    <strong>load one of our premade examples</strong>; or
                     <strong>add the corpus-specific generic filler</strong> — on its own
                     as a neutral, unrelated passage, or appended to text already in the
                     box (a premade example or your own).
@@ -90,6 +90,14 @@
                 <textarea id="text" name="text" rows="9"
                     placeholder="Paste the text you want to check here…"></textarea>
                 <p class="hint"><span id="char-count">0</span> characters</p>
+            </div>
+
+            <div class="field">
+                <label for="min-fragment-length">Minimum matching passage length (characters)</label>
+                <input type="number" id="min-fragment-length" min="1" step="1" value="1000" required />
+                <p class="hint">Defaults to the trimmed text length, up to 1,000 characters; you can change it.
+                    Used to normalize the probability score, not the raw fingerprint count.
+                    It does not change candidate retrieval.</p>
             </div>
 
             <div class="field">
@@ -144,11 +152,14 @@
                 <p class="hint" id="highlight-intro">
                     Highlight which parts of your text overlap the selected match.
                     Pick one or more styles — they can be shown together.
+                    Highlights use the position-aware settings from the last detection.
                 </p>
                 <div class="hl-doc-picker">
                     <label for="highlight-doc-select">Compare against:</label>
                     <select id="highlight-doc-select" class="hl-doc-select"></select>
                 </div>
+                <p class="hint">Scores in this list are model probabilities by method.
+                    “Not in results” means a document was not among that method's displayed matches.</p>
                 <div class="hl-modes" id="hl-modes">
                     <label class="hl-mode">
                         <input type="checkbox" name="hl-mode" value="cc_largest" checked />
@@ -160,9 +171,29 @@
                         <input type="checkbox" name="hl-mode" value="cc_all" />
                         <span class="hl-swatch hl-swatch-cc-all"></span>
                         <span><strong>All aligned passages</strong> — every position-aware cluster,
-                            one colour each (catches reordered passages).</span>
+                            underlined by colour.</span>
+                    </label>
+                    <label class="hl-mode">
+                        <input type="checkbox" name="hl-mode" value="jaccard" />
+                        <span class="hl-swatch hl-swatch-jaccard"></span>
+                        <span><strong>All shared fingerprints</strong> — matching word groups,
+                            regardless of position or order.</span>
                     </label>
                 </div>
+                <details>
+                    <summary>How highlighting works</summary>
+                    <p class="hint">Highlights cover word groups in your text whose fingerprints
+                        are stored for the selected document. The index keeps only some fingerprints,
+                        so matching words can remain unhighlighted.</p>
+                    <ul class="hint">
+                        <li><strong>Largest aligned passage:</strong> the chain with the most distinct
+                            fingerprints, not necessarily the most characters.</li>
+                        <li><strong>All aligned passages:</strong> all chains that meet the clustering
+                            settings, including separate passages.</li>
+                        <li><strong>All shared fingerprints:</strong> matching word groups anywhere in
+                            the document, even if they do not form a chain.</li>
+                    </ul>
+                </details>
                 <div class="actions">
                     <button type="button" id="hl-btn" class="btn">Show highlighting</button>
                     <span class="error" id="hl-error"></span>

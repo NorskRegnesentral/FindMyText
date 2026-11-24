@@ -78,6 +78,13 @@ def create_app() -> Flask:
             return jsonify({
                 "error": f"Text too long (max {cfg.max_text_chars:,} characters)."
             }), 400
+        min_fragment_length = data.get("min_fragment_length", min(len(text), 1000))
+        if (type(min_fragment_length) is not int or min_fragment_length < 1
+                or min_fragment_length > len(text)):
+            return jsonify({
+                "error": "Minimum passage length must be a positive whole number "
+                         "no greater than the length of the input text."
+            }), 400
         algorithms = [a for a in algorithms if a in ALGORITHMS]
         if not algorithms:
             return jsonify({"error": "Select at least one detection algorithm."}), 400
@@ -87,7 +94,10 @@ def create_app() -> Flask:
         # --- Stream progress + result as newline-delimited JSON ------------
         def generate():
             try:
-                for event in run_detection(manager, cfg, corpus, text, algorithms, cc_overrides):
+                for event in run_detection(
+                    manager, cfg, corpus, text, algorithms, cc_overrides,
+                    min_fragment_length,
+                ):
                     yield json.dumps(event) + "\n"
             except Exception as exc:  # noqa: BLE001
                 app.logger.exception("detection failed")
