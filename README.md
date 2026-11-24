@@ -189,7 +189,7 @@ The MIT License is a short and simple permissive license allowing both commercia
 
 ## Reference
 
-If you use **FindMyText** in your research, please cite our [paper](https://arxiv.org/abs/2306.17100):
+If you use **FindMyText** in your research, please cite our [paper](https://arxiv.org/abs/2607.10020):
 
 ```bibtex
 @article{findmytext2026,
